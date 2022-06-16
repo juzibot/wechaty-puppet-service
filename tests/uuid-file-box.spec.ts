@@ -3,7 +3,7 @@
 import { test }                 from 'tstest'
 import * as path                from 'path'
 import * as fs                  from 'fs'
-import type { PuppetOptions }   from 'wechaty-puppet'
+import type { PuppetOptions }   from '@juzi/wechaty-puppet'
 import PuppetMock               from 'wechaty-puppet-mock'
 import getPort                  from 'get-port'
 import temp                     from 'temp'
@@ -25,7 +25,7 @@ test('message file test', async t => {
   /**
    * Puppet Server
    */
-  const puppet = new PuppetMock()
+  const puppet = new PuppetMock() as any
   puppet.messageFile = async () => FileBox.fromFile(FILE)
 
   const serverOptions = {

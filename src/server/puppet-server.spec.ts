@@ -2,7 +2,7 @@
 
 import { test }  from 'tstest'
 
-import type { Puppet } from 'wechaty-puppet'
+import type { Puppet } from '@juzi/wechaty-puppet'
 
 import {
   PuppetServer,

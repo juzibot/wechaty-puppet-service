@@ -23,7 +23,7 @@ import fs from 'fs'
 
 import semverPkg from 'semver'
 
-import type * as PUPPET from 'wechaty-puppet'
+import type * as PUPPET from '@juzi/wechaty-puppet'
 
 import { FlashStore } from 'flash-store'
 

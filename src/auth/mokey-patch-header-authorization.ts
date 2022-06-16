@@ -1,6 +1,6 @@
 import type http2 from 'http2'
 
-import { log } from 'wechaty-puppet'
+import { log } from '@juzi/wechaty-puppet'
 
 import type {
   Metadata,

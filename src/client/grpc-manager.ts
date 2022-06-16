@@ -21,11 +21,11 @@ import util from 'util'
 import EventEmitter from 'events'
 import crypto from 'crypto'
 
-import { log } from 'wechaty-puppet'
+import { log } from '@juzi/wechaty-puppet'
 import {
   grpc,
   puppet,
-}                     from 'wechaty-grpc'
+}                     from '@juzi/wechaty-grpc'
 import {
   timeoutPromise,
 }                     from 'gerror'

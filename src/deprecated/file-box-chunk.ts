@@ -6,7 +6,7 @@ import {
   Transform,
 }                       from 'stronger-typed-streams'
 
-import { puppet } from 'wechaty-grpc'
+import { puppet } from '@juzi/wechaty-grpc'
 
 import { nextData } from './next-data.js'
 

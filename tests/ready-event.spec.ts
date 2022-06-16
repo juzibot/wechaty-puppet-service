@@ -3,7 +3,7 @@
 import { test } from 'tstest'
 import type {
   PuppetOptions,
-} from 'wechaty-puppet'
+} from '@juzi/wechaty-puppet'
 import PuppetMock from 'wechaty-puppet-mock'
 import getPort from 'get-port'
 
@@ -22,7 +22,7 @@ test('ready event test', async t => {
   /**
    * Puppet Server
    */
-  const puppet = new PuppetMock()
+  const puppet = new PuppetMock() as any
 
   // set ready to true before service starts
   puppet.readyIndicator.value(true)

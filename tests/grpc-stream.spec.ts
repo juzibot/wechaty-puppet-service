@@ -18,7 +18,7 @@ import {
 }                             from 'tstest'
 import type {
   PuppetOptions,
-}                             from 'wechaty-puppet'
+}                             from '@juzi/wechaty-puppet'
 import {
   PuppetMock,
 }                             from 'wechaty-puppet-mock'
@@ -42,7 +42,7 @@ test('gRPC client breaks', async t => {
   const PORT        = await getPort()
   const ENDPOINT    = '0.0.0.0:' + PORT
 
-  const puppet = new PuppetMock()
+  const puppet = new PuppetMock() as any
   const spyOnStart = sinon.spy(puppet, 'onStart')
   /**
    * Puppet Server

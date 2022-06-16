@@ -20,9 +20,9 @@
 import {
   puppet as grpcPuppet,
   grpc,
-}                                   from 'wechaty-grpc'
+}                                   from '@juzi/wechaty-grpc'
 
-import * as PUPPET from 'wechaty-puppet'
+import * as PUPPET from '@juzi/wechaty-puppet'
 
 import { log } from '../config.js'
 import {

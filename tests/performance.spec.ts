@@ -17,7 +17,7 @@ import {
   sinon,
 }             from 'tstest'
 
-import * as PUPPET from 'wechaty-puppet'
+import * as PUPPET from '@juzi/wechaty-puppet'
 
 import {
   PuppetMock,
@@ -81,7 +81,7 @@ test.skip('stress testing', async t => {
    */
   const serverOptions = {
     endpoint : ENDPOINT,
-    puppet   : puppet,
+    puppet   : puppet as any,
     token    : TOKEN,
   } as PuppetServerOptions
 

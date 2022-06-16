@@ -1,4 +1,4 @@
-import { Timestamp } from 'wechaty-grpc'
+import { Timestamp } from '@juzi/wechaty-grpc'
 
 /**
  * https://github.com/protocolbuffers/protobuf/blob/b6993a90605cde15ba004e0287bcb078b0f3959d/src/google/protobuf/timestamp.proto#L86-L91

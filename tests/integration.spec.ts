@@ -7,7 +7,7 @@ import {
 
 import type {
   PuppetOptions,
-}                 from 'wechaty-puppet'
+}                 from '@juzi/wechaty-puppet'
 import {
   PuppetMock,
 }                 from 'wechaty-puppet-mock'
@@ -31,7 +31,7 @@ test('Integration testing', async t => {
   /**
    * Puppet in Service
    */
-  const puppet = new PuppetMock()
+  const puppet = new PuppetMock() as any
   const spyStart = sinon.spy(puppet, 'start')
   const spyOn    = sinon.spy(puppet, 'on')
   const spyDing  = sinon.spy(puppet, 'ding')

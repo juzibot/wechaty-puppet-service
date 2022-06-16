@@ -1,6 +1,6 @@
 import {
   log,
-}                 from 'wechaty-puppet'
+}                 from '@juzi/wechaty-puppet'
 import {
   PuppetService,
 }                 from './client/puppet-service.js'

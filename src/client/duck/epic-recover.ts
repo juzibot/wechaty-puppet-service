@@ -40,7 +40,7 @@ import type {
 import {
   Duck as PuppetDuck,
 }                       from 'wechaty-redux'
-import { log }          from 'wechaty-puppet'
+import { log }          from '@juzi/wechaty-puppet'
 
 const stateActive$ = (action$: Observable<AnyAction>) => action$.pipe(
   filter(isActionOf(PuppetDuck.actions.STATE_ACTIVATED_EVENT)),

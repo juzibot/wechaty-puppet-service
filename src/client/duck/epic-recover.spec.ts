@@ -95,7 +95,7 @@ test('Example 4: play ground', async t => {
 test('monitorHeartbeat$() emit once after lost heartbeat', async t => {
   const testScheduler = new TestScheduler(t.same)
 
-  const puppet = new PuppetMock()
+  const puppet = new PuppetMock() as any
 
   const TIMEOUT = 15
 
@@ -126,7 +126,7 @@ test('monitorHeartbeat$() emit once after lost heartbeat', async t => {
 test('epicRecoverDing$() emit periodly', async t => {
   const testScheduler = new TestScheduler(t.same)
 
-  const puppet = new PuppetMock()
+  const puppet = new PuppetMock() as any
 
   const TIMEOUT = 15
 
@@ -154,7 +154,7 @@ test('epicRecoverDing$() emit periodly', async t => {
 test('epicRecoverReset$() emit periodly', async t => {
   const testScheduler = new TestScheduler(t.same)
 
-  const puppet = new PuppetMock()
+  const puppet = new PuppetMock() as any
 
   const TIMEOUT = 60
 

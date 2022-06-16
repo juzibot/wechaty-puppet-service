@@ -8,7 +8,7 @@ import { FileBox } from 'file-box'
 
 import {
   puppet,
-}                                 from 'wechaty-grpc'
+}                                 from '@juzi/wechaty-grpc'
 
 import {
   unpackFileBoxFromChunk,

@@ -25,12 +25,12 @@ import {
   StringValue,
   grpc,
   puppet as grpcPuppet,
-}                           from 'wechaty-grpc'
+}                           from '@juzi/wechaty-grpc'
 import type {
   FileBoxInterface,
   FileBox,
 }                           from 'file-box'
-import * as PUPPET          from 'wechaty-puppet'
+import * as PUPPET          from '@juzi/wechaty-puppet'
 import { timeoutPromise }   from 'gerror'
 
 import {

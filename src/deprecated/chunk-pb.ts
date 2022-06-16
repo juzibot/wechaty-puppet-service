@@ -1,4 +1,4 @@
-import type { puppet } from 'wechaty-grpc'
+import type { puppet } from '@juzi/wechaty-grpc'
 import { Readable, Transform } from 'stronger-typed-streams'
 import { PassThrough } from 'stream'
 

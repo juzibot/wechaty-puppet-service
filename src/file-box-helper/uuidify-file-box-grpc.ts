@@ -12,7 +12,7 @@ import {
   chunkDecoder,
   chunkEncoder,
   puppet as pbPuppet,
-}                         from 'wechaty-grpc'
+}                         from '@juzi/wechaty-grpc'
 import {
   cloneClass,
   Constructor,

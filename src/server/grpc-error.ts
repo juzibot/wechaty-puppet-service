@@ -1,5 +1,5 @@
-import type { grpc }  from 'wechaty-grpc'
-import { log }        from 'wechaty-puppet'
+import type { grpc }  from '@juzi/wechaty-grpc'
+import { log }        from '@juzi/wechaty-puppet'
 import { GError }     from 'gerror'
 
 type GErrorCallback = (

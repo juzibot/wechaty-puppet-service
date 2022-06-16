@@ -24,7 +24,7 @@ test('PuppetService restart without problem', async t => {
   const PORT        = await getPort()
   const ENDPOINT    = '0.0.0.0:' + PORT
 
-  const puppet = new PuppetMock()
+  const puppet = new PuppetMock() as any
   const serverOptions = {
     endpoint: ENDPOINT,
     puppet: puppet,

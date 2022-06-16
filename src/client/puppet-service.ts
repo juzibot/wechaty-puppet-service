@@ -19,7 +19,7 @@
  */
 import util               from 'util'
 import type { Writable }  from 'stream'
-import * as PUPPET        from 'wechaty-puppet'
+import * as PUPPET        from '@juzi/wechaty-puppet'
 
 import type {
   FileBoxInterface,
@@ -28,7 +28,7 @@ import type {
 import {
   StringValue,
   puppet as grpcPuppet,
-}                         from 'wechaty-grpc'
+}                         from '@juzi/wechaty-grpc'
 import {
   puppet$,
   Duck as PuppetDuck,
@@ -176,7 +176,7 @@ class PuppetService extends PUPPET.Puppet {
     /**
      * Ducks management
      */
-    const subscription = puppet$(this)
+    const subscription = puppet$(this as any)
       .subscribe(this._store.dispatch)
 
     this._cleanupCallbackList.push(

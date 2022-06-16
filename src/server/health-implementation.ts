@@ -1,11 +1,11 @@
 /* eslint-disable sort-keys */
 import {
   google as grpcGoogle,
-}                         from 'wechaty-grpc'
+}                         from '@juzi/wechaty-grpc'
 import {
   log,
   Puppet,
-}                         from 'wechaty-puppet'
+}                         from '@juzi/wechaty-puppet'
 
 const HEARTBEAT_TIMEOUT_SECONDS = 60
 

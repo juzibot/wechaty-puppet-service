@@ -1,6 +1,6 @@
 import {
   puppet,
-}               from 'wechaty-grpc'
+}               from '@juzi/wechaty-grpc'
 
 /**
  * Huan(202003):

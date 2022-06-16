@@ -21,7 +21,7 @@
  */
 import {
   puppet,
-}                                       from 'wechaty-grpc'
+}                                       from '@juzi/wechaty-grpc'
 
 import { test }         from 'tstest'
 import { PassThrough }  from 'stream'

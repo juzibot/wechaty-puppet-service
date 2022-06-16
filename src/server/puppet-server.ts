@@ -22,12 +22,12 @@ import util             from 'util'
 import {
   Puppet,
   log,
-}                               from 'wechaty-puppet'
+}                               from '@juzi/wechaty-puppet'
 import {
   grpc,
   puppet as grpcPuppet,
   google as grpcGoogle,
-}                               from 'wechaty-grpc'
+}                               from '@juzi/wechaty-grpc'
 import {
   UniformResourceNameRegistry,
 }                               from 'file-box'
