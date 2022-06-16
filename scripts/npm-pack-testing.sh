@@ -2,6 +2,7 @@
 set -e
 
 VERSION=$(npx pkg-jq -r .version)
+export WECHATY_PUPPET_SERVICE_TOKEN=puppet_wxwork_1q2w3e4r5t
 
 if npx --package @chatie/semver semver-is-prod "$VERSION"; then
   NPM_TAG=latest
