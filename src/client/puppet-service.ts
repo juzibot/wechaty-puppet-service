@@ -176,7 +176,7 @@ class PuppetService extends PUPPET.Puppet {
     /**
      * Ducks management
      */
-    const subscription = puppet$(this as any)
+    const subscription = puppet$(this)
       .subscribe(this._store.dispatch)
 
     this._cleanupCallbackList.push(
