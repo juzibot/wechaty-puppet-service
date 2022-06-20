@@ -61,6 +61,7 @@ class GrpcManager extends EventEmitter {
   protected _client?  : puppet.PuppetClient
   get       client () : puppet.PuppetClient {
     if (!this._client) {
+      this.emit('error', 'NO CLIENT')
       throw new Error('NO CLIENT')
     }
     return this._client
