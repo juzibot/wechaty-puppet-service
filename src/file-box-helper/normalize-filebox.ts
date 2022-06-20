@@ -27,9 +27,9 @@ const greenFileBoxTypes = [
  *  if it's bigger than the threshold,
  *  then it should be convert to a UUID file box before send out
  */
-const yellowFileBoxTypes = [
-  FileBoxType.Buffer,
-  FileBoxType.Base64,
+const yellowFileBoxTypes: FileBoxType [] = [
+  // FileBoxType.Buffer,
+  // FileBoxType.Base64,
 ]
 
 const canPassthrough = (fileBox: FileBoxInterface) => {

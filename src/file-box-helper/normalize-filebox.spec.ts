@@ -10,8 +10,8 @@ const kbFileBox = (size: number) => FileBox.fromBuffer(Buffer.from(
 ), size + 'KB.txt')
 
 test('canPassthrough() size threshold', async t => {
-  t.ok(canPassthrough(kbFileBox(16)),     'should passthrough 16KB')
-  t.notOk(canPassthrough(kbFileBox(32)),  'should not passthrough 32KB')
+  t.notOk(canPassthrough(kbFileBox(16)), 'should not passthrough 16KB')
+  t.notOk(canPassthrough(kbFileBox(32)), 'should not passthrough 32KB')
 })
 
 test('canPassthrough(): always true for green types', async t => {
@@ -38,8 +38,8 @@ test('canPassthrough(): will depend on the size for yellow types', async t => {
   const bufferFileBox = FileBox.fromBuffer(Buffer.from('buf'))
   const base64FileBox = FileBox.fromBase64(Buffer.from('buf').toString('base64'))
 
-  t.ok(canPassthrough(bufferFileBox), 'should not passthrough small Buffer')
-  t.ok(canPassthrough(base64FileBox), 'should not passthrough small Base64')
+  t.notOk(canPassthrough(bufferFileBox), 'should not passthrough any Buffer')
+  t.notOk(canPassthrough(base64FileBox), 'should not passthrough any Base64')
 
   /**
    * TODO: add the large size test which will over the threshold
