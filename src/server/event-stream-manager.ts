@@ -126,6 +126,8 @@ class EventStreamManager {
       JSON.stringify(obj),
     )
 
+    log.info('EventStreamManager', `emitting ${EventTypeRev[type]} on ${new Date().toString()}`)
+
     const response = new grpcPuppet.EventResponse()
 
     response.setType(type)
