@@ -265,12 +265,8 @@ class PuppetService extends PUPPET.Puppet {
     const type    = event.getType()
     const payload = event.getPayload()
 
-    log.verbose('PuppetService',
-      'onGrpcStreamEvent({type:%s(%s), payload(len:%s)})',
-      EventTypeRev[type],
-      type,
-      payload.length,
-    )
+    log.info('EventStreamManager', `received ${EventTypeRev[type]} on ${new Date().toString()}`)
+
     log.silly('PuppetService',
       'onGrpcStreamEvent({type:%s(%s), payload:"%s"})',
       EventTypeRev[type],
