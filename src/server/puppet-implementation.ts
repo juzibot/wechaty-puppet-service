@@ -885,12 +885,11 @@ function puppetImplementation (
         const pbLocationPayload = call.request.getLocation()
 
         const payload: PUPPET.payloads.Location = {
-          accuracy  : 0,
-          address   : 'NOADDRESS',
-          latitude  : 0,
-          longitude : 0,
-          name      : 'NONAME',
-          ...pbLocationPayload,
+          accuracy: pbLocationPayload?.getAccuracy() || 0,
+          address: pbLocationPayload?.getAddress() || 'No Address',
+          latitude: pbLocationPayload?.getLatitude() || 0,
+          longitude: pbLocationPayload?.getLongitude() || 0,
+          name: pbLocationPayload?.getName() || 'No Name',
         }
 
         const messageId = await puppet.messageSendLocation(conversationId, payload)
