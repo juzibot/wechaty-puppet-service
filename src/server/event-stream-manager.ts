@@ -92,7 +92,7 @@ class EventStreamManager {
     }
 
     if (this.puppet.readyIndicator.value()) {
-      log.verbose('EventStreamManager', 'start() puppet is ready, emit a ready event for downstream after 100ms delay')
+      log.verbose('EventStreamManager', 'start() puppet is ready, emit a ready event for downstream after 1500ms delay')
 
       const payload = {
         data: 'ready',
@@ -101,7 +101,7 @@ class EventStreamManager {
       // no need to make this function async since it won't effect the start process of eventStreamManager
       setTimeout(() => {
         this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_READY, payload)
-      }, 100)
+      }, 1500)
     }
   }
 
