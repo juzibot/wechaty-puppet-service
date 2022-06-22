@@ -1,6 +1,6 @@
 {
   "name": "@juzi/wechaty-puppet-service",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Puppet Service for Wechaty",
   "type": "module",
   "exports": {
@@ -68,7 +68,7 @@
     "@juzi/wechaty-puppet": "1.0.2"
   },
   "dependencies": {
-    "@juzi/wechaty-grpc": "1.0.2",
+    "@juzi/wechaty-grpc": "1.0.3",
     "clone-class": "^1.1.1",
     "ducks": "^1.0.2",
     "file-box": "^1.5.5",

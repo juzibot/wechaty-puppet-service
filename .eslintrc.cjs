@@ -1,6 +1,7 @@
 const rules = {
   'no-void': ["error", { "allowAsStatement": true }],
   'dot-notation': ['off'],
+  'sort-keys': ['off'],
 }
 
 module.exports = {
