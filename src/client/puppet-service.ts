@@ -58,6 +58,7 @@ import {
 import {
   envVars,
   log,
+  NO_LOG_EVENTS,
   VERSION,
 }                       from '../config.js'
 import {
@@ -265,7 +266,9 @@ class PuppetService extends PUPPET.Puppet {
     const type    = event.getType()
     const payload = event.getPayload()
 
-    log.info('EventStreamManager', `received ${EventTypeRev[type]} on ${new Date().toString()}`)
+    if (!NO_LOG_EVENTS.includes(type)) {
+      log.info('PuppetService', `received grpc event ${EventTypeRev[type]} on ${new Date().toString()}, content: ${JSON.stringify(payload)}`)
+    }
 
     log.silly('PuppetService',
       'onGrpcStreamEvent({type:%s(%s), payload:"%s"})',
@@ -1142,15 +1145,25 @@ class PuppetService extends PUPPET.Puppet {
   override async messageSendText (
     conversationId : string,
     text           : string,
-    mentionIdList? : string[],
+    options?       : PUPPET.types.MessageSendTextOptions,
   ): Promise<void | string> {
     log.verbose('PuppetService', 'messageSend(%s, %s)', conversationId, text)
-
+    let mentionIdList
+    let quoteId
+    if (Array.isArray(options)) {
+      mentionIdList = options
+    } else {
+      mentionIdList = options?.mentionIdList
+      quoteId = options?.quoteId
+    }
     const request = new grpcPuppet.MessageSendTextRequest()
     request.setConversationId(conversationId)
     request.setText(text)
     if (typeof mentionIdList !== 'undefined') {
       request.setMentionalIdsList(mentionIdList)
+    }
+    if (typeof quoteId !== 'undefined') {
+      request.setQuoteId(quoteId)
     }
 
     const response = await util.promisify(

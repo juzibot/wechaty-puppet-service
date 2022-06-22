@@ -953,8 +953,17 @@ function puppetImplementation (
         const conversationId = call.request.getConversationId()
         const text = call.request.getText()
         const mentionIdList = call.request.getMentionalIdsList()
+        const quoteId = call.request.getQuoteId()
 
-        const messageId = await puppet.messageSendText(conversationId, text, mentionIdList)
+        let messageId
+        if (!quoteId) {
+          messageId = await puppet.messageSendText(conversationId, text, mentionIdList)
+        } else {
+          messageId = await puppet.messageSendText(conversationId, text, {
+            mentionIdList,
+            quoteId,
+          })
+        }
 
         const response = new grpcPuppet.MessageSendTextResponse()
 
