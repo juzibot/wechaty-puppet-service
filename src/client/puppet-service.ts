@@ -801,12 +801,11 @@ class PuppetService extends PUPPET.Puppet {
 
     const locationPayload = response.getLocation()
     const payload: PUPPET.payloads.Location = {
-      accuracy  : 0,
-      address   : 'NOADDRESS',
-      latitude  : 0,
-      longitude : 0,
-      name      : 'NONAME',
-      ...locationPayload,
+      accuracy: locationPayload?.getAccuracy() || 0,
+      address: locationPayload?.getAddress() || 'No Address',
+      latitude: locationPayload?.getLatitude() || 0,
+      longitude: locationPayload?.getLongitude() || 0,
+      name: locationPayload?.getName() || 'No Name',
     }
 
     return payload
