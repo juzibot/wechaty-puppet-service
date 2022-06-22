@@ -24,7 +24,7 @@ import {
 
 import * as PUPPET from '@juzi/wechaty-puppet'
 
-import { log } from '../config.js'
+import { log, NO_LOG_EVENTS } from '../config.js'
 import {
   EventTypeRev,
 }                     from '../event-type-rev.js'
@@ -126,7 +126,9 @@ class EventStreamManager {
       JSON.stringify(obj),
     )
 
-    log.info('EventStreamManager', `emitting ${EventTypeRev[type]} on ${new Date().toString()}`)
+    if (!NO_LOG_EVENTS.includes(type)) {
+      log.info('EventStreamManager', `emiting grpc event ${EventTypeRev[type]} on ${new Date().toString()}, content: ${JSON.stringify(obj)}`)
+    }
 
     const response = new grpcPuppet.EventResponse()
 

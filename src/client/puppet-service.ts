@@ -58,6 +58,7 @@ import {
 import {
   envVars,
   log,
+  NO_LOG_EVENTS,
   VERSION,
 }                       from '../config.js'
 import {
@@ -265,7 +266,9 @@ class PuppetService extends PUPPET.Puppet {
     const type    = event.getType()
     const payload = event.getPayload()
 
-    log.info('EventStreamManager', `received ${EventTypeRev[type]} on ${new Date().toString()}`)
+    if (!NO_LOG_EVENTS.includes(type)) {
+      log.info('PuppetService', `received grpc event ${EventTypeRev[type]} on ${new Date().toString()}, content: ${JSON.stringify(payload)}`)
+    }
 
     log.silly('PuppetService',
       'onGrpcStreamEvent({type:%s(%s), payload:"%s"})',

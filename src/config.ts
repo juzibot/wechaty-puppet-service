@@ -7,6 +7,10 @@ import { packageJson } from './package-json.js'
 import * as rootEnvVars from './env-vars.js'
 import * as authEnvVars from './auth/env-vars.js'
 
+import {
+  puppet as grpcPuppet,
+} from '@juzi/wechaty-grpc'
+
 const VERSION = packageJson.version || '0.0.0'
 
 const envVars = {
@@ -22,6 +26,11 @@ const GRPC_OPTIONS = {
   // 'grpc.max_receive_message_length': 1024 * 1024 * 150,
   // 'grpc.max_send_message_length': 1024 * 1024 * 150,
 }
+
+export const NO_LOG_EVENTS: grpcPuppet.EventTypeMap[keyof grpcPuppet.EventTypeMap][] = [
+  grpcPuppet.EventType.EVENT_TYPE_HEARTBEAT,
+  grpcPuppet.EventType.EVENT_TYPE_DONG,
+]
 
 export {
   envVars,
