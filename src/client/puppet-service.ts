@@ -1059,6 +1059,23 @@ class PuppetService extends PUPPET.Puppet {
     }
   }
 
+  override async messagePreview (id: string): Promise<FileBoxInterface | undefined> {
+    log.verbose('PuppetService', 'messagePreview(%s)', id)
+
+    const request = new grpcPuppet.MessagePreviewRequest()
+    request.setId(id)
+    const response = await util.promisify(
+      this.grpcManager.client.messagePreview
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const jsonText = response.getFileBox()
+    if (jsonText) {
+      return this.FileBoxUuid.fromJSON(jsonText)
+    }
+    return undefined
+  }
+
   override async messageForward (
     conversationId: string,
     messageId: string,
