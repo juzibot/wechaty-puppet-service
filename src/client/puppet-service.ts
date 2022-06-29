@@ -32,7 +32,7 @@ import {
 import {
   puppet$,
   Duck as PuppetDuck,
-}                         from 'wechaty-redux'
+}                         from '@juzi/wechaty-redux'
 import {
   Ducks,
   // Bundle,

@@ -3,7 +3,7 @@
 import { test }  from 'tstest'
 import getPort from 'get-port'
 
-import { PuppetMock } from 'wechaty-puppet-mock'
+import { PuppetMock } from '@juzi/wechaty-puppet-mock'
 
 import { PuppetService } from './puppet-service.js'
 import { PuppetServer } from '../mod.js'

@@ -39,7 +39,7 @@ import type {
 }                       from 'redux'
 import {
   Duck as PuppetDuck,
-}                       from 'wechaty-redux'
+}                       from '@juzi/wechaty-redux'
 import { log }          from '@juzi/wechaty-puppet'
 
 const stateActive$ = (action$: Observable<AnyAction>) => action$.pipe(

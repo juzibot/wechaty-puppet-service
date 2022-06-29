@@ -61,14 +61,14 @@
     "temp": "^0.9.4",
     "typed-emitter": "^1.5.0-from-event",
     "utility-types": "^3.10.0",
-    "wechaty-puppet-mock": "^1.18.2",
+    "@juzi/wechaty-puppet-mock": "^1.0.1",
     "why-is-node-running": "^2.2.1"
   },
   "peerDependencies": {
-    "@juzi/wechaty-puppet": "1.0.4"
+    "@juzi/wechaty-puppet": "1.0.6"
   },
   "dependencies": {
-    "@juzi/wechaty-grpc": "1.0.4",
+    "@juzi/wechaty-grpc": "1.0.6",
     "clone-class": "^1.1.1",
     "ducks": "^1.0.2",
     "file-box": "^1.5.5",
@@ -79,7 +79,7 @@
     "semver": "^7.3.5",
     "stronger-typed-streams": "^0.2.0",
     "uuid": "^8.3.2",
-    "wechaty-redux": "^1.20.2",
+    "@juzi/wechaty-redux": "^1.0.1",
     "wechaty-token": "^1.0.6"
   },
   "publishConfig": {

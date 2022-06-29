@@ -4,7 +4,7 @@ import { test } from 'tstest'
 import type {
   PuppetOptions,
 } from '@juzi/wechaty-puppet'
-import PuppetMock from 'wechaty-puppet-mock'
+import PuppetMock from '@juzi/wechaty-puppet-mock'
 import getPort from 'get-port'
 
 import PuppetService, {

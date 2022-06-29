@@ -9,11 +9,11 @@ import {
 import {
   throttleTime,
 }                     from 'rxjs/operators'
-import PuppetMock     from 'wechaty-puppet-mock'
+import PuppetMock     from '@juzi/wechaty-puppet-mock'
 
 import {
   Duck as PuppetDuck,
-}                     from 'wechaty-redux'
+}                     from '@juzi/wechaty-redux'
 
 import {
   epicRecoverReset$,

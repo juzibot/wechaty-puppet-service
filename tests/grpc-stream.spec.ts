@@ -21,7 +21,7 @@ import type {
 }                             from '@juzi/wechaty-puppet'
 import {
   PuppetMock,
-}                             from 'wechaty-puppet-mock'
+}                             from '@juzi/wechaty-puppet-mock'
 import getPort                from 'get-port'
 // import whyIsNodeRunning       from 'why-is-node-running'
 

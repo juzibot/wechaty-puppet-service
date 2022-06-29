@@ -5,7 +5,7 @@ import {
   PuppetOptions,
   log,
 }                 from '@juzi/wechaty-puppet'
-import PuppetMock from 'wechaty-puppet-mock'
+import PuppetMock from '@juzi/wechaty-puppet-mock'
 import getPort from 'get-port'
 
 import { GrpcManager }   from '../src/client/grpc-manager.js'
