@@ -21,7 +21,7 @@ import * as PUPPET from '@juzi/wechaty-puppet'
 
 import {
   PuppetMock,
-}                         from 'wechaty-puppet-mock'
+}                         from '@juzi/wechaty-puppet-mock'
 
 import {
   PuppetService,

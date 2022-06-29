@@ -94,6 +94,20 @@ function puppetImplementation (
 
   const puppetServerImpl: grpcPuppet.IPuppetServer = {
 
+    currentUser: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'currentUser()')
+      void call
+
+      try {
+        const currentUser = puppet.currentUserId
+        const response = new grpcPuppet.CurrentUserResponse()
+        response.setUserId(currentUser)
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('currentUser', e, callback)
+      }
+    },
+
     contactAlias: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'contactAlias()')
 
@@ -778,6 +792,26 @@ function puppetImplementation (
 
       } catch (e) {
         return grpcError('messageRecall', e, callback)
+      }
+    },
+
+    messagePreview: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'messagePreview()')
+
+      try {
+        const id = call.request.getId()
+
+        const fileBox = await puppet.messagePreview(id)
+        const response = new grpcPuppet.MessagePreviewResponse()
+        if (fileBox) {
+          const serializedFileBox = await serializeFileBox(fileBox)
+          response.setFileBox(serializedFileBox)
+        }
+
+        return callback(null, response)
+
+      } catch (e) {
+        return grpcError('messageFile', e, callback)
       }
     },
 

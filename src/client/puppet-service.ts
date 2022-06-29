@@ -32,7 +32,7 @@ import {
 import {
   puppet$,
   Duck as PuppetDuck,
-}                         from 'wechaty-redux'
+}                         from '@juzi/wechaty-redux'
 import {
   Ducks,
   // Bundle,
@@ -1057,6 +1057,23 @@ class PuppetService extends PUPPET.Puppet {
       const fileBox = await unpackFileBoxFromPb(pbStream)
       return fileBox
     }
+  }
+
+  override async messagePreview (id: string): Promise<FileBoxInterface | undefined> {
+    log.verbose('PuppetService', 'messagePreview(%s)', id)
+
+    const request = new grpcPuppet.MessagePreviewRequest()
+    request.setId(id)
+    const response = await util.promisify(
+      this.grpcManager.client.messagePreview
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const jsonText = response.getFileBox()
+    if (jsonText) {
+      return this.FileBoxUuid.fromJSON(jsonText)
+    }
+    return undefined
   }
 
   override async messageForward (
