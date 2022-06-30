@@ -770,6 +770,7 @@ function puppetImplementation (
          */
         response.setListenerId(payload.listenerId || payload.toId || '')
         response.setType(payload.type as grpcPuppet.MessageTypeMap[keyof grpcPuppet.MessageTypeMap])
+        response.setQuoteId(payload.quoteId || '')
 
         return callback(null, response)
 
