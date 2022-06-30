@@ -689,7 +689,8 @@ class PuppetService extends PUPPET.Puppet {
        * `weixin` is deprecated, will be removed after Dec 31, 2022
        * use `handle` instead.
        */
-      weixin      : response.getWeixin(),
+      weixin        : response.getWeixin(),
+      additionalInfo: response.getAdditionalInfo(),
     }
 
     await this._payloadStore.contact?.set(id, payload)
@@ -1380,13 +1381,14 @@ class PuppetService extends PUPPET.Puppet {
     )(request)
 
     const payload: PUPPET.payloads.Room = {
-      adminIdList  : response.getAdminIdsList(),
-      avatar       : response.getAvatar(),
-      handle       : response.getHandle(),
-      id           : response.getId(),
-      memberIdList : response.getMemberIdsList(),
-      ownerId      : response.getOwnerId(),
-      topic        : response.getTopic(),
+      adminIdList   : response.getAdminIdsList(),
+      avatar        : response.getAvatar(),
+      handle        : response.getHandle(),
+      id            : response.getId(),
+      memberIdList  : response.getMemberIdsList(),
+      ownerId       : response.getOwnerId(),
+      topic         : response.getTopic(),
+      additionalInfo: response.getAdditionalInfo(),
     }
 
     await this._payloadStore.room?.set(id, payload)
@@ -1598,11 +1600,12 @@ class PuppetService extends PUPPET.Puppet {
     )(request)
 
     const payload: PUPPET.payloads.RoomMember = {
-      avatar    : response.getAvatar(),
-      id        : response.getId(),
-      inviterId : response.getInviterId(),
-      name      : response.getName(),
-      roomAlias : response.getRoomAlias(),
+      avatar        : response.getAvatar(),
+      id            : response.getId(),
+      inviterId     : response.getInviterId(),
+      name          : response.getName(),
+      roomAlias     : response.getRoomAlias(),
+      additionalInfo: response.getAdditionalInfo(),
     }
 
     await this._payloadStore.roomMember?.set(roomId, {

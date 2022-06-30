@@ -255,6 +255,7 @@ function puppetImplementation (
         response.setCorporation(payload.corporation || '')
         response.setTitle(payload.title || '')
         response.setDescription(payload.description || '')
+        response.setAdditionalInfo(payload.additionalInfo || '')
 
         return callback(null, response)
       } catch (e) {
@@ -1349,6 +1350,7 @@ function puppetImplementation (
         response.setInviterId(payload.inviterId || '')
         response.setName(payload.name)
         response.setRoomAlias(payload.roomAlias || '')
+        response.setAdditionalInfo(payload.additionalInfo || '')
 
         return callback(null, response)
 
@@ -1373,6 +1375,7 @@ function puppetImplementation (
         response.setMemberIdsList(payload.memberIdList)
         response.setOwnerId(payload.ownerId || '')
         response.setTopic(payload.topic)
+        response.setAdditionalInfo(payload.additionalInfo || '')
 
         return callback(null, response)
 
