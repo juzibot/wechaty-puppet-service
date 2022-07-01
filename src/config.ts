@@ -30,6 +30,7 @@ const GRPC_OPTIONS = {
 export const NO_LOG_EVENTS: grpcPuppet.EventTypeMap[keyof grpcPuppet.EventTypeMap][] = [
   grpcPuppet.EventType.EVENT_TYPE_HEARTBEAT,
   grpcPuppet.EventType.EVENT_TYPE_DONG,
+  grpcPuppet.EventType.EVENT_TYPE_DIRTY,
 ]
 
 export {
