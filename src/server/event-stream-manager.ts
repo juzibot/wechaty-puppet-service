@@ -214,7 +214,7 @@ class EventStreamManager {
           const listener = (payload: PUPPET.payloads.EventLogout) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_LOGOUT, payload)
           this.puppet.on('logout', listener)
           const off = () => this.puppet.off('logout', listener)
-          offCallbackList.push(off)
+          this.offCallbackList.push(off)
           break
         }
         case 'message': {
