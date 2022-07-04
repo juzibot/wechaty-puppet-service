@@ -376,8 +376,9 @@ class EventStreamManager {
   }
 
   removePuppetListeners () {
-    for (const func of this.offCallbackList) {
-      func()
+    while (this.offCallbackList.length > 0) {
+      const func = this.offCallbackList.pop()
+      func && func()
     }
   }
 
