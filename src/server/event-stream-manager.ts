@@ -34,6 +34,7 @@ class EventStreamManager {
   protected eventStream: undefined | grpc.ServerWritableStream<grpcPuppet.EventRequest, grpcPuppet.EventResponse>
 
   private puppetListening = false
+  private offCallbackList: (() => void)[] = []
 
   constructor (
     public puppet: PUPPET.impls.PuppetInterface,
@@ -53,10 +54,14 @@ class EventStreamManager {
     if (this.eventStream) {
       throw new Error('can not set twice')
     }
+
+    // clear all listeners before load new ones
+    this.removePuppetListeners()
+
     this.eventStream = stream
 
-    const removeAllListeners = this.connectPuppetEventToStreamingCall()
-    this.onStreamingCallEnd(removeAllListeners)
+    this.connectPuppetEventToStreamingCall()
+    this.onStreamingCallEnd()
 
     /**
      * Huan(202108):
@@ -112,6 +117,7 @@ class EventStreamManager {
       throw new Error('no this.eventStream')
     }
 
+    this.removePuppetListeners()
     this.eventStream.end()
     this.eventStream = undefined
   }
@@ -150,18 +156,8 @@ class EventStreamManager {
     }
   }
 
-  public connectPuppetEventToStreamingCall (): () => void {
+  public connectPuppetEventToStreamingCall () {
     log.verbose('EventStreamManager', 'connectPuppetEventToStreamingCall() for %s', this.puppet)
-
-    const offCallbackList = [] as (() => void)[]
-    const offAll = () => {
-      log.verbose('EventStreamManager',
-        'connectPuppetEventToStreamingCall() offAll() %s callbacks',
-        offCallbackList.length,
-      )
-      offCallbackList.forEach(off => off())
-      this.puppetListening = false
-    }
 
     const eventNameList: PUPPET.types.PuppetEventName[] = Object.keys(PUPPET.types.PUPPET_EVENT_DICT) as PUPPET.types.PuppetEventName[]
     for (const eventName of eventNameList) {
@@ -176,42 +172,42 @@ class EventStreamManager {
           const listener = (payload: PUPPET.payloads.EventDong) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_DONG, payload)
           this.puppet.on('dong', listener)
           const off = () => this.puppet.off('dong', listener)
-          offCallbackList.push(off)
+          this.offCallbackList.push(off)
           break
         }
         case 'dirty': {
           const listener = (payload: PUPPET.payloads.EventDirty) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_DIRTY, payload)
           this.puppet.on('dirty', listener)
           const off = () => this.puppet.off('dirty', listener)
-          offCallbackList.push(off)
+          this.offCallbackList.push(off)
           break
         }
         case 'error': {
           const listener = (payload: PUPPET.payloads.EventError) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_ERROR, payload)
           this.puppet.on('error', listener)
           const off = () => this.puppet.off('error', listener)
-          offCallbackList.push(off)
+          this.offCallbackList.push(off)
           break
         }
         case 'heartbeat': {
           const listener = (payload: PUPPET.payloads.EventHeartbeat) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_HEARTBEAT, payload)
           this.puppet.on('heartbeat', listener)
           const off = () => this.puppet.off('heartbeat', listener)
-          offCallbackList.push(off)
+          this.offCallbackList.push(off)
           break
         }
         case 'friendship': {
           const listener = (payload: PUPPET.payloads.EventFriendship) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_FRIENDSHIP, payload)
           this.puppet.on('friendship', listener)
           const off = () => this.puppet.off('friendship', listener)
-          offCallbackList.push(off)
+          this.offCallbackList.push(off)
           break
         }
         case 'login': {
           const listener = (payload: PUPPET.payloads.EventLogin) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_LOGIN, payload)
           this.puppet.on('login', listener)
           const off = () => this.puppet.off('login', listener)
-          offCallbackList.push(off)
+          this.offCallbackList.push(off)
           break
         }
         case 'logout': {
@@ -225,56 +221,56 @@ class EventStreamManager {
           const listener = (payload: PUPPET.payloads.EventMessage) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_MESSAGE, payload)
           this.puppet.on('message', listener)
           const off = () => this.puppet.off('message', listener)
-          offCallbackList.push(off)
+          this.offCallbackList.push(off)
           break
         }
         case 'post': {
           const listener = (payload: PUPPET.payloads.EventPost) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_POST, payload)
           this.puppet.on('post', listener)
           const off = () => this.puppet.off('post', listener)
-          offCallbackList.push(off)
+          this.offCallbackList.push(off)
           break
         }
         case 'ready': {
           const listener = (payload: PUPPET.payloads.EventReady) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_READY, payload)
           this.puppet.on('ready', listener)
           const off = () => this.puppet.off('ready', listener)
-          offCallbackList.push(off)
+          this.offCallbackList.push(off)
           break
         }
         case 'room-invite': {
           const listener = (payload: PUPPET.payloads.EventRoomInvite) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_ROOM_INVITE, payload)
           this.puppet.on('room-invite', listener)
           const off = () => this.puppet.off('room-invite', listener)
-          offCallbackList.push(off)
+          this.offCallbackList.push(off)
           break
         }
         case 'room-join': {
           const listener = (payload: PUPPET.payloads.EventRoomJoin) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_ROOM_JOIN, payload)
           this.puppet.on('room-join', listener)
           const off = () => this.puppet.off('room-join', listener)
-          offCallbackList.push(off)
+          this.offCallbackList.push(off)
           break
         }
         case 'room-leave': {
           const listener = (payload: PUPPET.payloads.EventRoomLeave) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_ROOM_LEAVE, payload)
           this.puppet.on('room-leave', listener)
           const off = () => this.puppet.off('room-leave', listener)
-          offCallbackList.push(off)
+          this.offCallbackList.push(off)
           break
         }
         case 'room-topic': {
           const listener = (payload: PUPPET.payloads.EventRoomTopic) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_ROOM_TOPIC, payload)
           this.puppet.on('room-topic', listener)
           const off = () => this.puppet.off('room-topic', listener)
-          offCallbackList.push(off)
+          this.offCallbackList.push(off)
           break
         }
         case 'scan': {
           const listener = (payload: PUPPET.payloads.EventScan) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_SCAN, payload)
           this.puppet.on('scan', listener)
           const off = () => this.puppet.off('scan', listener)
-          offCallbackList.push(off)
+          this.offCallbackList.push(off)
           break
         }
         case 'reset':
@@ -288,17 +284,14 @@ class EventStreamManager {
     }
 
     this.puppetListening = true
-    return offAll
   }
 
   /**
    * Detect if the streaming call was gone (GRPC disconnects)
    *  https://github.com/grpc/grpc/issues/8117#issuecomment-362198092
    */
-  private onStreamingCallEnd (
-    removePuppetListeners: () => void,
-  ): void {
-    log.verbose('EventStreamManager', 'onStreamingCallEnd(callback)')
+  private onStreamingCallEnd () {
+    log.verbose('EventStreamManager', 'onStreamingCallEnd()')
 
     if (!this.eventStream) {
       throw new Error('no this.eventStream found')
@@ -324,7 +317,7 @@ class EventStreamManager {
       )
 
       if (this.puppetListening) {
-        removePuppetListeners()
+        this.removePuppetListeners()
       }
       if (this.eventStream) {
         this.eventStream = undefined
@@ -336,7 +329,7 @@ class EventStreamManager {
     this.eventStream.on('error', err => {
       log.verbose('EventStreamManager', 'this.onStreamingCallEnd() this.eventStream.on(error) fired: %s', err)
       if (this.puppetListening) {
-        removePuppetListeners()
+        this.removePuppetListeners()
       }
       if (this.eventStream) {
         this.eventStream = undefined
@@ -348,7 +341,7 @@ class EventStreamManager {
     this.eventStream.on('finish', () => {
       log.verbose('EventStreamManager', 'this.onStreamingCallEnd() this.eventStream.on(finish) fired')
       if (this.puppetListening) {
-        removePuppetListeners()
+        this.removePuppetListeners()
       }
       if (this.eventStream) {
         this.eventStream = undefined
@@ -360,7 +353,7 @@ class EventStreamManager {
     this.eventStream.on('end', () => {
       log.verbose('EventStreamManager', 'this.onStreamingCallEnd() this.eventStream.on(end) fired')
       if (this.puppetListening) {
-        removePuppetListeners()
+        this.removePuppetListeners()
       }
       if (this.eventStream) {
         this.eventStream = undefined
@@ -372,7 +365,7 @@ class EventStreamManager {
     this.eventStream.on('close', () => {
       log.verbose('EventStreamManager', 'this.onStreamingCallEnd() this.eventStream.on(close) fired')
       if (this.puppetListening) {
-        removePuppetListeners()
+        this.removePuppetListeners()
       }
       if (this.eventStream) {
         this.eventStream = undefined
@@ -380,6 +373,12 @@ class EventStreamManager {
         log.warn('EventStreamManager', 'this.onStreamingCallEnd() this.eventStream.on(close) eventStream is undefined')
       }
     })
+  }
+
+  removePuppetListeners () {
+    for (const func of this.offCallbackList) {
+      func()
+    }
   }
 
 }
