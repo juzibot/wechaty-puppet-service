@@ -921,12 +921,14 @@ class PuppetService extends PUPPET.Puppet {
      */
     request.setMiniProgramDeprecated(JSON.stringify(miniProgramPayload))
 
+    log.info('PuppetService', `messageSendMiniProgram(${conversationId}, ${miniProgramPayload.description}) about to call grpc`)
     const response = await util.promisify(
       this.grpcManager.client.messageSendMiniProgram
         .bind(this.grpcManager.client),
     )(request)
 
     const messageId = response.getId()
+    log.info('PuppetService', `messageSendMiniProgram(${conversationId}, ${miniProgramPayload.description}) grpc called, messageId: ${messageId}`)
 
     if (messageId) {
       return messageId
@@ -961,12 +963,14 @@ class PuppetService extends PUPPET.Puppet {
     pbLocationPayload.setName(locationPayload.name)
     request.setLocation(pbLocationPayload)
 
+    log.info('PuppetService', `messageSendLocation(${conversationId}, ${locationPayload.name}) about to call grpc`)
     const response = await util.promisify(
       this.grpcManager.client.messageSendLocation
         .bind(this.grpcManager.client),
     )(request)
 
     const id = response.getId()
+    log.info('PuppetService', `messageSendMiniProgram(${conversationId}, ${locationPayload.name}) grpc called, messageId: ${id}`)
 
     if (id) {
       return id
@@ -993,12 +997,14 @@ class PuppetService extends PUPPET.Puppet {
     if (channelPayload.url) { pbChannelPayload.setUrl(channelPayload.url) }
     request.setChannel(pbChannelPayload)
 
+    log.info('PuppetService', `messageSendChannel(${conversationId}, ${channelPayload.desc}) about to call grpc`)
     const response = await util.promisify(
       this.grpcManager.client.messageSendChannel
         .bind(this.grpcManager.client),
     )(request)
 
     const messageId = response.getId()
+    log.info('PuppetService', `messageSendChannel(${conversationId}, ${channelPayload.desc}) grpc called, messageId: ${messageId}`)
 
     if (messageId) {
       return messageId
@@ -1087,12 +1093,14 @@ class PuppetService extends PUPPET.Puppet {
     request.setConversationId(conversationId)
     request.setMessageId(messageId)
 
+    log.info('PuppetService', `messageForward(${conversationId}, ${messageId}) about to call grpc`)
     const response = await util.promisify(
       this.grpcManager.client.messageForward
         .bind(this.grpcManager.client),
     )(request)
 
     const forwardedMessageId = response.getId()
+    log.info('PuppetService', `messageForward(${conversationId}, ${messageId}) grpc called, messageId: ${forwardedMessageId}`)
 
     if (forwardedMessageId) {
       return forwardedMessageId
@@ -1185,12 +1193,14 @@ class PuppetService extends PUPPET.Puppet {
       request.setQuoteId(quoteId)
     }
 
+    log.info('PuppetService', `messageSend(${conversationId}, ${text}) about to call grpc`)
     const response = await util.promisify(
       this.grpcManager.client.messageSendText
         .bind(this.grpcManager.client),
     )(request)
 
     const messageId = response.getId()
+    log.info('PuppetService', `messageSend(${conversationId}, ${text}) grpc called, messageId: ${messageId}`)
 
     if (messageId) {
       return messageId
@@ -1221,12 +1231,14 @@ class PuppetService extends PUPPET.Puppet {
       const serializedFileBox = await this.serializeFileBox(fileBox)
       request.setFileBox(serializedFileBox)
 
+      log.info('PuppetService', `messageSendFile(${conversationId}, ${fileBox}) about to call grpc`)
       const response = await util.promisify(
         this.grpcManager.client.messageSendFile
           .bind(this.grpcManager.client),
       )(request)
 
       const messageId = response.getId()
+      log.info('PuppetService', `messageSendFile(${conversationId}, ${fileBox}) grpc called, messageId: ${messageId}`)
 
       if (messageId) {
         return messageId
@@ -1265,12 +1277,14 @@ class PuppetService extends PUPPET.Puppet {
     request.setConversationId(conversationId)
     request.setContactId(contactId)
 
+    log.info('PuppetService', `messageSendContact(${conversationId}, ${contactId}) about to call grpc`)
     const response = await util.promisify(
       this.grpcManager.client.messageSendContact
         .bind(this.grpcManager.client),
     )(request)
 
     const messageId = response.getId()
+    log.info('PuppetService', `messageSendContact(${conversationId}, ${contactId}) grpc called, messageId: ${messageId}`)
 
     if (messageId) {
       return messageId
@@ -1307,12 +1321,14 @@ class PuppetService extends PUPPET.Puppet {
     // Deprecated: will be removed after Dec 31, 2022
     request.setUrlLinkDeprecated(JSON.stringify(urlLinkPayload))
 
+    log.info('PuppetService', `messageSendUrl(${conversationId}, ${urlLinkPayload}) about to call grpc`)
     const response = await util.promisify(
       this.grpcManager.client.messageSendUrl
         .bind(this.grpcManager.client),
     )(request)
 
     const messageId = response.getId()
+    log.info('PuppetService', `messageSendUrl(${conversationId}, ${urlLinkPayload}) grpc called, messageId: ${messageId}`)
 
     if (messageId) {
       return messageId
