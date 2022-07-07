@@ -1004,7 +1004,7 @@ class PuppetService extends PUPPET.Puppet {
     )(request)
 
     const messageId = response.getId()
-    log.info('PuppetService', `messageSendChannel(${conversationId}, ${channelPayload.desc}) grpc called, messageId: ${id}`)
+    log.info('PuppetService', `messageSendChannel(${conversationId}, ${channelPayload.desc}) grpc called, messageId: ${messageId}`)
 
     if (messageId) {
       return messageId
