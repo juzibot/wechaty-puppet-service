@@ -47,6 +47,7 @@ import {
 import { log } from '../config.js'
 import { grpcError }          from './grpc-error.js'
 import { EventStreamManager } from './event-stream-manager.js'
+import { async } from 'rxjs'
 
 function puppetImplementation (
   puppet      : PUPPET.impls.PuppetInterface,
@@ -1587,6 +1588,186 @@ function puppetImplementation (
 
       } catch (e) {
         return grpcError('tagContactRemove', e, callback)
+      }
+    },
+
+    /**
+     *
+     * corp-tag section
+     *
+     */
+
+    corpTagContactTagAdd: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'corpTagContactTagAdd()')
+
+      try {
+        const corpTagGroupId = call.request.getCorpTagGroupId()
+        const corpTagId = call.request.getCorpTagId()
+        const contactId = call.request.getContactId()
+
+        await puppet.corpTagContactTagAdd(corpTagGroupId, corpTagId, contactId)
+
+        return callback(null, new grpcPuppet.CorpTagContactTagAddResponse())
+      } catch (e) {
+        return grpcError('corpTagContactTagAdd', e, callback)
+      }
+    },
+
+    corpTagContactTagRemove: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'corpTagContactTagRemove()')
+
+      try {
+        const corpTagGroupId = call.request.getCorpTagGroupId()
+        const corpTagId = call.request.getCorpTagId()
+        const contactId = call.request.getContactId()
+
+        await puppet.corpTagContactTagRemove(corpTagGroupId, corpTagId, contactId)
+
+        return callback(null, new grpcPuppet.CorpTagContactTagRemoveResponse())
+      } catch (e) {
+        return grpcError('corpTagContactTagRemove', e, callback)
+      }
+    },
+
+    corpTagGroupAdd: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'corpTagGroupAdd()')
+
+      try {
+        const corpTagGroupName = call.request.getCorpTagGroupName()
+
+        const result = await puppet.corpTagGroupAdd(corpTagGroupName)
+        const payload = new grpcPuppet.CorpTagGroupPayload()
+        const response = new grpcPuppet.CorpTagGroupAddResponse()
+
+        if (result) {
+          payload.setId(result.id)
+          payload.setName(result.name)
+          response.setPayload(payload)
+        }
+
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('corpTagGroupAdd', e, callback)
+      }
+    },
+
+    corpTagGroupDelete: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'corpTagGroupDelete()')
+
+      try {
+        const corpTagGroupId = call.request.getCorpTagGroupId()
+
+        await puppet.corpTagGroupDelete(corpTagGroupId)
+
+        return callback(null, new grpcPuppet.CorpTagGroupDeleteResponse())
+      } catch (e) {
+        return grpcError('corpTagGroupDelete', e, callback)
+      }
+    },
+
+    corpTagTagAdd: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'corpTagTagAdd()')
+
+      try {
+        const corpTagGroupId = call.request.getCorpTagGroupId()
+        const corpTagName = call.request.getCorpTagName()
+
+        const result = await puppet.corpTagTagAdd(corpTagGroupId, corpTagName)
+        const payload = new grpcPuppet.CorpTagPayload()
+        const response = new grpcPuppet.CorpTagTagAddResponse()
+
+        if (result) {
+          payload.setId(result.id)
+          payload.setName(result.name)
+          payload.setGroupId(result.groupId)
+          response.setPayload(payload)
+        }
+
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('corpTagTagAdd', e, callback)
+      }
+    },
+
+    corpTagTagDelete: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'corpTagTagDelete()')
+
+      try {
+        const corpTagGroupId = call.request.getCorpTagGroupId()
+        const corpTagId = call.request.getCorpTagId()
+
+        await puppet.corpTagTagDelete(corpTagGroupId, corpTagId)
+
+        return callback(null, new grpcPuppet.CorpTagTagDeleteResponse())
+      } catch (e) {
+        return grpcError('corpTagTagDelete', e, callback)
+      }
+    },
+
+    corpTagGroupList: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'corpTagGroupList()')
+      void call
+
+      try {
+        const result = await puppet.corpTagGroupList()
+        const payloads = result.map(corpTagGroup => {
+          const payload = new grpcPuppet.CorpTagGroupPayload()
+          payload.setId(corpTagGroup.id)
+          payload.setName(corpTagGroup.name)
+          return payload
+        })
+        const response = new grpcPuppet.CorpTagGroupListResponse()
+        response.setPayloadsList(payloads)
+
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('corpTagGroupList', e, callback)
+      }
+    },
+
+    corpTagTagList: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'corpTagTagList()')
+
+      try {
+        const corpTagGroupId = call.request.getCorpTagGroupId()
+
+        const result = await puppet.corpTagTagList(corpTagGroupId)
+        const payloads = result.map(corpTag => {
+          const payload = new grpcPuppet.CorpTagPayload()
+          payload.setId(corpTag.id)
+          payload.setName(corpTag.name)
+          payload.setGroupId(corpTag.groupId)
+          return payload
+        })
+        const response = new grpcPuppet.CorpTagTagListResponse()
+        response.setPayloadsList(payloads)
+
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('corpTagTagList', e, callback)
+      }
+    },
+
+    corpTagContactTagList: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'corpTagContactTagList()')
+
+      try {
+        const contactId = call.request.getContactId()
+
+        const result = await puppet.corpTagTagList(contactId)
+        const payloads = result.map(corpTag => {
+          const payload = new grpcPuppet.CorpTagPayload()
+          payload.setId(corpTag.id)
+          payload.setName(corpTag.name)
+          payload.setGroupId(corpTag.groupId)
+          return payload
+        })
+        const response = new grpcPuppet.CorpTagContactTagListResponse()
+        response.setPayloadsList(payloads)
+
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('corpTagContactTagList', e, callback)
       }
     },
 
