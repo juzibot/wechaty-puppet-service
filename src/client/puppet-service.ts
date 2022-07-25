@@ -1999,6 +1999,212 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   /**
+   *
+   * Tag
+   *
+   */
+
+  override async corpTagContactTagAdd (
+    corpTagGroupId: string,
+    corpTagId: string,
+    contactId: string,
+  ): Promise<void> {
+    log.verbose('PuppetService', 'corpTagContactTagAdd(%s, %s, %s)', corpTagGroupId, corpTagId, contactId)
+
+    const request = new grpcPuppet.CorpTagContactTagAddRequest()
+
+    request.setCorpTagGroupId(corpTagGroupId)
+    request.setCorpTagId(corpTagId)
+    request.setContactId(contactId)
+
+    await util.promisify(
+      this.grpcManager.client.corpTagContactTagAdd
+        .bind(this.grpcManager.client),
+    )(request)
+  }
+
+  override async corpTagContactTagRemove (
+    corpTagGroupId: string,
+    corpTagId: string,
+    contactId: string,
+  ): Promise<void> {
+    log.verbose('PuppetService', 'corpTagContactRemoveAdd(%s, %s, %s)', corpTagGroupId, corpTagId, contactId)
+
+    const request = new grpcPuppet.CorpTagContactTagRemoveRequest()
+
+    request.setCorpTagGroupId(corpTagGroupId)
+    request.setCorpTagId(corpTagId)
+    request.setContactId(contactId)
+
+    await util.promisify(
+      this.grpcManager.client.corpTagContactTagRemove
+        .bind(this.grpcManager.client),
+    )(request)
+  }
+
+  override async corpTagGroupAdd (
+    corpTagGroupName: string,
+  ): Promise<PUPPET.payloads.CorpTagGroup | void> {
+    log.verbose('PuppetService', 'corpTagGroupAdd(%s)', corpTagGroupName)
+
+    const request = new grpcPuppet.CorpTagGroupAddRequest()
+
+    request.setCorpTagGroupName(corpTagGroupName)
+
+    const result = await util.promisify(
+      this.grpcManager.client.corpTagGroupAdd
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const grpcPayload = result.getPayload()
+    const id = grpcPayload?.getId()
+    const name = grpcPayload?.getName()
+
+    if (id && name) {
+      const payload: PUPPET.payloads.CorpTagGroup = {
+        id,
+        name,
+      }
+      return payload
+    }
+
+  }
+
+  override async corpTagGroupDelete (
+    corpTagGroupId: string,
+  ): Promise<void> {
+    log.verbose('PuppetService', 'corpTagGroupDelete(%s)', corpTagGroupId)
+
+    const request = new grpcPuppet.CorpTagGroupDeleteRequest()
+
+    request.setCorpTagGroupId(corpTagGroupId)
+
+    await util.promisify(
+      this.grpcManager.client.corpTagGroupDelete
+        .bind(this.grpcManager.client),
+    )(request)
+
+  }
+
+  override async corpTagTagAdd (
+    corpTagGroupId: string,
+    corpTagName: string,
+  ): Promise<PUPPET.payloads.CorpTag | void> {
+    log.verbose('PuppetService', 'corpTagTagAdd(%s, %s)', corpTagGroupId, corpTagName)
+
+    const request = new grpcPuppet.CorpTagTagAddRequest()
+
+    request.setCorpTagGroupId(corpTagGroupId)
+    request.setCorpTagName(corpTagName)
+
+    const result = await util.promisify(
+      this.grpcManager.client.corpTagTagAdd
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const grpcPayload = result.getPayload()
+    const id = grpcPayload?.getId()
+    const name = grpcPayload?.getName()
+    const groupId = grpcPayload?.getGroupId()
+
+    if (id && name && groupId) {
+      const payload: PUPPET.payloads.CorpTag = {
+        id,
+        name,
+        groupId,
+      }
+      return payload
+    }
+
+  }
+
+  override async corpTagTagDelete (
+    corpTagGroupId: string,
+    corpTagId: string,
+  ): Promise<void> {
+    log.verbose('PuppetService', 'corpTagTagDelete(%s, %s)', corpTagGroupId, corpTagId)
+
+    const request = new grpcPuppet.CorpTagTagDeleteRequest()
+
+    request.setCorpTagGroupId(corpTagGroupId)
+    request.setCorpTagId(corpTagId)
+
+    await util.promisify(
+      this.grpcManager.client.corpTagTagDelete
+        .bind(this.grpcManager.client),
+    )(request)
+
+  }
+
+  override async corpTagGroupList (): Promise<PUPPET.payloads.CorpTagGroup[]> {
+    log.verbose('PuppetService', 'corpTagGroupList()')
+
+    const request = new grpcPuppet.CorpTagGroupListRequest()
+
+    const result = await util.promisify(
+      this.grpcManager.client.corpTagGroupList
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const grpcPayloads = result.getPayloadsList()
+    const payloads: PUPPET.payloads.CorpTagGroup[] = grpcPayloads.map(payload => {
+      return {
+        id: payload.getId(),
+        name: payload.getName(),
+      } as PUPPET.payloads.CorpTagGroup
+    })
+    return payloads
+  }
+
+  override async corpTagTagList (
+    corpTagGroupId: string,
+  ): Promise<PUPPET.payloads.CorpTag[]> {
+    log.verbose('PuppetService', 'corpTagTagList(%s)', corpTagGroupId)
+
+    const request = new grpcPuppet.CorpTagTagListRequest()
+    request.setCorpTagGroupId(corpTagGroupId)
+
+    const result = await util.promisify(
+      this.grpcManager.client.corpTagTagList
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const grpcPayloads = result.getPayloadsList()
+    const payloads: PUPPET.payloads.CorpTag[] = grpcPayloads.map(payload => {
+      return {
+        id: payload.getId(),
+        name: payload.getName(),
+        groupId: payload.getGroupId(),
+      } as PUPPET.payloads.CorpTag
+    })
+    return payloads
+  }
+
+  override async corpTagContactTagList (
+    contactId: string,
+  ): Promise<PUPPET.payloads.CorpTag[]> {
+    log.verbose('PuppetService', 'corpTagContactTagList(%s)', contactId)
+
+    const request = new grpcPuppet.CorpTagContactTagListRequest()
+    request.setContactId(contactId)
+
+    const result = await util.promisify(
+      this.grpcManager.client.corpTagContactTagList
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const grpcPayloads = result.getPayloadsList()
+    const payloads: PUPPET.payloads.CorpTag[] = grpcPayloads.map(payload => {
+      return {
+        id: payload.getId(),
+        name: payload.getName(),
+        groupId: payload.getGroupId(),
+      } as PUPPET.payloads.CorpTag
+    })
+    return payloads
+  }
+
+  /**
    * @deprecated Will be removed in v2.0
    */
   private async messageSendFileStream (
