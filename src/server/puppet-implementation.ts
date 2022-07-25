@@ -47,7 +47,6 @@ import {
 import { log } from '../config.js'
 import { grpcError }          from './grpc-error.js'
 import { EventStreamManager } from './event-stream-manager.js'
-import { async } from 'rxjs'
 
 function puppetImplementation (
   puppet      : PUPPET.impls.PuppetInterface,
