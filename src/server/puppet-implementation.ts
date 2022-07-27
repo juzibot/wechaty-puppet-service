@@ -1646,7 +1646,7 @@ function puppetImplementation (
           }
           return payload
         })
-        const response = new grpcPuppet.TagTagListResponse()
+        const response = new grpcPuppet.TagGroupTagListResponse()
         response.setPayloadsList(payloads)
 
         return callback(null, response)
