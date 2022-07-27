@@ -2031,7 +2031,7 @@ class PuppetService extends PUPPET.Puppet {
     const groupId = grpcPayload?.getGroupId()
     const type = grpcPayload?.getType()
 
-    if (id && name && type) {
+    if (id && name && (typeof type !== 'undefined')) {
       const payload: PUPPET.payloads.Tag = {
         id,
         name,
