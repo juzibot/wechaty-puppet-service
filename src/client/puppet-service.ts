@@ -1947,7 +1947,7 @@ class PuppetService extends PUPPET.Puppet {
     tagId: string,
     contactId: string,
   ): Promise<void> {
-    log.verbose('PuppetService', 'tagContactRemoveAdd(%s, %s, %s)', tagGroupId, tagId, contactId)
+    log.verbose('PuppetService', 'tagContactTagRemove(%s, %s, %s)', tagGroupId, tagId, contactId)
 
     const request = new grpcPuppet.TagContactTagRemoveRequest()
 
