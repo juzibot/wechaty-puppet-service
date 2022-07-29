@@ -1939,7 +1939,7 @@ class PuppetService extends PUPPET.Puppet {
 
     request.setTagsList(tags.map(t => {
       const tag = new grpcPuppet.TagIdentifier()
-      tag.setGroupId(t.groupId || '')
+      t.groupId && tag.setGroupId(t.groupId)
       tag.setId(t.id)
       return tag
     }))
@@ -2056,7 +2056,7 @@ class PuppetService extends PUPPET.Puppet {
   override async tagTagDelete (
     tag: TagIdentifier,
   ): Promise<void> {
-    log.verbose('PuppetService', 'tagTagDelete(%s)', tag)
+    log.verbose('PuppetService', 'tagTagDelete(%s)', JSON.stringify(tag))
 
     const request = new grpcPuppet.TagTagDeleteRequest()
     const tagProb = new grpcPuppet.TagIdentifier()
@@ -2172,7 +2172,7 @@ class PuppetService extends PUPPET.Puppet {
   override async tagTagContactList (
     tag: TagIdentifier,
   ): Promise<string[]> {
-    log.verbose('PuppetService', 'tagTagContactList(%s)', tag)
+    log.verbose('PuppetService', 'tagTagContactList(%s)', JSON.stringify(tag))
 
     const request = new grpcPuppet.TagTagContactListRequest()
     const tagProb = new grpcPuppet.TagIdentifier()
