@@ -1933,7 +1933,7 @@ class PuppetService extends PUPPET.Puppet {
     tags: TagIdentifier[],
     contactIds: string[],
   ): Promise<void> {
-    log.verbose('PuppetService', 'tagContactTagAdd(%s, %s)', tags, contactIds)
+    log.verbose('PuppetService', 'tagContactTagAdd(%s, %s)', JSON.stringify(tags), contactIds)
 
     const request = new grpcPuppet.TagContactTagAddRequest()
 
@@ -1955,7 +1955,7 @@ class PuppetService extends PUPPET.Puppet {
     tags: TagIdentifier[],
     contactIds: string[],
   ): Promise<void> {
-    log.verbose('PuppetService', 'tagContactTagRemove(%s, %s)', tags, contactIds)
+    log.verbose('PuppetService', 'tagContactTagRemove(%s, %s)', JSON.stringify(tags), contactIds)
 
     const request = new grpcPuppet.TagContactTagRemoveRequest()
 
@@ -2021,7 +2021,7 @@ class PuppetService extends PUPPET.Puppet {
     tagName: string,
     tagGroupId?: string,
   ): Promise<PUPPET.payloads.Tag | void> {
-    log.verbose('PuppetService', 'tagTagAdd(%s, %s)', tagGroupId, tagName)
+    log.verbose('PuppetService', 'tagTagAdd(%s, %s)', tagName, tagGroupId)
 
     const request = new grpcPuppet.TagTagAddRequest()
 
