@@ -1613,10 +1613,10 @@ function puppetImplementation (
 
       try {
         const tagProb = call.request.getTag()
-        const tagId = tagProb?.getId()
-        const tagGroupId = tagProb?.getGroupId()
+        const id = tagProb?.getId()!
+        const groupId = tagProb?.getGroupId()
 
-        await puppet.tagTagDelete(tagId, tagGroupId)
+        await puppet.tagTagDelete({ id, groupId })
 
         return callback(null, new grpcPuppet.TagTagDeleteResponse())
       } catch (e) {
