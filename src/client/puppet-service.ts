@@ -68,6 +68,7 @@ import { packageJson }  from '../package-json.js'
 
 import { GrpcManager }  from './grpc-manager.js'
 import { PayloadStore } from './payload-store.js'
+import type { TagIdentifier } from '@juzi/wechaty-puppet/filters'
 
 export type PuppetServiceOptions = PUPPET.PuppetOptions & {
   authority?  : string
@@ -1432,13 +1433,20 @@ class PuppetService extends PUPPET.Puppet {
 
   override async roomDel (
     roomId    : string,
-    contactId : string,
+    contactIds : string | string[],
   ): Promise<void> {
-    log.verbose('PuppetService', 'roomDel(%s, %s)', roomId, contactId)
+    log.verbose('PuppetService', 'roomDel(%s, %s)', roomId, contactIds)
 
     const request = new grpcPuppet.RoomDelRequest()
     request.setId(roomId)
-    request.setContactId(contactId)
+    if (Array.isArray(contactIds)) {
+      request.setContactIdsList(contactIds)
+      if (contactIds.length === 1) {
+        request.setContactId(contactIds[0] as string)
+      }
+    } else {
+      request.setContactId(contactIds)
+    }
 
     await util.promisify(
       this.grpcManager.client.roomDel
@@ -1922,19 +1930,20 @@ class PuppetService extends PUPPET.Puppet {
    */
 
   override async tagContactTagAdd (
-    tagGroupId: string | undefined,
-    tagId: string,
-    contactId: string,
+    tags: TagIdentifier[],
+    contactIds: string[],
   ): Promise<void> {
-    log.verbose('PuppetService', 'tagContactTagAdd(%s, %s, %s)', tagGroupId, tagId, contactId)
+    log.verbose('PuppetService', 'tagContactTagAdd(%s, %s)', JSON.stringify(tags), contactIds)
 
     const request = new grpcPuppet.TagContactTagAddRequest()
 
-    if (typeof tagGroupId !== 'undefined') {
-      request.setTagGroupId(tagGroupId)
-    }
-    request.setTagId(tagId)
-    request.setContactId(contactId)
+    request.setTagsList(tags.map(t => {
+      const tag = new grpcPuppet.TagIdentifier()
+      t.groupId && tag.setGroupId(t.groupId)
+      tag.setId(t.id)
+      return tag
+    }))
+    request.setContactIdsList(contactIds)
 
     await util.promisify(
       this.grpcManager.client.tagContactTagAdd
@@ -1943,19 +1952,20 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   override async tagContactTagRemove (
-    tagGroupId: string | undefined,
-    tagId: string,
-    contactId: string,
+    tags: TagIdentifier[],
+    contactIds: string[],
   ): Promise<void> {
-    log.verbose('PuppetService', 'tagContactTagRemove(%s, %s, %s)', tagGroupId, tagId, contactId)
+    log.verbose('PuppetService', 'tagContactTagRemove(%s, %s)', JSON.stringify(tags), contactIds)
 
     const request = new grpcPuppet.TagContactTagRemoveRequest()
 
-    if (typeof tagGroupId !== 'undefined') {
-      request.setTagGroupId(tagGroupId)
-    }
-    request.setTagId(tagId)
-    request.setContactId(contactId)
+    request.setTagsList(tags.map(t => {
+      const tag = new grpcPuppet.TagIdentifier()
+      t.groupId && tag.setGroupId(t.groupId)
+      tag.setId(t.id)
+      return tag
+    }))
+    request.setContactIdsList(contactIds)
 
     await util.promisify(
       this.grpcManager.client.tagContactTagRemove
@@ -2008,10 +2018,10 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   override async tagTagAdd (
-    tagGroupId: string | undefined,
     tagName: string,
+    tagGroupId?: string,
   ): Promise<PUPPET.payloads.Tag | void> {
-    log.verbose('PuppetService', 'tagTagAdd(%s, %s)', tagGroupId, tagName)
+    log.verbose('PuppetService', 'tagTagAdd(%s, %s)', tagName, tagGroupId)
 
     const request = new grpcPuppet.TagTagAddRequest()
 
@@ -2044,17 +2054,18 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   override async tagTagDelete (
-    tagGroupId: string | undefined,
-    tagId: string,
+    tag: TagIdentifier,
   ): Promise<void> {
-    log.verbose('PuppetService', 'tagTagDelete(%s, %s)', tagGroupId, tagId)
+    log.verbose('PuppetService', 'tagTagDelete(%s)', JSON.stringify(tag))
 
     const request = new grpcPuppet.TagTagDeleteRequest()
+    const tagProb = new grpcPuppet.TagIdentifier()
 
-    if (typeof tagGroupId !== 'undefined') {
-      request.setTagGroupId(tagGroupId)
-    }
-    request.setTagId(tagId)
+    tag.groupId && tagProb.setGroupId(tag.groupId)
+    tagProb.setId(tag.id)
+    request.setTag(tagProb)
+
+    request.setTag(tagProb)
 
     await util.promisify(
       this.grpcManager.client.tagTagDelete
@@ -2084,7 +2095,7 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   override async tagGroupTagList (
-    tagGroupId: string | undefined,
+    tagGroupId?: string,
   ): Promise<PUPPET.payloads.Tag[]> {
     log.verbose('PuppetService', 'tagGroupTagList(%s)', tagGroupId)
 
@@ -2159,16 +2170,16 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   override async tagTagContactList (
-    tagGroupId: string | undefined,
-    tagId: string,
+    tag: TagIdentifier,
   ): Promise<string[]> {
-    log.verbose('PuppetService', 'tagTagContactList(%s, %s)', tagGroupId, tagId)
+    log.verbose('PuppetService', 'tagTagContactList(%s)', JSON.stringify(tag))
 
     const request = new grpcPuppet.TagTagContactListRequest()
-    if (typeof tagGroupId !== 'undefined') {
-      request.setTagGroupId(tagGroupId)
-    }
-    request.setTagId(tagId)
+    const tagProb = new grpcPuppet.TagIdentifier()
+
+    tag.groupId && tagProb.setGroupId(tag.groupId)
+    tagProb.setId(tag.id)
+    request.setTag(tagProb)
 
     const result = await util.promisify(
       this.grpcManager.client.tagTagContactList
