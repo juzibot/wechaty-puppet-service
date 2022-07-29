@@ -1211,10 +1211,10 @@ function puppetImplementation (
         const contactId = call.request.getContactId()
         const contactIds = call.request.getContactIdsList()
 
-        if (contactIds && contactIds.length > 1) {
+        if (contactIds.length > 1) {
           await puppet.roomDel(roomId, contactId)
         } else {
-          await puppet.roomDel(roomId, contactId || (contactIds && contactIds[0]) || '')
+          await puppet.roomDel(roomId, contactId || (contactIds[0]) || '')
         }
 
         return callback(null, new grpcPuppet.RoomDelResponse())

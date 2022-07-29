@@ -1445,7 +1445,7 @@ class PuppetService extends PUPPET.Puppet {
         request.setContactId(contactIds[0] as string)
       }
     } else {
-      request.setId(contactIds)
+      request.setContactId(contactIds)
     }
 
     await util.promisify(
