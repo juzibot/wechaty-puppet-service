@@ -12,6 +12,7 @@ import {
 } from '@juzi/wechaty-grpc'
 
 const VERSION = packageJson.version || '0.0.0'
+export const FOUR_PER_EM_SPACE = String.fromCharCode(0x2005)
 
 const envVars = {
   ...rootEnvVars,

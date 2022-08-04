@@ -57,6 +57,7 @@ import {
 }                       from '../file-box-helper/mod.js'
 import {
   envVars,
+  FOUR_PER_EM_SPACE,
   log,
   NO_LOG_EVENTS,
   VERSION,
@@ -347,6 +348,9 @@ class PuppetService extends PUPPET.Puppet {
         break
       case grpcPuppet.EventType.EVENT_TYPE_SCAN:
         this.emit('scan', JSON.parse(payload) as PUPPET.payloads.EventScan)
+        break
+      case grpcPuppet.EventType.EVENT_TYPE_TAG:
+        this.emit('tag', JSON.parse(payload) as PUPPET.payloads.EventTag)
         break
       case grpcPuppet.EventType.EVENT_TYPE_RESET:
         log.warn('PuppetService', 'onGrpcStreamEvent() got an EventType.EVENT_TYPE_RESET ?')
@@ -1975,7 +1979,7 @@ class PuppetService extends PUPPET.Puppet {
 
   override async tagGroupAdd (
     tagGroupName: string,
-  ): Promise<PUPPET.payloads.TagGroup | void> {
+  ): Promise<string | void> {
     log.verbose('PuppetService', 'tagGroupAdd(%s)', tagGroupName)
 
     const request = new grpcPuppet.TagGroupAddRequest()
@@ -1987,18 +1991,9 @@ class PuppetService extends PUPPET.Puppet {
         .bind(this.grpcManager.client),
     )(request)
 
-    const grpcPayload = result.getPayload()
-    const id = grpcPayload?.getId()
-    const name = grpcPayload?.getName()
+    const id = result.getTagGroupId()
 
-    if (id && name) {
-      const payload: PUPPET.payloads.TagGroup = {
-        id,
-        name,
-      }
-      return payload
-    }
-
+    return id
   }
 
   override async tagGroupDelete (
@@ -2020,7 +2015,7 @@ class PuppetService extends PUPPET.Puppet {
   override async tagTagAdd (
     tagName: string,
     tagGroupId?: string,
-  ): Promise<PUPPET.payloads.Tag | void> {
+  ): Promise<PUPPET.filters.TagIdentifier | void> {
     log.verbose('PuppetService', 'tagTagAdd(%s, %s)', tagName, tagGroupId)
 
     const request = new grpcPuppet.TagTagAddRequest()
@@ -2035,22 +2030,16 @@ class PuppetService extends PUPPET.Puppet {
         .bind(this.grpcManager.client),
     )(request)
 
-    const grpcPayload = result.getPayload()
-    const id = grpcPayload?.getId()
-    const name = grpcPayload?.getName()
-    const groupId = grpcPayload?.getGroupId()
-    const type = grpcPayload?.getType()
+    const tag = result.getTag()
+    const id = tag?.getId()
+    const groupId = tag?.getGroupId()
 
-    if (id && name && (typeof type !== 'undefined')) {
-      const payload: PUPPET.payloads.Tag = {
+    if (id) {
+      return {
         id,
-        name,
         groupId,
-        type,
       }
-      return payload
     }
-
   }
 
   override async tagTagDelete (
@@ -2074,7 +2063,7 @@ class PuppetService extends PUPPET.Puppet {
 
   }
 
-  override async tagGroupList (): Promise<PUPPET.payloads.TagGroup[]> {
+  override async tagGroupList (): Promise<string[]> {
     log.verbose('PuppetService', 'tagGroupList()')
 
     const request = new grpcPuppet.TagGroupListRequest()
@@ -2084,19 +2073,13 @@ class PuppetService extends PUPPET.Puppet {
         .bind(this.grpcManager.client),
     )(request)
 
-    const grpcPayloads = result.getPayloadsList()
-    const payloads: PUPPET.payloads.TagGroup[] = grpcPayloads.map(payload => {
-      return {
-        id: payload.getId(),
-        name: payload.getName(),
-      } as PUPPET.payloads.TagGroup
-    })
-    return payloads
+    const groupIds = result.getTagGroupIdsList()
+    return groupIds
   }
 
   override async tagGroupTagList (
     tagGroupId?: string,
-  ): Promise<PUPPET.payloads.Tag[]> {
+  ): Promise<PUPPET.filters.TagIdentifier[]> {
     log.verbose('PuppetService', 'tagGroupTagList(%s)', tagGroupId)
 
     const request = new grpcPuppet.TagGroupTagListRequest()
@@ -2109,20 +2092,18 @@ class PuppetService extends PUPPET.Puppet {
         .bind(this.grpcManager.client),
     )(request)
 
-    const grpcPayloads = result.getPayloadsList()
-    const payloads: PUPPET.payloads.Tag[] = grpcPayloads.map(payload => {
+    const tags = result.getTagsList()
+    const tagIdentifiers = tags.map(tag => {
       return {
-        id: payload.getId(),
-        name: payload.getName(),
-        groupId: payload.getGroupId(),
-        type: payload.getType(),
-      } as PUPPET.payloads.Tag
+        id: tag.getId(),
+        groupId: tag.getGroupId(),
+      }
     })
-    return payloads
+    return tagIdentifiers
   }
 
   override async tagTagList (
-  ): Promise<PUPPET.payloads.Tag[]> {
+  ): Promise<PUPPET.filters.TagIdentifier[]> {
     log.verbose('PuppetService', 'tagTagList()')
 
     const request = new grpcPuppet.TagTagListRequest()
@@ -2132,21 +2113,19 @@ class PuppetService extends PUPPET.Puppet {
         .bind(this.grpcManager.client),
     )(request)
 
-    const grpcPayloads = result.getPayloadsList()
-    const payloads: PUPPET.payloads.Tag[] = grpcPayloads.map(payload => {
+    const tags = result.getTagsList()
+    const tagIdentifiers = tags.map(tag => {
       return {
-        id: payload.getId(),
-        name: payload.getName(),
-        groupId: payload.getGroupId(),
-        type: payload.getType(),
-      } as PUPPET.payloads.Tag
+        id: tag.getId(),
+        groupId: tag.getGroupId(),
+      }
     })
-    return payloads
+    return tagIdentifiers
   }
 
   override async tagContactTagList (
     contactId: string,
-  ): Promise<PUPPET.payloads.Tag[]> {
+  ): Promise<PUPPET.filters.TagIdentifier[]> {
     log.verbose('PuppetService', 'tagContactTagList(%s)', contactId)
 
     const request = new grpcPuppet.TagContactTagListRequest()
@@ -2157,16 +2136,14 @@ class PuppetService extends PUPPET.Puppet {
         .bind(this.grpcManager.client),
     )(request)
 
-    const grpcPayloads = result.getPayloadsList()
-    const payloads: PUPPET.payloads.Tag[] = grpcPayloads.map(payload => {
+    const grpcPayloads = result.getTagsList()
+    const tags: PUPPET.filters.TagIdentifier[] = grpcPayloads.map(tag => {
       return {
-        id: payload.getId(),
-        name: payload.getName(),
-        groupId: payload.getGroupId(),
-        type: payload.getType(),
-      } as PUPPET.payloads.Tag
+        id: tag.getId(),
+        groupId: tag.getGroupId(),
+      }
     })
-    return payloads
+    return tags
   }
 
   override async tagTagContactList (
@@ -2186,8 +2163,82 @@ class PuppetService extends PUPPET.Puppet {
         .bind(this.grpcManager.client),
     )(request)
 
-    const payloads = result.getPayloadsList()
-    return payloads
+    const contactIds = result.getContactIdsList()
+    return contactIds
+  }
+
+  override async tagGroupPayloadPuppet (id: string): Promise<PUPPET.payloads.TagGroup> {
+    log.verbose('PuppetService', 'tagGroupPayload(%s)', id)
+
+    const cachedPayload = await this._payloadStore.tagGroup?.get(id)
+    if (cachedPayload) {
+      log.silly('PuppetService', 'tagGroupPayload(%s) cache HIT', id)
+      return cachedPayload
+    }
+
+    const request = new grpcPuppet.TagGroupPayloadRequest()
+    request.setGroupId(id)
+
+    const response = await util.promisify(
+      this.grpcManager.client.tagGroupPayload
+        .bind(this.grpcManager.client),
+    )(request)
+    const grpcPayload = response.getPayload()
+
+    if (!grpcPayload) {
+      throw new Error(`tagGroup ${id} got no payload!`)
+    }
+
+    const payload: PUPPET.payloads.TagGroup = {
+      id: grpcPayload.getId(),
+      name: grpcPayload.getName(),
+    }
+
+    await this._payloadStore.tagGroup?.set(id, payload)
+    log.silly('PuppetService', 'tagGroupPayloadPuppet(%s) cache SET', id)
+
+    return payload
+  }
+
+  override async tagPayloadPuppet (tag: PUPPET.filters.TagIdentifier): Promise<PUPPET.payloads.Tag> {
+    log.verbose('PuppetService', 'tagPayloadPuppet(%s)', JSON.stringify(tag))
+
+    const key = tag.groupId || '' + FOUR_PER_EM_SPACE + tag.id
+    const cachedPayload = await this._payloadStore.tag?.get(key)
+    if (cachedPayload) {
+      log.silly('PuppetService', 'tagPayloadPuppet(%s) cache HIT', tag)
+      return cachedPayload
+    }
+
+    const tagIdentifier = new grpcPuppet.TagIdentifier()
+    tagIdentifier.setId(tag.id)
+    if (tag.groupId) {
+      tagIdentifier.setGroupId(tag.groupId)
+    }
+    const request = new grpcPuppet.TagPayloadRequest()
+    request.setTag(tagIdentifier)
+
+    const response = await util.promisify(
+      this.grpcManager.client.tagPayload
+        .bind(this.grpcManager.client),
+    )(request)
+    const grpcPayload = response.getPayload()
+
+    if (!grpcPayload) {
+      throw new Error(`tag ${JSON.stringify(tag)} got no payload!`)
+    }
+
+    const payload: PUPPET.payloads.Tag = {
+      id: grpcPayload.getId(),
+      name: grpcPayload.getName(),
+      groupId: grpcPayload.getGroupId(),
+      type: grpcPayload.getType(),
+    }
+
+    await this._payloadStore.tag?.set(key, payload)
+    log.silly('PuppetService', 'tagPayloadPuppet(%s) cache SET', JSON.stringify(tag))
+
+    return payload
   }
 
   /**

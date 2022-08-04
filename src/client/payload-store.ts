@@ -49,6 +49,8 @@ class PayloadStore {
   public contact?    : FlashStore<string, PUPPET.payloads.Contact>
   public roomMember? : FlashStore<string, StoreRoomMemberPayload>
   public room?       : FlashStore<string, PUPPET.payloads.Room>
+  public tag?        : FlashStore<string, PUPPET.payloads.Tag>
+  public tagGroup?   : FlashStore<string, PUPPET.payloads.TagGroup>
 
   protected storeDir:   string
   protected accountId?: string
@@ -87,6 +89,8 @@ class PayloadStore {
     this.contact    = new FlashStore(path.join(accountDir, 'contact-payload'))
     this.roomMember = new FlashStore(path.join(accountDir, 'room-member-payload'))
     this.room       = new FlashStore(path.join(accountDir, 'room-payload'))
+    this.tag        = new FlashStore(path.join(accountDir, 'tag-payload'))
+    this.tagGroup   = new FlashStore(path.join(accountDir, 'tag-group'))
 
     /**
      * LRU
@@ -112,6 +116,8 @@ class PayloadStore {
     const contactStore    = this.contact
     const roomMemberStore = this.roomMember
     const roomStore       = this.room
+    const tagStore        = this.tag
+    const tagGroupStore   = this.tagGroup
     /**
       * Huan(202108): we must set all the instances of the store to underfined
       *   in the current event loop as soon as possible
@@ -120,6 +126,8 @@ class PayloadStore {
     this.contact    = undefined
     this.roomMember = undefined
     this.room       = undefined
+    this.tag        = undefined
+    this.tagGroup   = undefined
 
     // LRU
     // this.message    = undefined
@@ -130,6 +138,8 @@ class PayloadStore {
     await contactStore?.close()
     await roomMemberStore?.close()
     await roomStore?.close()
+    await tagStore?.close()
+    await tagGroupStore?.close()
   }
 
   async destroy (): Promise<void> {
