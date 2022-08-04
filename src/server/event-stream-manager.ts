@@ -273,6 +273,13 @@ class EventStreamManager {
           this.offCallbackList.push(off)
           break
         }
+        case 'tag': {
+          const listener = (payload: PUPPET.payloads.EventTag) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_TAG, payload)
+          this.puppet.on('tag', listener)
+          const off = () => this.puppet.off('tag', listener)
+          this.offCallbackList.push(off)
+          break
+        }
         case 'reset':
           // the `reset` event should be dealed internally, should not send out
           break
