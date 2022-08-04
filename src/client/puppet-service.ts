@@ -57,6 +57,7 @@ import {
 }                       from '../file-box-helper/mod.js'
 import {
   envVars,
+  FOUR_PER_EM_SPACE,
   log,
   NO_LOG_EVENTS,
   VERSION,
@@ -2161,6 +2162,80 @@ class PuppetService extends PUPPET.Puppet {
 
     const contactIds = result.getContactIdsList()
     return contactIds
+  }
+
+  override async tagGroupPayloadPuppet (id: string): Promise<PUPPET.payloads.TagGroup> {
+    log.verbose('PuppetService', 'tagGroupPayload(%s)', id)
+
+    const cachedPayload = await this._payloadStore.tagGroup?.get(id)
+    if (cachedPayload) {
+      log.silly('PuppetService', 'tagGroupPayload(%s) cache HIT', id)
+      return cachedPayload
+    }
+
+    const request = new grpcPuppet.TagGroupPayloadRequest()
+    request.setGroupId(id)
+
+    const response = await util.promisify(
+      this.grpcManager.client.tagGroupPayload
+        .bind(this.grpcManager.client),
+    )(request)
+    const grpcPayload = response.getPayload()
+
+    if (!grpcPayload) {
+      throw new Error(`tagGroup ${id} got no payload!`)
+    }
+
+    const payload: PUPPET.payloads.TagGroup = {
+      id: grpcPayload.getId(),
+      name: grpcPayload.getName(),
+    }
+
+    await this._payloadStore.tagGroup?.set(id, payload)
+    log.silly('PuppetService', 'tagGroupPayloadPuppet(%s) cache SET', id)
+
+    return payload
+  }
+
+  override async tagPayloadPuppet (tag: PUPPET.filters.TagIdentifier): Promise<PUPPET.payloads.Tag> {
+    log.verbose('PuppetService', 'tagPayloadPuppet(%s)', JSON.stringify(tag))
+
+    const key = tag.groupId || '' + FOUR_PER_EM_SPACE + tag.id
+    const cachedPayload = await this._payloadStore.tag?.get(key)
+    if (cachedPayload) {
+      log.silly('PuppetService', 'tagPayloadPuppet(%s) cache HIT', tag)
+      return cachedPayload
+    }
+
+    const tagIdentifier = new grpcPuppet.TagIdentifier()
+    tagIdentifier.setId(tag.id)
+    if (tag.groupId) {
+      tagIdentifier.setGroupId(tag.groupId)
+    }
+    const request = new grpcPuppet.TagPayloadRequest()
+    request.setTag(tagIdentifier)
+
+    const response = await util.promisify(
+      this.grpcManager.client.tagPayload
+        .bind(this.grpcManager.client),
+    )(request)
+    const grpcPayload = response.getPayload()
+
+    if (!grpcPayload) {
+      throw new Error(`tag ${JSON.stringify(tag)} got no payload!`)
+    }
+
+    const payload: PUPPET.payloads.Tag = {
+      id: grpcPayload.getId(),
+      name: grpcPayload.getName(),
+      groupId: grpcPayload.getGroupId(),
+      type: grpcPayload.getType(),
+    }
+
+    await this._payloadStore.tag?.set(key, payload)
+    log.silly('PuppetService', 'tagPayloadPuppet(%s) cache SET', JSON.stringify(tag))
+
+    return payload
   }
 
   /**
