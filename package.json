@@ -65,10 +65,10 @@
     "why-is-node-running": "^2.2.1"
   },
   "peerDependencies": {
-    "@juzi/wechaty-puppet": "^1.0.22"
+    "@juzi/wechaty-puppet": "^1.0.24"
   },
   "dependencies": {
-    "@juzi/wechaty-grpc": "^1.0.13",
+    "@juzi/wechaty-grpc": "^1.0.14",
     "@juzi/wechaty-redux": "^1.0.1",
     "clone-class": "^1.1.1",
     "ducks": "^1.0.2",
