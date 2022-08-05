@@ -1736,6 +1736,7 @@ function puppetImplementation (
         const payload = new grpcPuppet.TagGroupPayload()
         payload.setId(result.id)
         payload.setName(result.name)
+        payload.setType(result.type)
         response.setPayload(payload)
 
         return callback(null, response)
