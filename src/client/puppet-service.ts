@@ -444,6 +444,8 @@ class PuppetService extends PUPPET.Puppet {
       [PUPPET.types.Dirty.Post]:         async (_: string) => {},
       [PUPPET.types.Dirty.Room]:         async (id: string) => this._payloadStore.room?.delete(id),
       [PUPPET.types.Dirty.RoomMember]:   async (id: string) => this._payloadStore.roomMember?.delete(id),
+      [PUPPET.types.Dirty.Tag]:          async (key: string) => this._payloadStore.tag?.delete(key),
+      [PUPPET.types.Dirty.TagGroup]:     async (id: string) => this._payloadStore.tagGroup?.delete(id),
       [PUPPET.types.Dirty.Unspecified]:  async (id: string) => { throw new Error('Unspecified type with id: ' + id) },
     }
 
@@ -2192,6 +2194,7 @@ class PuppetService extends PUPPET.Puppet {
     const payload: PUPPET.payloads.TagGroup = {
       id: grpcPayload.getId(),
       name: grpcPayload.getName(),
+      type: grpcPayload.getType(),
     }
 
     await this._payloadStore.tagGroup?.set(id, payload)
