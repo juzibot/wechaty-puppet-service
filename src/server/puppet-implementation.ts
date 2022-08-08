@@ -1507,16 +1507,10 @@ function puppetImplementation (
       log.verbose('PuppetServiceImpl', 'tagContactTagAdd()')
 
       try {
-        const tagsProb = call.request.getTagsList()
+        const tagIds = call.request.getTagIdsList()
         const contactIds = call.request.getContactIdsList()
-        const tags = tagsProb.map(tagProb => {
-          return {
-            id: tagProb.getId(),
-            groupId: tagProb.getGroupId(),
-          }
-        })
 
-        await puppet.tagContactTagAdd(tags, contactIds)
+        await puppet.tagContactTagAdd(tagIds, contactIds)
 
         return callback(null, new grpcPuppet.TagContactTagAddResponse())
       } catch (e) {
@@ -1528,16 +1522,10 @@ function puppetImplementation (
       log.verbose('PuppetServiceImpl', 'tagContactTagRemove()')
 
       try {
-        const tagsProb = call.request.getTagsList()
+        const tagIds = call.request.getTagIdsList()
         const contactIds = call.request.getContactIdsList()
-        const tags = tagsProb.map(tagProb => {
-          return {
-            id: tagProb.getId(),
-            groupId: tagProb.getGroupId(),
-          }
-        })
 
-        await puppet.tagContactTagRemove(tags, contactIds)
+        await puppet.tagContactTagRemove(tagIds, contactIds)
 
         return callback(null, new grpcPuppet.TagContactTagRemoveResponse())
       } catch (e) {
@@ -1587,15 +1575,10 @@ function puppetImplementation (
         const tagName = call.request.getTagName()
 
         const result = await puppet.tagTagAdd(tagName, tagGroupId)
-        const tagIdentifier = new grpcPuppet.TagIdentifier()
         const response = new grpcPuppet.TagTagAddResponse()
 
         if (result) {
-          tagIdentifier.setId(result.id)
-          if (result.groupId) {
-            tagIdentifier.setGroupId(result.groupId)
-          }
-          response.setTag(tagIdentifier)
+          response.setTagId(result)
         }
 
         return callback(null, response)
@@ -1608,11 +1591,9 @@ function puppetImplementation (
       log.verbose('PuppetServiceImpl', 'tagTagDelete()')
 
       try {
-        const tagProb = call.request.getTag()
-        const id = tagProb?.getId()!
-        const groupId = tagProb?.getGroupId()
+        const tagId = call.request.getTagId()
 
-        await puppet.tagTagDelete({ id, groupId })
+        await puppet.tagTagDelete(tagId)
 
         return callback(null, new grpcPuppet.TagTagDeleteResponse())
       } catch (e) {
@@ -1642,16 +1623,9 @@ function puppetImplementation (
         const tagGroupId = call.request.getTagGroupId()
 
         const result = await puppet.tagGroupTagList(tagGroupId)
-        const tagIdentifiers = result.map(tag => {
-          const tagIdentifier = new grpcPuppet.TagIdentifier()
-          tagIdentifier.setId(tag.id)
-          if (tag.groupId) {
-            tagIdentifier.setGroupId(tag.groupId)
-          }
-          return tagIdentifier
-        })
+
         const response = new grpcPuppet.TagGroupTagListResponse()
-        response.setTagsList(tagIdentifiers)
+        response.setTagIdsList(result)
 
         return callback(null, response)
       } catch (e) {
@@ -1665,16 +1639,9 @@ function puppetImplementation (
 
       try {
         const result = await puppet.tagTagList()
-        const tagIdentifiers = result.map(tag => {
-          const tagIdentifier = new grpcPuppet.TagIdentifier()
-          tagIdentifier.setId(tag.id)
-          if (tag.groupId) {
-            tagIdentifier.setGroupId(tag.groupId)
-          }
-          return tagIdentifier
-        })
+
         const response = new grpcPuppet.TagTagListResponse()
-        response.setTagsList(tagIdentifiers)
+        response.setTagIdsList(result)
 
         return callback(null, response)
       } catch (e) {
@@ -1689,16 +1656,9 @@ function puppetImplementation (
         const contactId = call.request.getContactId()
 
         const result = await puppet.tagContactTagList(contactId)
-        const tagIdentifiers = result.map(tag => {
-          const tagIdentifier = new grpcPuppet.TagIdentifier()
-          tagIdentifier.setId(tag.id)
-          if (tag.groupId) {
-            tagIdentifier.setGroupId(tag.groupId)
-          }
-          return tagIdentifier
-        })
+
         const response = new grpcPuppet.TagContactTagListResponse()
-        response.setTagsList(tagIdentifiers)
+        response.setTagIdsList(result)
 
         return callback(null, response)
       } catch (e) {
@@ -1710,11 +1670,9 @@ function puppetImplementation (
       log.verbose('PuppetServiceImpl', 'tagTagContactList()')
 
       try {
-        const tagProb = call.request.getTag()
-        const id = tagProb?.getId()!
-        const groupId = tagProb?.getGroupId()
+        const tagId = call.request.getTagId()
 
-        const result = await puppet.tagTagContactList({ id, groupId })
+        const result = await puppet.tagTagContactList(tagId)
 
         const response = new grpcPuppet.TagTagContactListResponse()
         response.setContactIdsList(result)
@@ -1750,11 +1708,9 @@ function puppetImplementation (
       log.verbose('PuppetServiceImpl', 'tagPayload()')
 
       try {
-        const tag = call.request.getTag()!
-        const id = tag.getId()
-        const groupId = tag.getGroupId() || ''
+        const tagId = call.request.getTagId()
 
-        const result = await puppet.tagPayloadPuppet({ id, groupId })
+        const result = await puppet.tagPayloadPuppet(tagId)
         const response = new grpcPuppet.TagPayloadResponse()
         const payload = new grpcPuppet.TagPayload()
         payload.setId(result.id)
