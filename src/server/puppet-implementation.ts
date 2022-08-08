@@ -256,6 +256,7 @@ function puppetImplementation (
         response.setTitle(payload.title || '')
         response.setDescription(payload.description || '')
         response.setAdditionalInfo(payload.additionalInfo || '')
+        response.setTagIdsList(payload.tags || [])
 
         return callback(null, response)
       } catch (e) {
