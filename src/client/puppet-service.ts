@@ -57,7 +57,6 @@ import {
 }                       from '../file-box-helper/mod.js'
 import {
   envVars,
-  FOUR_PER_EM_SPACE,
   log,
   NO_LOG_EVENTS,
   VERSION,
