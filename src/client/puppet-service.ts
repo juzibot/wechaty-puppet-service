@@ -350,6 +350,9 @@ class PuppetService extends PUPPET.Puppet {
       case grpcPuppet.EventType.EVENT_TYPE_TAG:
         this.emit('tag', JSON.parse(payload) as PUPPET.payloads.EventTag)
         break
+      case grpcPuppet.EventType.EVENT_TYPE_TAG_GROUP:
+        this.emit('tag-group', JSON.parse(payload) as PUPPET.payloads.EventTagGroup)
+        break
       case grpcPuppet.EventType.EVENT_TYPE_RESET:
         log.warn('PuppetService', 'onGrpcStreamEvent() got an EventType.EVENT_TYPE_RESET ?')
         // the `reset` event should be dealed not send out
