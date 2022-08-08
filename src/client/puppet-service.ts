@@ -699,6 +699,7 @@ class PuppetService extends PUPPET.Puppet {
        */
       weixin        : response.getWeixin(),
       additionalInfo: response.getAdditionalInfo(),
+      tags          : response.getTagIdsList(),
     }
 
     await this._payloadStore.contact?.set(id, payload)
