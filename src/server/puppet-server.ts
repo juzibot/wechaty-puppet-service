@@ -96,7 +96,9 @@ export class PuppetServer {
 
     if (!this.urnRegistry) {
       log.verbose('PuppetServer', 'start() initializing FileBox UUID URN Registry ...')
-      this.urnRegistry = new UniformResourceNameRegistry()
+      this.urnRegistry = new UniformResourceNameRegistry({
+        expireMilliseconds: 2 * 60 * 60 * 1000, // 2h
+      })
       await this.urnRegistry.init()
       log.verbose('PuppetServer', 'start() initializing FileBox UUID URN Registry ... done')
     }
