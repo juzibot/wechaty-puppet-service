@@ -32,6 +32,10 @@ const uuidResolverGrpc: (grpcClient: () => pbPuppet.PuppetClient) => UuidLoader 
   const stream = response
     .pipe(chunkDecoder())
 
+  response.on('error', e => {
+    stream.emit('error', e)
+  })
+
   return stream
 }
 

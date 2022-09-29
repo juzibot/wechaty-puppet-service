@@ -1749,12 +1749,17 @@ function puppetImplementation (
     download: async (call) => {
       log.verbose('PuppetServiceImpl', 'download()')
 
-      const uuid    = call.request.getId()
-      const fileBox = FileBoxUuid.fromUuid(uuid, { name: 'uuid.dat' })
+      try {
+        const uuid = call.request.getId()
+        const fileBox = FileBoxUuid.fromUuid(uuid, { name: 'uuid.dat' })
 
-      fileBox
-        .pipe(chunkEncoder(grpcPuppet.DownloadResponse))
-        .pipe(call as unknown as Writable)  // Huan(202203) FIXME: as unknown as
+        fileBox
+          .pipe(chunkEncoder(grpcPuppet.DownloadResponse))
+          .pipe(call as unknown as Writable)  // Huan(202203) FIXME: as unknown as
+      } catch (e) {
+        call.destroy(e as Error)
+      }
+
     },
 
     upload: async (call, callback) => {
