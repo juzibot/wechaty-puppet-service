@@ -30,6 +30,14 @@ export const urlLinkPayloadToPb = (grpcPuppet: grpcPuppet, urlLinkPayload: PUPPE
   return pbUrlLinkPayload
 }
 
+export const urlLinkPbToPayload = (urlLinkPayloadPb: puppet.UrlLinkPayload) => {
+  const _urlLinkPayloadPb = urlLinkPayloadPb.toObject()
+  const urlLinkPayload: PUPPET.payloads.UrlLink = {
+    ..._urlLinkPayloadPb,
+  }
+  return urlLinkPayload
+}
+
 export const channelPayloadToPb = (grpcPuppet: grpcPuppet, channelPayload: PUPPET.payloads.Channel) => {
   const pbChannelPayload = new grpcPuppet.ChannelPayload()
   if (channelPayload.avatar) { pbChannelPayload.setAvatar(channelPayload.avatar) }
@@ -41,4 +49,12 @@ export const channelPayloadToPb = (grpcPuppet: grpcPuppet, channelPayload: PUPPE
   if (channelPayload.thumbUrl) { pbChannelPayload.setThumbUrl(channelPayload.thumbUrl) }
   if (channelPayload.url) { pbChannelPayload.setUrl(channelPayload.url) }
   return pbChannelPayload
+}
+
+export const channelPbToPayload = (channelPayloadPb: puppet.ChannelPayload) => {
+  const _channelPayloadPb = channelPayloadPb.toObject()
+  const channelPayload: PUPPET.payloads.Channel = {
+    ..._channelPayloadPb,
+  }
+  return channelPayload
 }

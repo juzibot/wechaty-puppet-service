@@ -68,8 +68,7 @@ import { packageJson }  from '../package-json.js'
 
 import { GrpcManager }  from './grpc-manager.js'
 import { PayloadStore } from './payload-store.js'
-import { isPostClient } from '@juzi/wechaty-puppet/payloads'
-import { channelPayloadToPb, urlLinkPayloadToPb } from '../utils/pb-payload-helper.js'
+import { channelPayloadToPb, channelPbToPayload, urlLinkPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
 
 export type PuppetServiceOptions = PUPPET.PuppetOptions & {
   authority?  : string
@@ -2206,7 +2205,7 @@ class PuppetService extends PUPPET.Puppet {
   override async postPublish (payload: PUPPET.payloads.Post): Promise<void | string> {
     log.verbose('PuppetService', 'postPublish(%s)', JSON.stringify(payload))
 
-    if (!isPostClient(payload)) {
+    if (!PUPPET.payloads.isPostClient(payload)) {
       throw new Error('can only publish client post now')
     }
     const request = new grpcPuppet.MomentPublishRequest()
@@ -2291,6 +2290,64 @@ class PuppetService extends PUPPET.Puppet {
     const jsonText = response.getFileBox()
     if (jsonText) {
       return this.FileBoxUuid.fromJSON(jsonText)
+    }
+  }
+
+  override async postPayloadSayable (postId: string, sayableId: string): Promise<PUPPET.payloads.Sayable> {
+    log.verbose('PuppetService', 'postPayloadSayable(%s, %s)', postId, sayableId)
+
+    const request = new grpcPuppet.PostPayloadSayableRequest()
+    request.setPostId(postId)
+    request.setSayableId(sayableId)
+
+    const response = await util.promisify(
+      this.grpcManager.client.postPayloadSayable
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const sayable = response.getSayable()
+    let sayablePayload: PUPPET.payloads.Sayable | undefined
+
+    if (sayable) {
+      switch (sayable.getType()) {
+        case grpcPuppet.SayableType.SAYABLE_TYPE_TEXT:
+          sayablePayload = PUPPET.payloads.sayable.text(sayable.getText() || '')
+          break
+        case grpcPuppet.SayableType.SAYABLE_TYPE_FILE: {
+          const fileJsonStr = sayable.getFileBox()
+          if (!fileJsonStr) {
+            break
+          }
+          const file = this.FileBoxUuid.fromJSON(JSON.stringify(fileJsonStr))
+          sayablePayload = PUPPET.payloads.sayable.attachment(file)
+          break
+        }
+        case grpcPuppet.SayableType.SAYABLE_TYPE_URL: {
+          const urlLinkPayloadPb = sayable.getUrlLink()
+          if (!urlLinkPayloadPb) {
+            break
+          }
+          const urlLinkPayload = urlLinkPbToPayload(urlLinkPayloadPb)
+          sayablePayload = PUPPET.payloads.sayable.url(urlLinkPayload)
+          break
+        }
+        case grpcPuppet.SayableType.SAYABLE_TYPE_CHANNEL: {
+          const channelPayloadPb = sayable.getChannel()
+          if (!channelPayloadPb) {
+            break
+          }
+          const channelPayload = channelPbToPayload(channelPayloadPb!)
+          sayablePayload = PUPPET.payloads.sayable.channel(channelPayload)
+          break
+        }
+        default:
+          throw new Error(`unsupported postSayableType type ${sayable.getType()}`)
+      }
+    }
+    if (!sayablePayload) {
+      throw new Error(`cannot get sayable ${sayableId} from post ${postId}`)
+    } else {
+      return sayablePayload
     }
   }
 
