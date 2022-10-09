@@ -2203,7 +2203,7 @@ class PuppetService extends PUPPET.Puppet {
    *
    */
 
-  override async postPublish (payload: PUPPET.payloads.Post): Promise<string | void> {
+  override async postPublish (payload: PUPPET.payloads.Post): Promise<void | string> {
     log.verbose('PuppetService', 'postPublish(%s)', JSON.stringify(payload))
 
     if (!isPostClient(payload)) {
@@ -2254,6 +2254,24 @@ class PuppetService extends PUPPET.Puppet {
     const momentId = result.getMomentId()
 
     return momentId
+  }
+
+  override async momentSignature (text?: string): Promise<void | string> {
+    log.verbose('PuppetService', 'momentSignature(%s)', text)
+
+    const request = new grpcPuppet.MomentSignatureRequest()
+    if (text) {
+      request.setText(text)
+    }
+
+    const response = await util.promisify(
+      this.grpcManager.client.momentSignature
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const signature = response.getText()
+
+    return signature
   }
 
   /**
