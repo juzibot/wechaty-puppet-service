@@ -2274,6 +2274,26 @@ class PuppetService extends PUPPET.Puppet {
     return signature
   }
 
+  override async momentCoverage (cover?: FileBoxInterface | undefined): Promise<void | FileBoxInterface> {
+    log.verbose('PuppetService', 'momentCoverage(%s)', JSON.stringify(cover))
+
+    const request = new grpcPuppet.MomentCoverageRequest()
+    if (cover) {
+      const serializedFileBox = await this.serializeFileBox(cover)
+      request.setFileBox(serializedFileBox)
+    }
+
+    const response = await util.promisify(
+      this.grpcManager.client.momentCoverage
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const jsonText = response.getFileBox()
+    if (jsonText) {
+      return this.FileBoxUuid.fromJSON(jsonText)
+    }
+  }
+
   /**
    * @deprecated Will be removed in v2.0
    */
