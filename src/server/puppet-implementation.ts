@@ -48,6 +48,7 @@ import { log } from '../config.js'
 import { grpcError }          from './grpc-error.js'
 import { EventStreamManager } from './event-stream-manager.js'
 import { channelPayloadToPb, channelPbToPayload, urlLinkPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
+import { PostPayloadResponse } from '@juzi/wechaty-grpc/dist/esm/commonjs/generated/puppet.cjs.js'
 
 function puppetImplementation (
   puppet      : PUPPET.impls.PuppetInterface,
@@ -1891,6 +1892,45 @@ function puppetImplementation (
       } catch (e) {
         return grpcError('momentCoverage', e, callback)
       }
+    },
+
+    postPayload: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'postPayloadSayable()')
+
+      try {
+        const postId = call.request.getPostId()
+        const postPayload = await puppet.postPayload(postId) as PUPPET.payloads.PostServer
+
+        const response = new grpcPuppet.PostPayloadResponse()
+        const postPayloadPb = new grpcPuppet.PostPayloadServer()
+        if (postPayload.parentId) { postPayloadPb.setParentId(postPayload.parentId) }
+        if (postPayload.rootId) { postPayloadPb.setRootId(postPayload.rootId) }
+        if (postPayload.type) {
+          postPayloadPb.setType(postPayload.type)
+        } else {
+          postPayloadPb.setType(grpcPuppet.PostType.POST_TYPE_UNSPECIFIED)
+        }
+        if (postPayload.contactId) { postPayloadPb.setContactId(postPayload.contactId) }
+        postPayloadPb.setTimestamp(timestampFromMilliseconds(postPayload.timestamp))
+        if (postPayload.counter.children) { postPayloadPb.setChildren(postPayload.counter.children) }
+        if (postPayload.counter.descendant) { postPayloadPb.setDescendant(postPayload.counter.descendant) }
+        if (postPayload.counter.taps && postPayload.counter.taps[PUPPET.types.Tap.Like]) {
+          postPayloadPb.setLike(postPayload.counter.taps[PUPPET.types.Tap.Like]!)
+        }
+        const sayablePbList = []
+        for (const sayable of postPayload.sayableList) {
+          const sayablePb = new grpcPuppet.PostSayable()
+          sayablePb.setId(sayable)
+          sayablePbList.push(sayablePb)
+        }
+        postPayloadPb.setSayableListList(sayablePbList)
+        response.setPost(postPayloadPb)
+
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('postPayloadSayable', e, callback)
+      }
+
     },
 
     postPayloadSayable: async (call, callback) => {

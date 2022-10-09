@@ -2351,6 +2351,51 @@ class PuppetService extends PUPPET.Puppet {
     }
   }
 
+  override async postRawPayload (id: string): Promise<PUPPET.payloads.Post> {
+    log.verbose('PuppetService', 'postRawPayload(%s)', id)
+
+    const request = new grpcPuppet.PostPayloadRequest()
+    request.setPostId(id)
+
+    const response = await util.promisify(
+      this.grpcManager.client.postPayload
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const postPb = response.getPost()
+    if (!postPb) {
+      throw new Error(`failed to get post for id ${id}`)
+    }
+    const timestamp = postPb.getTimestamp()
+    const payload: PUPPET.payloads.PostServer = {
+      id,
+      parentId: postPb.getParentId(),
+      rootId: postPb.getRootId(),
+      type: postPb.getType() || PUPPET.types.Post.Unspecified,
+      sayableList: [],
+      contactId: postPb.getContactId(),
+      timestamp: timestamp ? millisecondsFromTimestamp(timestamp) : Date.now(),
+      counter: {
+        children: postPb.getChildren(),
+        descendant: postPb.getDescendant(),
+        taps: {
+          [PUPPET.types.Tap.Like]: postPb.getLike(),
+        },
+      },
+    }
+    const sayablePbList = postPb.getSayableListList()
+    for (const sayablePb of sayablePbList) {
+      payload.sayableList.push(sayablePb.getId())
+    }
+    return payload
+  }
+
+  override async postRawPayloadParser (payload: PUPPET.payloads.Post): Promise<PUPPET.payloads.Post> {
+    // log.silly('PuppetService', 'postRawPayloadParser({id:%s})', payload.id)
+    // passthrough
+    return payload
+  }
+
   /**
    * @deprecated Will be removed in v2.0
    */
