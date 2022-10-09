@@ -47,7 +47,7 @@ import {
 import { log } from '../config.js'
 import { grpcError }          from './grpc-error.js'
 import { EventStreamManager } from './event-stream-manager.js'
-import { channelPbToPayload, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
+import { channelPayloadToPb, channelPbToPayload, urlLinkPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
 
 function puppetImplementation (
   puppet      : PUPPET.impls.PuppetInterface,
@@ -1890,6 +1890,51 @@ function puppetImplementation (
         return callback(null, response)
       } catch (e) {
         return grpcError('momentCoverage', e, callback)
+      }
+    },
+
+    postPayloadSayable: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'postPayloadSayable()')
+
+      try {
+        const postId = call.request.getPostId()
+        const sayableId = call.request.getSayableId()
+
+        const result = await puppet.postPayloadSayable(postId, sayableId)
+        const response = new grpcPuppet.PostPayloadSayableResponse()
+        const sayablePb = new grpcPuppet.PostSayable()
+        switch (result.type) {
+          case PUPPET.types.Sayable.Text:
+            sayablePb.setType(grpcPuppet.SayableType.SAYABLE_TYPE_TEXT)
+            sayablePb.setText(result.payload.text)
+            break
+          case PUPPET.types.Sayable.Attachment: {
+            sayablePb.setType(grpcPuppet.SayableType.SAYABLE_TYPE_FILE)
+            const serializedFileBox = typeof result.payload.filebox === 'string' ? result.payload.filebox : await serializeFileBox(result.payload.filebox)
+            sayablePb.setFileBox(serializedFileBox)
+            break
+          }
+          case PUPPET.types.Sayable.Url: {
+            sayablePb.setType(grpcPuppet.SayableType.SAYABLE_TYPE_URL)
+            const urlLinkPayload = result.payload
+            const pbUrlLinkPayload = urlLinkPayloadToPb(grpcPuppet, urlLinkPayload)
+            sayablePb.setUrlLink(pbUrlLinkPayload)
+            break
+          }
+          case PUPPET.types.Sayable.Channel: {
+            sayablePb.setType(grpcPuppet.SayableType.SAYABLE_TYPE_CHANNEL)
+            const channelPayload = result.payload
+            const pbChannelPayload = channelPayloadToPb(grpcPuppet, channelPayload)
+            sayablePb.setChannel(pbChannelPayload)
+            break
+          }
+          default:
+            throw new Error(`postPayloadSayable unsupported type ${result.type}`)
+        }
+
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('postPayloadSayable', e, callback)
       }
     },
 

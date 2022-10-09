@@ -2214,24 +2214,24 @@ class PuppetService extends PUPPET.Puppet {
     for (const item of payload.sayableList) {
       const sayable = new grpcPuppet.PostSayable()
       switch (item.type) {
-        case 'Text':
+        case PUPPET.types.Sayable.Text:
           sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_TEXT)
           sayable.setText(item.payload.text)
           break
-        case 'Attachment': {
+        case PUPPET.types.Sayable.Attachment: {
           sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_FILE)
           const serializedFileBox = typeof item.payload.filebox === 'string' ? item.payload.filebox : await this.serializeFileBox(item.payload.filebox)
           sayable.setFileBox(serializedFileBox)
           break
         }
-        case 'Url': {
+        case PUPPET.types.Sayable.Url: {
           sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_URL)
           const urlLinkPayload = item.payload
           const pbUrlLinkPayload = urlLinkPayloadToPb(grpcPuppet, urlLinkPayload)
           sayable.setUrlLink(pbUrlLinkPayload)
           break
         }
-        case 'Channel': {
+        case PUPPET.types.Sayable.Channel: {
           sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_CHANNEL)
           const channelPayload = item.payload
           const pbChannelPayload = channelPayloadToPb(grpcPuppet, channelPayload)
