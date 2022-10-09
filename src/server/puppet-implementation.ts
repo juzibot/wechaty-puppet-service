@@ -1834,7 +1834,7 @@ function puppetImplementation (
       try {
         throw new Error('postComment is not supported by puppet yet')
       } catch (e) {
-        return grpcError('momentPublish', e, callback)
+        return grpcError('postComment', e, callback)
       }
     },
 
@@ -1845,7 +1845,51 @@ function puppetImplementation (
       try {
         throw new Error('postLike is not supported by puppet yet')
       } catch (e) {
-        return grpcError('momentPublish', e, callback)
+        return grpcError('postLike', e, callback)
+      }
+    },
+
+    momentSignature: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'momentSignature()')
+
+      try {
+        const signature = call.request.getText()
+        const result = await puppet.momentSignature(signature || undefined)
+
+        const response = new grpcPuppet.MomentSignatureResponse()
+        if (result) {
+          response.setText(result)
+        }
+
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('momentSignature', e, callback)
+      }
+    },
+
+    momentCoverage: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'momentCoverage()')
+
+      try {
+        const fileJsonStr = call.request.getFileBox()
+
+        const response = new grpcPuppet.MomentCoverageResponse()
+
+        if (fileJsonStr) {
+          const file = FileBoxUuid.fromJSON(JSON.stringify(fileJsonStr))
+          await puppet.momentCoverage(file)
+        } else {
+          const file = await puppet.momentCoverage()
+          if (file) {
+            response.setFileBox(await serializeFileBox(file))
+          } else {
+            throw new Error('fail to get moment coverage')
+          }
+        }
+
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('momentCoverage', e, callback)
       }
     },
 
