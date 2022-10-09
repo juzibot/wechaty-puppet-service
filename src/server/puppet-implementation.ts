@@ -1827,6 +1827,28 @@ function puppetImplementation (
 
     },
 
+    postComment: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'postComment()')
+      void call
+
+      try {
+        throw new Error('postComment is not supported by puppet yet')
+      } catch (e) {
+        return grpcError('momentPublish', e, callback)
+      }
+    },
+
+    postLike: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'postLike()')
+      void call
+
+      try {
+        throw new Error('postLike is not supported by puppet yet')
+      } catch (e) {
+        return grpcError('momentPublish', e, callback)
+      }
+    },
+
     download: async (call) => {
       log.verbose('PuppetServiceImpl', 'download()')
 
