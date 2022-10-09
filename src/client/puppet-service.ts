@@ -69,6 +69,7 @@ import { packageJson }  from '../package-json.js'
 import { GrpcManager }  from './grpc-manager.js'
 import { PayloadStore } from './payload-store.js'
 import { isPostClient } from '@juzi/wechaty-puppet/payloads'
+import { channelPayloadToPb, urlLinkPayloadToPb } from '../utils/pb-payload-helper.js'
 
 export type PuppetServiceOptions = PUPPET.PuppetOptions & {
   authority?  : string
@@ -2227,26 +2228,14 @@ class PuppetService extends PUPPET.Puppet {
         case 'Url': {
           sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_URL)
           const urlLinkPayload = item.payload
-          const pbUrlLinkPayload = new grpcPuppet.UrlLinkPayload()
-          pbUrlLinkPayload.setUrl(urlLinkPayload.url)
-          pbUrlLinkPayload.setTitle(urlLinkPayload.title)
-          if (urlLinkPayload.description) { pbUrlLinkPayload.setDescription(urlLinkPayload.description) }
-          if (urlLinkPayload.thumbnailUrl) { pbUrlLinkPayload.setThumbnailUrl(urlLinkPayload.thumbnailUrl) }
+          const pbUrlLinkPayload = urlLinkPayloadToPb(grpcPuppet, urlLinkPayload)
           sayable.setUrlLink(pbUrlLinkPayload)
           break
         }
         case 'Channel': {
           sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_CHANNEL)
           const channelPayload = item.payload
-          const pbChannelPayload = new grpcPuppet.ChannelPayload()
-          if (channelPayload.avatar) { pbChannelPayload.setAvatar(channelPayload.avatar) }
-          if (channelPayload.coverUrl) { pbChannelPayload.setCoverUrl(channelPayload.coverUrl) }
-          if (channelPayload.desc) { pbChannelPayload.setDesc(channelPayload.desc) }
-          if (channelPayload.extras) { pbChannelPayload.setExtras(channelPayload.extras) }
-          if (channelPayload.feedType) { pbChannelPayload.setFeedType(channelPayload.feedType) }
-          if (channelPayload.nickname) { pbChannelPayload.setNickname(channelPayload.nickname) }
-          if (channelPayload.thumbUrl) { pbChannelPayload.setThumbUrl(channelPayload.thumbUrl) }
-          if (channelPayload.url) { pbChannelPayload.setUrl(channelPayload.url) }
+          const pbChannelPayload = channelPayloadToPb(grpcPuppet, channelPayload)
           sayable.setChannel(pbChannelPayload)
           break
         }
