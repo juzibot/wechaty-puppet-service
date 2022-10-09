@@ -68,6 +68,7 @@ import { packageJson }  from '../package-json.js'
 
 import { GrpcManager }  from './grpc-manager.js'
 import { PayloadStore } from './payload-store.js'
+import { channelPayloadToPb, channelPbToPayload, urlLinkPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
 
 export type PuppetServiceOptions = PUPPET.PuppetOptions & {
   authority?  : string
@@ -2192,6 +2193,206 @@ class PuppetService extends PUPPET.Puppet {
     await this._payloadStore.tag?.set(tagId, payload)
     log.silly('PuppetService', 'tagPayloadPuppet(%s) cache SET', tagId)
 
+    return payload
+  }
+
+  /**
+   *
+   * Post & Moment Section
+   *
+   */
+
+  override async postPublish (payload: PUPPET.payloads.Post): Promise<void | string> {
+    log.verbose('PuppetService', 'postPublish(%s)', JSON.stringify(payload))
+
+    if (!PUPPET.payloads.isPostClient(payload)) {
+      throw new Error('can only publish client post now')
+    }
+    const request = new grpcPuppet.MomentPublishRequest()
+    const post = new grpcPuppet.PostPayloadClient()
+    post.setType(grpcPuppet.PostType.POST_TYPE_MOMENT)
+    for (const item of payload.sayableList) {
+      const sayable = new grpcPuppet.PostSayable()
+      switch (item.type) {
+        case PUPPET.types.Sayable.Text:
+          sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_TEXT)
+          sayable.setText(item.payload.text)
+          break
+        case PUPPET.types.Sayable.Attachment: {
+          sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_FILE)
+          const serializedFileBox = typeof item.payload.filebox === 'string' ? item.payload.filebox : await this.serializeFileBox(item.payload.filebox)
+          sayable.setFileBox(serializedFileBox)
+          break
+        }
+        case PUPPET.types.Sayable.Url: {
+          sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_URL)
+          const urlLinkPayload = item.payload
+          const pbUrlLinkPayload = urlLinkPayloadToPb(grpcPuppet, urlLinkPayload)
+          sayable.setUrlLink(pbUrlLinkPayload)
+          break
+        }
+        case PUPPET.types.Sayable.Channel: {
+          sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_CHANNEL)
+          const channelPayload = item.payload
+          const pbChannelPayload = channelPayloadToPb(grpcPuppet, channelPayload)
+          sayable.setChannel(pbChannelPayload)
+          break
+        }
+        default:
+          throw new Error(`postPublish unsupported type ${item.type}`)
+      }
+      post.addSayableList(sayable)
+    }
+    request.setPost(post)
+
+    const result = await util.promisify(
+      this.grpcManager.client.momentPublish
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const momentId = result.getMomentId()
+
+    return momentId
+  }
+
+  override async momentSignature (text?: string): Promise<void | string> {
+    log.verbose('PuppetService', 'momentSignature(%s)', text)
+
+    const request = new grpcPuppet.MomentSignatureRequest()
+    if (text) {
+      request.setText(text)
+    }
+
+    const response = await util.promisify(
+      this.grpcManager.client.momentSignature
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const signature = response.getText()
+
+    return signature
+  }
+
+  override async momentCoverage (cover?: FileBoxInterface | undefined): Promise<void | FileBoxInterface> {
+    log.verbose('PuppetService', 'momentCoverage(%s)', JSON.stringify(cover))
+
+    const request = new grpcPuppet.MomentCoverageRequest()
+    if (cover) {
+      const serializedFileBox = await this.serializeFileBox(cover)
+      request.setFileBox(serializedFileBox)
+    }
+
+    const response = await util.promisify(
+      this.grpcManager.client.momentCoverage
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const jsonText = response.getFileBox()
+    if (jsonText) {
+      return this.FileBoxUuid.fromJSON(jsonText)
+    }
+  }
+
+  override async postPayloadSayable (postId: string, sayableId: string): Promise<PUPPET.payloads.Sayable> {
+    log.verbose('PuppetService', 'postPayloadSayable(%s, %s)', postId, sayableId)
+
+    const request = new grpcPuppet.PostPayloadSayableRequest()
+    request.setPostId(postId)
+    request.setSayableId(sayableId)
+
+    const response = await util.promisify(
+      this.grpcManager.client.postPayloadSayable
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const sayable = response.getSayable()
+    let sayablePayload: PUPPET.payloads.Sayable | undefined
+
+    if (sayable) {
+      switch (sayable.getType()) {
+        case grpcPuppet.SayableType.SAYABLE_TYPE_TEXT:
+          sayablePayload = PUPPET.payloads.sayable.text(sayable.getText() || '')
+          break
+        case grpcPuppet.SayableType.SAYABLE_TYPE_FILE: {
+          const fileJsonStr = sayable.getFileBox()
+          if (!fileJsonStr) {
+            break
+          }
+          const file = this.FileBoxUuid.fromJSON(JSON.stringify(fileJsonStr))
+          sayablePayload = PUPPET.payloads.sayable.attachment(file)
+          break
+        }
+        case grpcPuppet.SayableType.SAYABLE_TYPE_URL: {
+          const urlLinkPayloadPb = sayable.getUrlLink()
+          if (!urlLinkPayloadPb) {
+            break
+          }
+          const urlLinkPayload = urlLinkPbToPayload(urlLinkPayloadPb)
+          sayablePayload = PUPPET.payloads.sayable.url(urlLinkPayload)
+          break
+        }
+        case grpcPuppet.SayableType.SAYABLE_TYPE_CHANNEL: {
+          const channelPayloadPb = sayable.getChannel()
+          if (!channelPayloadPb) {
+            break
+          }
+          const channelPayload = channelPbToPayload(channelPayloadPb!)
+          sayablePayload = PUPPET.payloads.sayable.channel(channelPayload)
+          break
+        }
+        default:
+          throw new Error(`unsupported postSayableType type ${sayable.getType()}`)
+      }
+    }
+    if (!sayablePayload) {
+      throw new Error(`cannot get sayable ${sayableId} from post ${postId}`)
+    } else {
+      return sayablePayload
+    }
+  }
+
+  override async postRawPayload (id: string): Promise<PUPPET.payloads.Post> {
+    log.verbose('PuppetService', 'postRawPayload(%s)', id)
+
+    const request = new grpcPuppet.PostPayloadRequest()
+    request.setPostId(id)
+
+    const response = await util.promisify(
+      this.grpcManager.client.postPayload
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const postPb = response.getPost()
+    if (!postPb) {
+      throw new Error(`failed to get post for id ${id}`)
+    }
+    const timestamp = postPb.getTimestamp()
+    const payload: PUPPET.payloads.PostServer = {
+      id,
+      parentId: postPb.getParentId(),
+      rootId: postPb.getRootId(),
+      type: postPb.getType() || PUPPET.types.Post.Unspecified,
+      sayableList: [],
+      contactId: postPb.getContactId(),
+      timestamp: timestamp ? millisecondsFromTimestamp(timestamp) : Date.now(),
+      counter: {
+        children: postPb.getChildren(),
+        descendant: postPb.getDescendant(),
+        taps: {
+          [PUPPET.types.Tap.Like]: postPb.getLike(),
+        },
+      },
+    }
+    const sayablePbList = postPb.getSayableListList()
+    for (const sayablePb of sayablePbList) {
+      payload.sayableList.push(sayablePb.getId())
+    }
+    return payload
+  }
+
+  override async postRawPayloadParser (payload: PUPPET.payloads.Post): Promise<PUPPET.payloads.Post> {
+    // log.silly('PuppetService', 'postRawPayloadParser({id:%s})', payload.id)
+    // passthrough
     return payload
   }
 
