@@ -47,6 +47,7 @@ import {
 import { log } from '../config.js'
 import { grpcError }          from './grpc-error.js'
 import { EventStreamManager } from './event-stream-manager.js'
+import { channelPbToPayload, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
 
 function puppetImplementation (
   puppet      : PUPPET.impls.PuppetInterface,
@@ -1744,6 +1745,86 @@ function puppetImplementation (
       } catch (e) {
         return grpcError('version', e, callback)
       }
+    },
+
+    /**
+     *
+     * Post & Moment
+     *
+     */
+
+    momentPublish: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'momentPublish()')
+
+      try {
+        const post = call.request.getPost()
+        if (!post) {
+          throw new Error('no post found')
+        }
+        const type = post.getType()
+        if (type !== grpcPuppet.PostType.POST_TYPE_MOMENT) {
+          throw new Error('cannot publish non-moment post')
+        }
+        const payload: PUPPET.payloads.PostClient = {
+          type: PUPPET.types.Post.Moment,
+          sayableList: [],
+        }
+        const sayableList = post.getSayableListList()
+        for (const sayable of sayableList) {
+          let sayablePayload: PUPPET.payloads.Sayable | undefined
+          switch (sayable.getType()) {
+            case grpcPuppet.SayableType.SAYABLE_TYPE_TEXT:
+              sayablePayload = PUPPET.payloads.sayable.text(sayable.getText() || '')
+              break
+            case grpcPuppet.SayableType.SAYABLE_TYPE_FILE: {
+              const fileJsonStr = sayable.getFileBox()
+              if (!fileJsonStr) {
+                break
+              }
+              const file = FileBoxUuid.fromJSON(JSON.stringify(fileJsonStr))
+              sayablePayload = PUPPET.payloads.sayable.attachment(file)
+              break
+            }
+            case grpcPuppet.SayableType.SAYABLE_TYPE_URL: {
+              const urlLinkPayloadPb = sayable.getUrlLink()
+              if (!urlLinkPayloadPb) {
+                break
+              }
+              const urlLinkPayload = urlLinkPbToPayload(urlLinkPayloadPb)
+              sayablePayload = PUPPET.payloads.sayable.url(urlLinkPayload)
+              break
+            }
+            case grpcPuppet.SayableType.SAYABLE_TYPE_CHANNEL: {
+              const channelPayloadPb = sayable.getChannel()
+              if (!channelPayloadPb) {
+                break
+              }
+              const channelPayload = channelPbToPayload(channelPayloadPb!)
+              sayablePayload = PUPPET.payloads.sayable.channel(channelPayload)
+              break
+            }
+            default:
+              throw new Error(`unsupported postSayableType type ${sayable.getType()}`)
+          }
+          if (sayablePayload) {
+            payload.sayableList.push(sayablePayload)
+          } else {
+            throw new Error(`unable to fetch sayable from ${JSON.stringify(sayable.toObject())}`)
+          }
+        }
+
+        const momentId = await puppet.postPublish(payload)
+        const response = new grpcPuppet.MomentPublishResponse()
+        if (momentId) {
+          response.setMomentId(momentId)
+        }
+
+        return callback(null, response)
+
+      } catch (e) {
+        return grpcError('momentPublish', e, callback)
+      }
+
     },
 
     download: async (call) => {
