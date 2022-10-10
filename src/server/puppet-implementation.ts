@@ -1774,7 +1774,7 @@ function puppetImplementation (
           let sayablePayload: PUPPET.payloads.Sayable | undefined
           switch (sayable.getType()) {
             case grpcPuppet.SayableType.SAYABLE_TYPE_TEXT:
-              sayablePayload = PUPPET.payloads.sayable.text(sayable.getText() || '')
+              sayablePayload = PUPPET.payloads.sayable.text(sayable.getText() || '', sayable.getMentionIdListList() || [])
               break
             case grpcPuppet.SayableType.SAYABLE_TYPE_FILE: {
               const fileJsonStr = sayable.getFileBox()
@@ -1829,10 +1829,17 @@ function puppetImplementation (
 
     postComment: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'postComment()')
-      void call
 
       try {
-        throw new Error('postComment is not supported by puppet yet')
+        const postId = call.request.getPostId()
+        const mentionIdList = call.request.getMentionIdListList()
+        const text = call.request.getText()
+
+        const result = await puppet.postComment(postId, text, mentionIdList)
+        const response = new grpcPuppet.PostCommentResponse()
+        if (result) { response.setCommentId(result) }
+
+        return callback(null, response)
       } catch (e) {
         return grpcError('postComment', e, callback)
       }
@@ -1840,10 +1847,15 @@ function puppetImplementation (
 
     postLike: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'postLike()')
-      void call
 
       try {
-        throw new Error('postLike is not supported by puppet yet')
+        const postId = call.request.getPostId()
+
+        const tapId = await puppet.postLike(postId)
+        const response = new grpcPuppet.PostLikeResponse()
+        if (tapId) { response.setTapId(tapId) }
+
+        return callback(null, response)
       } catch (e) {
         return grpcError('postLike', e, callback)
       }
@@ -1946,6 +1958,7 @@ function puppetImplementation (
           case PUPPET.types.Sayable.Text:
             sayablePb.setType(grpcPuppet.SayableType.SAYABLE_TYPE_TEXT)
             sayablePb.setText(result.payload.text)
+            sayablePb.setMentionIdListList(result.payload.mentions)
             break
           case PUPPET.types.Sayable.Attachment: {
             sayablePb.setType(grpcPuppet.SayableType.SAYABLE_TYPE_FILE)

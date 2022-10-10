@@ -2217,6 +2217,7 @@ class PuppetService extends PUPPET.Puppet {
         case PUPPET.types.Sayable.Text:
           sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_TEXT)
           sayable.setText(item.payload.text)
+          sayable.setMentionIdListList(item.payload.mentions)
           break
         case PUPPET.types.Sayable.Attachment: {
           sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_FILE)
@@ -2311,7 +2312,7 @@ class PuppetService extends PUPPET.Puppet {
     if (sayable) {
       switch (sayable.getType()) {
         case grpcPuppet.SayableType.SAYABLE_TYPE_TEXT:
-          sayablePayload = PUPPET.payloads.sayable.text(sayable.getText() || '')
+          sayablePayload = PUPPET.payloads.sayable.text(sayable.getText() || '', sayable.getMentionIdListList() || [])
           break
         case grpcPuppet.SayableType.SAYABLE_TYPE_FILE: {
           const fileJsonStr = sayable.getFileBox()
@@ -2394,6 +2395,40 @@ class PuppetService extends PUPPET.Puppet {
     // log.silly('PuppetService', 'postRawPayloadParser({id:%s})', payload.id)
     // passthrough
     return payload
+  }
+
+  override async postComment (postId: string, text: string, mentionIdList?: string[] | undefined): Promise<string | void> {
+    log.verbose('PuppetService', 'postComment(%s, %s, %s)', postId, text, JSON.stringify(mentionIdList))
+
+    const request = new grpcPuppet.PostCommentRequest()
+    request.setPostId(postId)
+    request.setText(text)
+    request.setMentionIdListList(mentionIdList || [])
+
+    const response = await util.promisify(
+      this.grpcManager.client.postComment
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const commentId = response.getCommentId()
+
+    return commentId
+  }
+
+  override async postLike (postId: string): Promise<string | void> {
+    log.verbose('PuppetService', 'postLike(%s)', postId)
+
+    const request = new grpcPuppet.PostLikeRequest()
+    request.setPostId(postId)
+
+    const response = await util.promisify(
+      this.grpcManager.client.postLike
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const tapId = response.getTapId()
+
+    return tapId
   }
 
   /**
