@@ -1774,7 +1774,7 @@ function puppetImplementation (
           let sayablePayload: PUPPET.payloads.Sayable | undefined
           switch (sayable.getType()) {
             case grpcPuppet.SayableType.SAYABLE_TYPE_TEXT:
-              sayablePayload = PUPPET.payloads.sayable.text(sayable.getText() || '', sayable.getMentionIdListList() || [])
+              sayablePayload = PUPPET.payloads.sayable.text(sayable.getText() || '', sayable.getMentionIdListList())
               break
             case grpcPuppet.SayableType.SAYABLE_TYPE_FILE: {
               const fileJsonStr = sayable.getFileBox()
