@@ -2319,7 +2319,7 @@ class PuppetService extends PUPPET.Puppet {
           if (!fileJsonStr) {
             break
           }
-          const file = this.FileBoxUuid.fromJSON(JSON.stringify(fileJsonStr))
+          const file = this.FileBoxUuid.fromJSON(fileJsonStr)
           sayablePayload = PUPPET.payloads.sayable.attachment(file)
           break
         }

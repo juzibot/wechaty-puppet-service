@@ -1781,7 +1781,7 @@ function puppetImplementation (
               if (!fileJsonStr) {
                 break
               }
-              const file = FileBoxUuid.fromJSON(JSON.stringify(fileJsonStr))
+              const file = FileBoxUuid.fromJSON(fileJsonStr)
               sayablePayload = PUPPET.payloads.sayable.attachment(file)
               break
             }
@@ -1888,7 +1888,7 @@ function puppetImplementation (
         const response = new grpcPuppet.MomentCoverageResponse()
 
         if (fileJsonStr) {
-          const file = FileBoxUuid.fromJSON(JSON.stringify(fileJsonStr))
+          const file = FileBoxUuid.fromJSON(fileJsonStr)
           await puppet.momentCoverage(file)
         } else {
           const file = await puppet.momentCoverage()
