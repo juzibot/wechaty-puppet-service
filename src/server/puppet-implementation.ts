@@ -1829,33 +1829,17 @@ function puppetImplementation (
 
     },
 
-    postComment: async (call, callback) => {
-      log.verbose('PuppetServiceImpl', 'postComment()')
-
-      try {
-        const postId = call.request.getPostId()
-        const mentionIdList = call.request.getMentionIdListList()
-        const text = call.request.getText()
-
-        const result = await puppet.postComment(postId, text, mentionIdList)
-        const response = new grpcPuppet.PostCommentResponse()
-        if (result) { response.setCommentId(result) }
-
-        return callback(null, response)
-      } catch (e) {
-        return grpcError('postComment', e, callback)
-      }
-    },
-
-    postLike: async (call, callback) => {
+    postTap: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'postLike()')
 
       try {
         const postId = call.request.getPostId()
+        const type = call.request.getType()
+        const tap = call.request.getTap()
 
-        const tapId = await puppet.postLike(postId)
-        const response = new grpcPuppet.PostLikeResponse()
-        if (tapId) { response.setTapId(tapId) }
+        const result = await puppet.tap(postId, type, tap)
+        const response = new grpcPuppet.PostTapResponse()
+        response.setTap(result || false)
 
         return callback(null, response)
       } catch (e) {

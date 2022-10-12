@@ -2400,38 +2400,22 @@ class PuppetService extends PUPPET.Puppet {
     return payload
   }
 
-  override async postComment (postId: string, text: string, mentionIdList?: string[] | undefined): Promise<string | void> {
-    log.verbose('PuppetService', 'postComment(%s, %s, %s)', postId, text, JSON.stringify(mentionIdList))
+  override async tap (postId: string, type?: PUPPET.types.Tap | undefined, tap?: boolean | undefined): Promise<boolean | void> {
+    log.verbose('PuppetService', 'tap(%s, %s, %s)', postId, type, tap)
 
-    const request = new grpcPuppet.PostCommentRequest()
+    const request = new grpcPuppet.PostTapRequest()
     request.setPostId(postId)
-    request.setText(text)
-    request.setMentionIdListList(mentionIdList || [])
+    if (type) { request.setType(type) }
+    if (tap) { request.setTap(tap) }
 
     const response = await util.promisify(
-      this.grpcManager.client.postComment
+      this.grpcManager.client.postTap
         .bind(this.grpcManager.client),
     )(request)
 
-    const commentId = response.getCommentId()
+    const result = response.getTap()
 
-    return commentId
-  }
-
-  override async postLike (postId: string): Promise<string | void> {
-    log.verbose('PuppetService', 'postLike(%s)', postId)
-
-    const request = new grpcPuppet.PostLikeRequest()
-    request.setPostId(postId)
-
-    const response = await util.promisify(
-      this.grpcManager.client.postLike
-        .bind(this.grpcManager.client),
-    )(request)
-
-    const tapId = response.getTapId()
-
-    return tapId
+    return result
   }
 
   /**
