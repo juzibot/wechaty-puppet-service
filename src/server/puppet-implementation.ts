@@ -1768,6 +1768,8 @@ function puppetImplementation (
         const payload: PUPPET.payloads.PostClient = {
           type: PUPPET.types.Post.Moment,
           sayableList: [],
+          rootId: post.getRootId(),
+          parentId: post.getParentId(),
         }
         const sayableList = post.getSayableListList()
         for (const sayable of sayableList) {

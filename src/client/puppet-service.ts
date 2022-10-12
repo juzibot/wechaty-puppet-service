@@ -2244,6 +2244,9 @@ class PuppetService extends PUPPET.Puppet {
       }
       post.addSayableList(sayable)
     }
+    if (payload.rootId) { post.setRootId(payload.rootId) }
+    if (payload.parentId) { post.setParentId(payload.parentId) }
+
     request.setPost(post)
 
     const result = await util.promisify(
