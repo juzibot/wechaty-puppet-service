@@ -65,7 +65,7 @@
     "why-is-node-running": "^2.2.1"
   },
   "peerDependencies": {
-    "@juzi/wechaty-puppet": "^1.0.33"
+    "@juzi/wechaty-puppet": "^1.0.34"
   },
   "dependencies": {
     "@juzi/wechaty-grpc": "^1.0.24",
