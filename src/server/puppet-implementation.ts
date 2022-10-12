@@ -1906,7 +1906,7 @@ function puppetImplementation (
     },
 
     postPayload: async (call, callback) => {
-      log.verbose('PuppetServiceImpl', 'postPayloadSayable()')
+      log.verbose('PuppetServiceImpl', 'postPayload()')
 
       try {
         const postId = call.request.getPostId()
@@ -1939,7 +1939,7 @@ function puppetImplementation (
 
         return callback(null, response)
       } catch (e) {
-        return grpcError('postPayloadSayable', e, callback)
+        return grpcError('postPayload', e, callback)
       }
 
     },
@@ -1983,6 +1983,7 @@ function puppetImplementation (
           default:
             throw new Error(`postPayloadSayable unsupported type ${result.type}`)
         }
+        response.setSayable(sayablePb)
 
         return callback(null, response)
       } catch (e) {
