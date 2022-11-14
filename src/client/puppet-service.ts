@@ -330,6 +330,12 @@ class PuppetService extends PUPPET.Puppet {
       case grpcPuppet.EventType.EVENT_TYPE_POST:
         this.emit('post', JSON.parse(payload) as PUPPET.payloads.EventPost)
         break
+      case grpcPuppet.EventType.EVENT_TYPE_POST_COMMENT:
+        this.emit('post', JSON.parse(payload) as PUPPET.payloads.EventPostComment)
+        break
+      case grpcPuppet.EventType.EVENT_TYPE_POST_TAP:
+        this.emit('post', JSON.parse(payload) as PUPPET.payloads.EventPostTap)
+        break
       case grpcPuppet.EventType.EVENT_TYPE_READY:
         this.emit('ready', JSON.parse(payload) as PUPPET.payloads.EventReady)
         break
@@ -755,12 +761,19 @@ class PuppetService extends PUPPET.Puppet {
    * Conversation
    *
    */
-  override conversationReadMark (
+  override async conversationReadMark (
     conversationId: string,
     hasRead = true,
   ) : Promise<void> {
     log.verbose('PuppetService', 'conversationMarkRead(%s, %s)', conversationId, hasRead)
-    return PUPPET.throwUnsupportedError('not implemented. See https://github.com/wechaty/wechaty-puppet/pull/132')
+
+    const request = new grpcPuppet.ConversationReadRequest()
+    request.setConversationId(conversationId)
+    await util.promisify(
+      this.grpcManager.client.conversationRead
+        .bind(this.grpcManager.client),
+    )(request)
+
   }
 
   /**
