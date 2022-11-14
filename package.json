@@ -68,7 +68,7 @@
     "@juzi/wechaty-puppet": "^1.0.37"
   },
   "dependencies": {
-    "@juzi/wechaty-grpc": "^1.0.25",
+    "@juzi/wechaty-grpc": "^1.0.28",
     "@juzi/wechaty-redux": "^1.0.1",
     "clone-class": "^1.1.1",
     "ducks": "^1.0.2",

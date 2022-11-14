@@ -48,6 +48,7 @@ import { log } from '../config.js'
 import { grpcError }          from './grpc-error.js'
 import { EventStreamManager } from './event-stream-manager.js'
 import { channelPayloadToPb, channelPbToPayload, urlLinkPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
+import { async } from 'rxjs'
 
 function puppetImplementation (
   puppet      : PUPPET.impls.PuppetInterface,
@@ -94,6 +95,20 @@ function puppetImplementation (
   }
 
   const puppetServerImpl: grpcPuppet.IPuppetServer = {
+
+    conversationRead: async(call, callback) => {
+      log.verbose('PuppetServiceImpl', 'conversationRead()')
+
+      try {
+        const conversationId = call.request.getConversationId()
+        await puppet.conversationReadMark(conversationId)
+
+        const response = new grpcPuppet.ConversationReadResponse()
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('currentUser', e, callback)
+      }
+    }
 
     currentUser: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'currentUser()')
