@@ -14,7 +14,7 @@ import PuppetService, {
 
 const NIL_UUID_V4 = '00000000-0000-0000-0000-000000000000'
 
-test('ready event test', async t => {
+test.skip('ready event test', async t => {
   const PORT = await getPort()
   const TOKEN = `insecure_${NIL_UUID_V4}`
   const ENDPOINT = `0.0.0.0:${PORT}`
