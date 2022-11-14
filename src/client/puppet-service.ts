@@ -331,10 +331,10 @@ class PuppetService extends PUPPET.Puppet {
         this.emit('post', JSON.parse(payload) as PUPPET.payloads.EventPost)
         break
       case grpcPuppet.EventType.EVENT_TYPE_POST_COMMENT:
-        this.emit('post', JSON.parse(payload) as PUPPET.payloads.EventPostComment)
+        this.emit('post-comment', JSON.parse(payload) as PUPPET.payloads.EventPostComment)
         break
       case grpcPuppet.EventType.EVENT_TYPE_POST_TAP:
-        this.emit('post', JSON.parse(payload) as PUPPET.payloads.EventPostTap)
+        this.emit('post-tap', JSON.parse(payload) as PUPPET.payloads.EventPostTap)
         break
       case grpcPuppet.EventType.EVENT_TYPE_READY:
         this.emit('ready', JSON.parse(payload) as PUPPET.payloads.EventReady)
