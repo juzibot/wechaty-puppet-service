@@ -96,7 +96,7 @@ function puppetImplementation (
 
   const puppetServerImpl: grpcPuppet.IPuppetServer = {
 
-    conversationRead: async(call, callback) => {
+    conversationRead: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'conversationRead()')
 
       try {
@@ -108,7 +108,7 @@ function puppetImplementation (
       } catch (e) {
         return grpcError('currentUser', e, callback)
       }
-    }
+    },
 
     currentUser: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'currentUser()')
