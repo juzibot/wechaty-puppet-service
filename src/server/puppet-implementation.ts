@@ -48,7 +48,6 @@ import { log } from '../config.js'
 import { grpcError }          from './grpc-error.js'
 import { EventStreamManager } from './event-stream-manager.js'
 import { channelPayloadToPb, channelPbToPayload, urlLinkPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
-import { async } from 'rxjs'
 
 function puppetImplementation (
   puppet      : PUPPET.impls.PuppetInterface,
