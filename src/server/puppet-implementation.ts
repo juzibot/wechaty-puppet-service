@@ -1992,6 +1992,24 @@ function puppetImplementation (
       }
     },
 
+    momentVisibleList: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'momentVisibleList()')
+
+      void call
+
+      try {
+        const contactIdsList = await puppet.momentVisibleList()
+
+        const response = new grpcPuppet.MomentVisibleListResponse()
+        response.setContactIdsList(contactIdsList)
+
+        return callback(null, response)
+
+      } catch (e) {
+        return grpcError('momentVisibleList', e, callback)
+      }
+    },
+
     download: async (call) => {
       log.verbose('PuppetServiceImpl', 'download()')
 

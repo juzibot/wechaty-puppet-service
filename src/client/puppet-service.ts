@@ -2432,6 +2432,20 @@ class PuppetService extends PUPPET.Puppet {
     return result
   }
 
+  override async momentVisibleList (): Promise<string[]> {
+    log.verbose('PuppetService', 'momentVisibleList()')
+
+    const request = new grpcPuppet.MomentVisibleListRequest()
+
+    const response = await util.promisify(
+      this.grpcManager.client.momentVisibleList.bind(this.grpcManager.client),
+    )(request)
+
+    const contactIdsList = response.getContactIdsList()
+
+    return contactIdsList
+  }
+
   /**
    * @deprecated Will be removed in v2.0
    */
