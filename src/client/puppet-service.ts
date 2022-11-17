@@ -2414,13 +2414,13 @@ class PuppetService extends PUPPET.Puppet {
     return payload
   }
 
-  override async tap (postId: string, type?: PUPPET.types.Tap | undefined, tap?: boolean | undefined): Promise<boolean | void> {
+  override async tap (postId: string, type?: PUPPET.types.Tap, tap = true): Promise<boolean | void> {
     log.verbose('PuppetService', 'tap(%s, %s, %s)', postId, type, tap)
 
     const request = new grpcPuppet.PostTapRequest()
     request.setPostId(postId)
     if (type) { request.setType(type) }
-    if (tap) { request.setTap(tap) }
+    request.setTap(tap)
 
     const response = await util.promisify(
       this.grpcManager.client.postTap
