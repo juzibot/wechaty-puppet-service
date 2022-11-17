@@ -787,6 +787,7 @@ function puppetImplementation (
         response.setListenerId(payload.listenerId || payload.toId || '')
         response.setType(payload.type as grpcPuppet.MessageTypeMap[keyof grpcPuppet.MessageTypeMap])
         response.setQuoteId(payload.quoteId || '')
+        response.setAdditionalInfo(payload.additionalInfo || '')
 
         return callback(null, response)
 

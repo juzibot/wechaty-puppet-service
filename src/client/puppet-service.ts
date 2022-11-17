@@ -1178,6 +1178,7 @@ class PuppetService extends PUPPET.Puppet {
       timestamp,
       type          : response.getType() as number,
       quoteId       : response.getQuoteId(),
+      additionalInfo: response.getAdditionalInfo(),
     }
 
     // log.silly('PuppetService', 'messageRawPayload(%s) cache SET', id)
