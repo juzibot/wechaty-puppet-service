@@ -1,6 +1,6 @@
 {
   "name": "@juzi/wechaty-puppet-service",
-  "version": "1.0.31",
+  "version": "1.0.32",
   "description": "Puppet Service for Wechaty",
   "type": "module",
   "exports": {
@@ -62,13 +62,14 @@
     "temp": "^0.9.4",
     "typed-emitter": "^1.5.0-from-event",
     "utility-types": "^3.10.0",
-    "why-is-node-running": "^2.2.1"
+    "why-is-node-running": "^2.2.1",
+    "@juzi/wechaty-puppet": "^1.0.38"
   },
   "peerDependencies": {
-    "@juzi/wechaty-puppet": "^1.0.37"
+    "@juzi/wechaty-puppet": "^1.0.38"
   },
   "dependencies": {
-    "@juzi/wechaty-grpc": "^1.0.28",
+    "@juzi/wechaty-grpc": "^1.0.30",
     "@juzi/wechaty-redux": "^1.0.1",
     "clone-class": "^1.1.1",
     "ducks": "^1.0.2",

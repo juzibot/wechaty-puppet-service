@@ -787,6 +787,7 @@ function puppetImplementation (
         response.setListenerId(payload.listenerId || payload.toId || '')
         response.setType(payload.type as grpcPuppet.MessageTypeMap[keyof grpcPuppet.MessageTypeMap])
         response.setQuoteId(payload.quoteId || '')
+        response.setAdditionalInfo(payload.additionalInfo || '')
 
         return callback(null, response)
 
@@ -1988,6 +1989,24 @@ function puppetImplementation (
         return callback(null, response)
       } catch (e) {
         return grpcError('postPayloadSayable', e, callback)
+      }
+    },
+
+    momentVisibleList: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'momentVisibleList()')
+
+      void call
+
+      try {
+        const contactIdsList = await puppet.momentVisibleList()
+
+        const response = new grpcPuppet.MomentVisibleListResponse()
+        response.setContactIdsList(contactIdsList)
+
+        return callback(null, response)
+
+      } catch (e) {
+        return grpcError('momentVisibleList', e, callback)
       }
     },
 

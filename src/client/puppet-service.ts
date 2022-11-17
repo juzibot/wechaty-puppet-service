@@ -1178,6 +1178,7 @@ class PuppetService extends PUPPET.Puppet {
       timestamp,
       type          : response.getType() as number,
       quoteId       : response.getQuoteId(),
+      additionalInfo: response.getAdditionalInfo(),
     }
 
     // log.silly('PuppetService', 'messageRawPayload(%s) cache SET', id)
@@ -2429,6 +2430,20 @@ class PuppetService extends PUPPET.Puppet {
     const result = response.getTap()
 
     return result
+  }
+
+  override async momentVisibleList (): Promise<string[]> {
+    log.verbose('PuppetService', 'momentVisibleList()')
+
+    const request = new grpcPuppet.MomentVisibleListRequest()
+
+    const response = await util.promisify(
+      this.grpcManager.client.momentVisibleList.bind(this.grpcManager.client),
+    )(request)
+
+    const contactIdsList = response.getContactIdsList()
+
+    return contactIdsList
   }
 
   /**
