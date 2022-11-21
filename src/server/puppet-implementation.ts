@@ -1936,6 +1936,17 @@ function puppetImplementation (
           sayablePbList.push(sayablePb)
         }
         postPayloadPb.setSayableListList(sayablePbList)
+
+        postPayloadPb.setVisibleListList(postPayload.visibleList || [])
+        if (postPayload.location) {
+          const locationPb = new grpcPuppet.LocationPayload()
+          locationPb.setLatitude(postPayload.location.latitude)
+          locationPb.setLongitude(postPayload.location.longitude)
+          locationPb.setAddress(postPayload.location.address)
+          locationPb.setAccuracy(postPayload.location.accuracy)
+          locationPb.setName(postPayload.location.name)
+          postPayloadPb.setLocation(locationPb)
+        }
         response.setPost(postPayloadPb)
 
         return callback(null, response)
