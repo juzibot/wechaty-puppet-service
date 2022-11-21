@@ -2400,11 +2400,23 @@ class PuppetService extends PUPPET.Puppet {
           [PUPPET.types.Tap.Like]: postPb.getLike(),
         },
       },
+      visibleList: postPb.getVisibleListList(),
     }
     const sayablePbList = postPb.getSayableListList()
     for (const sayablePb of sayablePbList) {
       payload.sayableList.push(sayablePb.getId())
     }
+    const location = postPb.getLocation()
+    if (location) {
+      payload.location = {
+        latitude: location.getLatitude(),
+        longitude: location.getLongitude(),
+        accuracy: location.getAccuracy(),
+        address: location.getAddress(),
+        name: location.getName(),
+      }
+    }
+
     return payload
   }
 
