@@ -2260,7 +2260,16 @@ class PuppetService extends PUPPET.Puppet {
     }
     if (payload.rootId) { post.setRootId(payload.rootId) }
     if (payload.parentId) { post.setParentId(payload.parentId) }
-
+    if (payload.location) {
+      const location = new grpcPuppet.LocationPayload()
+      location.setAccuracy(payload.location.accuracy)
+      location.setAddress(payload.location.address)
+      location.setName(payload.location.name)
+      location.setLatitude(payload.location.latitude)
+      location.setLongitude(payload.location.longitude)
+      post.setLocation(location)
+    }
+    post.setVisibleListList(payload.visibleList || [])
     request.setPost(post)
 
     const result = await util.promisify(

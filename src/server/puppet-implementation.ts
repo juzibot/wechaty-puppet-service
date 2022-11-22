@@ -1785,6 +1785,7 @@ function puppetImplementation (
           sayableList: [],
           rootId: post.getRootId(),
           parentId: post.getParentId(),
+          visibleList: post.getVisibleListList(),
         }
         const sayableList = post.getSayableListList()
         for (const sayable of sayableList) {
@@ -1827,6 +1828,17 @@ function puppetImplementation (
             payload.sayableList.push(sayablePayload)
           } else {
             throw new Error(`unable to fetch sayable from ${JSON.stringify(sayable.toObject())}`)
+          }
+        }
+
+        const location = post.getLocation()
+        if (location) {
+          payload.location = {
+            name: location.getName() || '',
+            accuracy: location.getAccuracy() || 15,
+            address: location.getAddress() || '',
+            latitude: location.getLatitude(),
+            longitude: location.getLatitude(),
           }
         }
 
