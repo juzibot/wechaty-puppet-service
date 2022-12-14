@@ -1,4 +1,3 @@
-import { RoomMemberJoinScene } from '@juzi/wechaty-puppet/types';
 /**
  *   Wechaty Open Source Software - https://github.com/wechaty
  *
