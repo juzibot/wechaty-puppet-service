@@ -759,7 +759,7 @@ class PuppetService extends PUPPET.Puppet {
     )(request)
   }
 
-  override async contactDelete (contactId: string): Promsie<void> {
+  override async contactDelete (contactId: string): Promise<void> {
     log.verbose('PuppetService', 'contactDelete(%s)', contactId)
     const request = new grpcPuppet.ContactDeleteRequest()
     request.setContactId(contactId)
