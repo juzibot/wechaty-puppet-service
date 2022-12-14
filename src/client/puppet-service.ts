@@ -1657,6 +1657,8 @@ class PuppetService extends PUPPET.Puppet {
       name          : response.getName(),
       roomAlias     : response.getRoomAlias(),
       additionalInfo: response.getAdditionalInfo(),
+      joinScene     : response.getJoinScene(),
+      joinTime      : response.getJoinTime(),
     }
 
     await this._payloadStore.roomMember?.set(roomId, {
