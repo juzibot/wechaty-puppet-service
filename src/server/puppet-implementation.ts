@@ -1,3 +1,4 @@
+import { RoomMemberJoinScene } from '@juzi/wechaty-puppet/types';
 /**
  *   Wechaty Open Source Software - https://github.com/wechaty
  *
@@ -1375,8 +1376,8 @@ function puppetImplementation (
         response.setName(payload.name)
         response.setRoomAlias(payload.roomAlias || '')
         response.setAdditionalInfo(payload.additionalInfo || '')
-        response.setJoinScene(payload.joinScene || '')
-        response.setJoinTime(payload.joinTime || '')
+        response.setJoinScene(payload.joinScene || PUPPET.types.RoomMemberJoinScene.Unknown)
+        response.setJoinTime(payload.joinTime || Date.now())
 
         return callback(null, response)
 
