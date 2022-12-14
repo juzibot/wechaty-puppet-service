@@ -240,6 +240,20 @@ function puppetImplementation (
       }
     },
 
+    contactDelete: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'contactDelete()')
+
+      const contactId = call.request.getContactId()
+
+      try {
+        await puppet.contactDelete(contactId)
+
+        return callback(null, new grpcPuppet.ContactDeleteResponse())
+      } catch (e) {
+        return grpcError('contactDelete', e, callback)
+      }
+    },
+
     contactPayload: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'contactPayload()')
 
