@@ -1376,7 +1376,9 @@ function puppetImplementation (
         response.setRoomAlias(payload.roomAlias || '')
         response.setAdditionalInfo(payload.additionalInfo || '')
         response.setJoinScene(payload.joinScene || PUPPET.types.RoomMemberJoinScene.Unknown)
-        response.setJoinTime(payload.joinTime)
+        if (payload.joinTime) {
+          response.setJoinTime(payload.joinTime)
+        }
 
         return callback(null, response)
 
