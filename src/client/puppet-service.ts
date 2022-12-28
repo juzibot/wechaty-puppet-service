@@ -924,11 +924,7 @@ class PuppetService extends PUPPET.Puppet {
         .bind(this.grpcManager.client),
     )(request)
 
-    const channelPayload = response.getChannel()!.toObject()
-
-    const payload: PUPPET.payloads.Channel = {
-      ...channelPayload,
-    }
+    const payload = channelPbToPayload(response.getChannel()!)
 
     return payload
   }
@@ -1024,15 +1020,8 @@ class PuppetService extends PUPPET.Puppet {
     const request = new grpcPuppet.MessageSendChannelRequest()
     request.setConversationId(conversationId)
 
-    const pbChannelPayload = new grpcPuppet.ChannelPayload()
-    if (channelPayload.avatar) { pbChannelPayload.setAvatar(channelPayload.avatar) }
-    if (channelPayload.coverUrl) { pbChannelPayload.setCoverUrl(channelPayload.coverUrl) }
-    if (channelPayload.desc) { pbChannelPayload.setDesc(channelPayload.desc) }
-    if (channelPayload.extras) { pbChannelPayload.setExtras(channelPayload.extras) }
-    if (channelPayload.feedType) { pbChannelPayload.setFeedType(channelPayload.feedType) }
-    if (channelPayload.nickname) { pbChannelPayload.setNickname(channelPayload.nickname) }
-    if (channelPayload.thumbUrl) { pbChannelPayload.setThumbUrl(channelPayload.thumbUrl) }
-    if (channelPayload.url) { pbChannelPayload.setUrl(channelPayload.url) }
+    const pbChannelPayload = channelPayloadToPb(grpcPuppet, channelPayload)
+
     request.setChannel(pbChannelPayload)
 
     log.info('PuppetService', `messageSendChannel(${conversationId}, ${channelPayload.desc}) about to call grpc`)

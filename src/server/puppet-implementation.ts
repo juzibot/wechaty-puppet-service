@@ -751,15 +751,8 @@ function puppetImplementation (
 
         const response = new grpcPuppet.MessageChannelResponse()
 
-        const pbChannelPayload = new grpcPuppet.ChannelPayload()
-        if (payload.avatar) { pbChannelPayload.setAvatar(payload.avatar) }
-        if (payload.coverUrl) { pbChannelPayload.setCoverUrl(payload.coverUrl) }
-        if (payload.desc) { pbChannelPayload.setDesc(payload.desc) }
-        if (payload.extras) { pbChannelPayload.setExtras(payload.extras) }
-        if (payload.feedType) { pbChannelPayload.setFeedType(payload.feedType) }
-        if (payload.nickname) { pbChannelPayload.setNickname(payload.nickname) }
-        if (payload.thumbUrl) { pbChannelPayload.setThumbUrl(payload.thumbUrl) }
-        if (payload.url) { pbChannelPayload.setUrl(payload.url) }
+        const pbChannelPayload = channelPayloadToPb(grpcPuppet, payload)
+
         response.setChannel(pbChannelPayload)
 
         return callback(null, response)
