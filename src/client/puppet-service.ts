@@ -2223,7 +2223,7 @@ class PuppetService extends PUPPET.Puppet {
    */
 
   override async postPublish (payload: PUPPET.payloads.Post): Promise<void | string> {
-    log.verbose('PuppetService', 'postPublish(%s)', JSON.stringify(payload))
+    log.verbose('PuppetService', 'postPublish(%s)', payload)
 
     if (!PUPPET.payloads.isPostClient(payload)) {
       throw new Error('can only publish client post now')
