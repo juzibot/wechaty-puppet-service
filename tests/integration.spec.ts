@@ -41,7 +41,7 @@ test('Integration testing', async t => {
    */
   const serverOptions = {
     endpoint : ENDPOINT,
-    puppet   : puppet,
+    puppet,
     token    : TOKEN,
   } as PuppetServerOptions
 
@@ -61,7 +61,7 @@ test('Integration testing', async t => {
 
   t.ok(spyStart.called, 'should called the puppet server start() function')
 
-  void [spyOn, spyDing, DING]
+  void [ spyOn, spyDing, DING ]
   // const future = new Promise<string>((resolve, reject) => {
   //   const offError = () => puppetService.off('error', reject)
 

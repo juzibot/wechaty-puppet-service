@@ -1,4 +1,5 @@
 /* eslint-disable sort-keys */
+/* eslint-disable @typescript-eslint/no-misused-promises */
 import {
   google as grpcGoogle,
 }                         from '@juzi/wechaty-grpc'

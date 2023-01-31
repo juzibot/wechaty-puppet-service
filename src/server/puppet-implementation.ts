@@ -18,6 +18,7 @@
  *
  */
 /* eslint-disable sort-keys */
+/* eslint-disable @typescript-eslint/no-misused-promises */
 import type { Writable }    from 'stream'
 import {
   chunkDecoder,
