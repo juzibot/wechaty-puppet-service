@@ -728,7 +728,10 @@ class PuppetService extends PUPPET.Puppet {
     log.verbose('PuppetService', 'contactPayloadModify(%s, %s)', contactId, JSON.stringify(payload))
 
     const request = new grpcPuppet.ContactPayloadModifyRequest()
-    if (payload.id) { request.setId(payload.id) }
+    request.setId(contactId)
+    if (payload.id) {
+      throw new Error('cannot modify contactId')
+    }
     if (payload.gender) { request.setGender(payload.gender) }
     if (payload.type) { request.setType(payload.type) }
     if (payload.name) { request.setName(payload.name) }
