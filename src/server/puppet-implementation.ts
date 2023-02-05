@@ -1521,6 +1521,22 @@ function puppetImplementation (
       }
     },
 
+    roomRemark: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'roomRemark()')
+
+      try {
+        const roomId = call.request.getId()
+        const remark = call.request.getRemark()
+
+        await puppet.roomRemark(roomId, remark)
+
+        return callback(null, new grpcPuppet.RoomRemarkResponse())
+
+      } catch (e) {
+        return grpcError('roomRemark', e, callback)
+      }
+    },
+
     start: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'start()')
       void call

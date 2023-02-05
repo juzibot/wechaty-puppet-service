@@ -1606,6 +1606,20 @@ class PuppetService extends PUPPET.Puppet {
     )(request)
   }
 
+
+  override async roomRemark (roomId: string, remark: string): Promise<void> {
+    log.verbose('PuppetService', 'roomRemark(%s)', roomId)
+
+    const request = new grpcPuppet.RoomRemarkRequest()
+    request.setId(roomId)
+    request.setRemark(remark)
+
+    await util.promisify(
+      this.grpcManager.client.roomRemark
+        .bind(this.grpcManager.client),
+    )(request)
+  }
+
   override async roomCreate (
     contactIdList : string[],
     topic         : string,
