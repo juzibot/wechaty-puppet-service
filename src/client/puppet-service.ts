@@ -1606,7 +1606,6 @@ class PuppetService extends PUPPET.Puppet {
     )(request)
   }
 
-
   override async roomRemark (roomId: string, remark: string): Promise<void> {
     log.verbose('PuppetService', 'roomRemark(%s)', roomId)
 
