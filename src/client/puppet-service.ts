@@ -749,6 +749,7 @@ class PuppetService extends PUPPET.Puppet {
     if (payload.coworker) { request.setCoworker(payload.coworker) }
     if (payload.phone) { request.setPhonesList(payload.phone) }
     if (payload.additionalInfo) { request.setAdditionalInfo(payload.additionalInfo) }
+    if (payload.tags) { request.setTagIdsList(payload.tags) }
 
     await util.promisify(
       this.grpcManager.client.contactPayloadModify

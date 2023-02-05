@@ -321,6 +321,7 @@ function puppetImplementation (
           description: call.request.getDescription(),
           coworker: call.request.getCoworker(),
           additionalInfo: call.request.getAdditionalInfo(),
+          tags: call.request.getTagIdsList(),
         }
 
         await puppet.contactPayloadModify(contactId, payload)
