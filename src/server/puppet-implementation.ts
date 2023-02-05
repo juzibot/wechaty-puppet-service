@@ -295,6 +295,43 @@ function puppetImplementation (
       }
     },
 
+    contactPayloadModify: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'contactPayloadModify()')
+
+      try {
+        const contactId = call.request.getId()
+
+        const payload: Partial<PUPPET.payloads.Contact> = {
+          gender: call.request.getGender(),
+          type: call.request.getType(),
+          name: call.request.getName(),
+          avatar: call.request.getAvatar(),
+          address: call.request.getAddress(),
+          alias: call.request.getAddress(),
+          city: call.request.getCity(),
+          friend: call.request.getFriend(),
+          province: call.request.getProvince(),
+          signature: call.request.getSignature(),
+          star: call.request.getStar(),
+          weixin: call.request.getWeixin(),
+          handle: call.request.getWeixin(),
+          phone: call.request.getPhonesList(),
+          corporation: call.request.getCorporation(),
+          title: call.request.getTitle(),
+          description: call.request.getDescription(),
+          coworker: call.request.getCoworker(),
+          additionalInfo: call.request.getAdditionalInfo(),
+          tags: call.request.getTagIdsList(),
+        }
+
+        await puppet.contactPayloadModify(contactId, payload)
+        return callback(null, new grpcPuppet.ContactPayloadResponse())
+      } catch (e) {
+        return grpcError('contactPayloadModify', e, callback)
+      }
+
+    },
+
     contactPhone: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'contactPhone()')
 

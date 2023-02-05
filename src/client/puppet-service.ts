@@ -724,6 +724,40 @@ class PuppetService extends PUPPET.Puppet {
     return payload
   }
 
+  override async contactPayloadModify (contactId: string, payload: Partial<PUPPET.payloads.Contact>): Promise<void> {
+    log.verbose('PuppetService', 'contactPayloadModify(%s, %s)', contactId, JSON.stringify(payload))
+
+    const request = new grpcPuppet.ContactPayloadModifyRequest()
+    request.setId(contactId)
+    if (payload.id) {
+      throw new Error('cannot modify contactId')
+    }
+    if (payload.gender) { request.setGender(payload.gender) }
+    if (payload.type) { request.setType(payload.type) }
+    if (payload.name) { request.setName(payload.name) }
+    if (payload.avatar) { request.setAvatar(payload.avatar) }
+    if (payload.address) { request.setAddress(payload.address) }
+    if (payload.alias) { request.setAlias(payload.alias) }
+    if (payload.city) { request.setCity(payload.city) }
+    if (payload.friend) { request.setFriend(payload.friend) }
+    if (payload.province) { request.setProvince(payload.province) }
+    if (payload.star) { request.setStar(payload.star) }
+    if (payload.weixin) { request.setWeixin(payload.weixin) }
+    if (payload.corporation) { request.setCorporation(payload.corporation) }
+    if (payload.title) { request.setTitle(payload.title) }
+    if (payload.description) { request.setDescription(payload.description) }
+    if (payload.coworker) { request.setCoworker(payload.coworker) }
+    if (payload.phone) { request.setPhonesList(payload.phone) }
+    if (payload.additionalInfo) { request.setAdditionalInfo(payload.additionalInfo) }
+    if (payload.tags) { request.setTagIdsList(payload.tags) }
+
+    await util.promisify(
+      this.grpcManager.client.contactPayloadModify
+        .bind(this.grpcManager.client),
+    )(request)
+
+  }
+
   override async contactSelfName (name: string): Promise<void> {
     log.verbose('PuppetService', 'contactSelfName(%s)', name)
 
