@@ -18,7 +18,6 @@
  *
  */
 import util               from 'util'
-import type { Writable }  from 'stream'
 import * as PUPPET        from '@juzi/wechaty-puppet'
 
 import type {
@@ -39,15 +38,6 @@ import {
 }                         from 'ducks'
 import type { Store }     from 'redux'
 // import type { Subscription }  from 'rxjs'
-
-/**
- * Deprecated. Will be removed after Dec 31, 2022
- */
-import {
-  packConversationIdFileBoxToPb,
-  unpackFileBoxFromPb,
-}                                     from '../deprecated/mod.js'
-import { serializeFileBox }           from '../deprecated/serialize-file-box.js'
 
 import { millisecondsFromTimestamp }  from '../pure-functions/timestamp.js'
 
@@ -617,13 +607,6 @@ class PuppetService extends PUPPET.Puppet {
       const serializedFileBox = await this.serializeFileBox(fileBox)
       request.setFileBox(serializedFileBox)
 
-      {
-        // DEPRECATED, will be removed after Dec 31, 2022
-        const fileboxWrapper = new StringValue()
-        fileboxWrapper.setValue(await serializeFileBox(fileBox))
-        request.setFileboxStringValueDeprecated(fileboxWrapper)
-      }
-
       await util.promisify(
         this.grpcManager.client.contactAvatar
           .bind(this.grpcManager.client),
@@ -893,39 +876,22 @@ class PuppetService extends PUPPET.Puppet {
       imageType,
       PUPPET.types.Image[imageType],
     )
+    const request = new grpcPuppet.MessageImageRequest()
+    request.setId(messageId)
+    request.setType(imageType)
 
-    try {
-      const request = new grpcPuppet.MessageImageRequest()
-      request.setId(messageId)
-      request.setType(imageType)
+    const response = await util.promisify(
+      this.grpcManager.client.messageImage
+        .bind(this.grpcManager.client),
+    )(request)
 
-      const response = await util.promisify(
-        this.grpcManager.client.messageImage
-          .bind(this.grpcManager.client),
-      )(request)
+    const jsonText = response.getFileBox()
 
-      const jsonText = response.getFileBox()
-
-      if (jsonText) {
-        return this.FileBoxUuid.fromJSON(jsonText)
-      }
-
-    } catch (e) {
-      log.verbose('PuppetService', 'messageImage() rejection %s', (e as Error).message)
+    if (jsonText) {
+      return this.FileBoxUuid.fromJSON(jsonText)
     }
 
-    {
-      // Deprecated. Will be removed after Dec 31, 2022
-      const request = new grpcPuppet.MessageImageStreamRequest()
-      request.setId(messageId)
-      request.setType(imageType)
-
-      const pbStream = this.grpcManager.client.messageImageStream(request)
-      const fileBox = await unpackFileBoxFromPb(pbStream)
-      // const fileBoxChunkStream = unpackFileBoxChunk(stream)
-      // return unpackFileBox(fileBoxChunkStream)
-      return fileBox
-    }
+    throw new Error(`failed to get image filebox for message ${messageId}`)
   }
 
   override async messageContact (
@@ -1091,40 +1057,19 @@ class PuppetService extends PUPPET.Puppet {
   override async messageFile (id: string): Promise<FileBoxInterface> {
     log.verbose('PuppetService', 'messageFile(%s)', id)
 
-    try {
-      const request = new grpcPuppet.MessageFileRequest()
-      request.setId(id)
-      const response = await util.promisify(
-        this.grpcManager.client.messageFile
-          .bind(this.grpcManager.client),
-      )(request)
+    const request = new grpcPuppet.MessageFileRequest()
+    request.setId(id)
+    const response = await util.promisify(
+      this.grpcManager.client.messageFile
+        .bind(this.grpcManager.client),
+    )(request)
 
-      const jsonText = response.getFileBox()
-      if (jsonText) {
-        return this.FileBoxUuid.fromJSON(jsonText)
-      }
-    } catch (e) {
-      log.warn('PuppetService', 'messageFile() rejection: %s', (e as Error).message)
-      log.warn('PuppetService', [
-        'This might because you are using Wechaty v1.x with a Puppet Service v0.x',
-        'Contact your Wechaty Puppet Service provided to report this problem',
-        'Related issues:',
-        ' - https://github.com/wechaty/puppet-service/issues/179',
-        ' - https://github.com/wechaty/puppet-service/pull/170',
-      ].join('\n'))
+    const jsonText = response.getFileBox()
+    if (jsonText) {
+      return this.FileBoxUuid.fromJSON(jsonText)
     }
 
-    {
-      // Deprecated. `MessageFileStream` Will be removed after Dec 31, 2022
-      const request = new grpcPuppet.MessageFileStreamRequest()
-      request.setId(id)
-
-      const pbStream = this.grpcManager.client.messageFileStream(request)
-      // const fileBoxChunkStream = unpackFileBoxChunk(pbStream)
-      // return unpackFileBox(fileBoxChunkStream)
-      const fileBox = await unpackFileBoxFromPb(pbStream)
-      return fileBox
-    }
+    throw new Error(`failed to get filebox for message ${id}`)
   }
 
   override async messagePreview (id: string): Promise<FileBoxInterface | undefined> {
@@ -1286,47 +1231,32 @@ class PuppetService extends PUPPET.Puppet {
   ): Promise<void | string> {
     log.verbose('PuppetService', 'messageSendFile(%s, %s)', conversationId, fileBox)
 
-    try {
-      const request = new grpcPuppet.MessageSendFileRequest()
-      request.setConversationId(conversationId)
+    const request = new grpcPuppet.MessageSendFileRequest()
+    request.setConversationId(conversationId)
 
-      const serializedFileBox = await this.serializeFileBox(fileBox)
-      request.setFileBox(serializedFileBox)
+    const serializedFileBox = await this.serializeFileBox(fileBox)
+    request.setFileBox(serializedFileBox)
 
-      log.info('PuppetService', `messageSendFile(${conversationId}, ${fileBox}) about to call grpc`)
-      const response = await util.promisify(
-        this.grpcManager.client.messageSendFile
-          .bind(this.grpcManager.client),
-      )(request)
+    log.info('PuppetService', `messageSendFile(${conversationId}, ${fileBox}) about to call grpc`)
+    const response = await util.promisify(
+      this.grpcManager.client.messageSendFile
+        .bind(this.grpcManager.client),
+    )(request)
 
-      const messageId = response.getId()
-      log.info('PuppetService', `messageSendFile(${conversationId}, ${fileBox}) grpc called, messageId: ${messageId}`)
+    const messageId = response.getId()
+    log.info('PuppetService', `messageSendFile(${conversationId}, ${fileBox}) grpc called, messageId: ${messageId}`)
 
-      if (messageId) {
-        return messageId
-      } else {
-        /**
-         * Huan(202110): Deprecated: will be removed after Dec 31, 2022
-         */
-        const messageIdWrapper = response.getIdStringValueDeprecated()
-        if (messageIdWrapper) {
-          return messageIdWrapper.getValue()
-        }
+    if (messageId) {
+      return messageId
+    } else {
+      /**
+       * Huan(202110): Deprecated: will be removed after Dec 31, 2022
+       */
+      const messageIdWrapper = response.getIdStringValueDeprecated()
+      if (messageIdWrapper) {
+        return messageIdWrapper.getValue()
       }
-
-      return // void
-
-    } catch (e) {
-      log.verbose('PuppetService', 'messageSendFile() rejection: %s', (e as Error).message)
     }
-
-    /**
-     * Huan(202110): Deprecated: will be removed after Dec 31, 2022
-     *  The old server will not support `Upload` gRPC method,
-     *  which I'm expecting the above code will throw a exception,
-     *  then the below code will be executed.
-     */
-    return this.messageSendFileStream(conversationId, fileBox)
   }
 
   override async messageSendContact (
@@ -2518,43 +2448,6 @@ class PuppetService extends PUPPET.Puppet {
     const contactIdsList = response.getContactIdsList()
 
     return contactIdsList
-  }
-
-  /**
-   * @deprecated Will be removed in v2.0
-   */
-  private async messageSendFileStream (
-    conversationId : string,
-    file           : FileBoxInterface,
-  ): Promise<void | string> {
-    const request = await packConversationIdFileBoxToPb(grpcPuppet.MessageSendFileStreamRequest)(conversationId, file)
-
-    const response = await new Promise<grpcPuppet.MessageSendFileStreamResponse>((resolve, reject) => {
-      const stream = this.grpcManager.client.messageSendFileStream((err, response) => {
-        if (err) {
-          reject(err)
-        } else {
-          resolve(response)
-        }
-      })
-      request.pipe(stream as unknown as Writable) // Huan(202203): FIXME: as unknown as
-    })
-
-    const messageId = response.getId()
-
-    if (messageId) {
-      return messageId
-    }
-
-    {
-      /**
-       * Huan(202110): Deprecated: will be removed after Dec 31, 2022
-       */
-      const messageIdWrapper = response.getIdStringValueDeprecated()
-      if (messageIdWrapper) {
-        return messageIdWrapper.getValue()
-      }
-    }
   }
 
   healthCheckInterval?: NodeJS.Timer

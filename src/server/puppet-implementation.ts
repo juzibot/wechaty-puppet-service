@@ -35,11 +35,6 @@ import * as PUPPET          from '@juzi/wechaty-puppet'
 import { timeoutPromise }   from 'gerror'
 
 import {
-  packFileBoxToPb,
-  unpackConversationIdFileBoxArgsFromPb,
-}                                         from '../deprecated/mod.js'
-
-import {
   timestampFromMilliseconds,
 }                             from '../pure-functions/timestamp.js'
 import {
@@ -630,27 +625,6 @@ function puppetImplementation (
       }
     },
 
-    /**
-     * @deprecated will be removed after Dec 31, 2022
-     */
-    messageFileStream: async (call) => {
-      log.verbose('PuppetServiceImpl', 'messageFileStream()')
-
-      try {
-        const id = call.request.getId()
-
-        const fileBox  = await puppet.messageFile(id)
-        const response = await packFileBoxToPb(grpcPuppet.MessageFileStreamResponse)(fileBox)
-
-        response.on('error', e => call.destroy(e as Error))
-        response.pipe(call as unknown as Writable) // Huan(202203): FIXME: as unknown as
-
-      } catch (e) {
-        log.error('PuppetServiceImpl', 'grpcError() messageFileStream() rejection: %s', e && (e as Error).message)
-        call.destroy(e as Error)
-      }
-    },
-
     messageForward: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'messageForward()')
 
@@ -697,28 +671,6 @@ function puppetImplementation (
 
       } catch (e) {
         return grpcError('messageImage', e, callback)
-      }
-    },
-
-    /**
-     * @deprecated will be removed after Dec 31, 2022
-     */
-    messageImageStream: async (call) => {
-      log.verbose('PuppetServiceImpl', 'messageImageStream()')
-
-      try {
-        const id    = call.request.getId()
-        const type  = call.request.getType()
-
-        const fileBox  = await puppet.messageImage(id, type) //  as number as PUPPET.types.Image
-        const response = await packFileBoxToPb(grpcPuppet.MessageImageStreamResponse)(fileBox)
-
-        response.on('error', e => call.destroy(e as Error))
-        response.pipe(call as unknown as Writable)  // Huan(202203) FIXME: as unknown as
-
-      } catch (e) {
-        log.error('PuppetServiceImpl', 'grpcError() messageImageStream() rejection: %s', (e as Error).message)
-        call.destroy(e as Error)
       }
     },
 
@@ -939,40 +891,6 @@ function puppetImplementation (
 
       } catch (e) {
         return grpcError('messageSendFile', e, callback)
-      }
-    },
-
-    /**
-     * @deprecated will be removed after Dec 31, 2022
-     */
-    messageSendFileStream: async (call, callback) => {
-      log.verbose('PuppetServiceImpl', 'messageSendFileStream()')
-
-      try {
-        const requestArgs = await unpackConversationIdFileBoxArgsFromPb(call)
-        const conversationId = requestArgs.conversationId
-        const fileBox = requestArgs.fileBox
-
-        const messageId = await puppet.messageSendFile(conversationId, fileBox)
-
-        const response = new grpcPuppet.MessageSendFileStreamResponse()
-
-        if (messageId) {
-          response.setId(messageId)
-          {
-            /**
-              * Huan(202110): Deprecated: will be removed after Dec 31, 2022
-              */
-            const idWrapper = new StringValue()
-            idWrapper.setValue(messageId)
-            response.setIdStringValueDeprecated(idWrapper)
-          }
-        }
-
-        return callback(null, response)
-
-      } catch (e) {
-        return grpcError('messageSendFileStream', e, callback)
       }
     },
 
