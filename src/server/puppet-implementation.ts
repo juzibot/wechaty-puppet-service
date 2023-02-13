@@ -35,11 +35,6 @@ import * as PUPPET          from '@juzi/wechaty-puppet'
 import { timeoutPromise }   from 'gerror'
 
 import {
-  packFileBoxToPb,
-  unpackConversationIdFileBoxArgsFromPb,
-}                                         from '../deprecated/mod.js'
-
-import {
   timestampFromMilliseconds,
 }                             from '../pure-functions/timestamp.js'
 import {

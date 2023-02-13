@@ -18,7 +18,6 @@
  *
  */
 import util               from 'util'
-import type { Writable }  from 'stream'
 import * as PUPPET        from '@juzi/wechaty-puppet'
 
 import type {
@@ -40,13 +39,6 @@ import {
 import type { Store }     from 'redux'
 // import type { Subscription }  from 'rxjs'
 
-/**
- * Deprecated. Will be removed after Dec 31, 2022
- */
-import {
-  packConversationIdFileBoxToPb,
-  unpackFileBoxFromPb,
-}                                     from '../deprecated/mod.js'
 import { serializeFileBox }           from '../deprecated/serialize-file-box.js'
 
 import { millisecondsFromTimestamp }  from '../pure-functions/timestamp.js'
