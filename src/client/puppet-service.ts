@@ -908,7 +908,7 @@ class PuppetService extends PUPPET.Puppet {
       return this.FileBoxUuid.fromJSON(jsonText)
     }
 
-    throw new Error(`failed to get filebox for message ${messageId}`)
+    throw new Error(`failed to get image filebox for message ${messageId}`)
   }
 
   override async messageContact (
@@ -1074,40 +1074,19 @@ class PuppetService extends PUPPET.Puppet {
   override async messageFile (id: string): Promise<FileBoxInterface> {
     log.verbose('PuppetService', 'messageFile(%s)', id)
 
-    try {
-      const request = new grpcPuppet.MessageFileRequest()
-      request.setId(id)
-      const response = await util.promisify(
-        this.grpcManager.client.messageFile
-          .bind(this.grpcManager.client),
-      )(request)
+    const request = new grpcPuppet.MessageFileRequest()
+    request.setId(id)
+    const response = await util.promisify(
+      this.grpcManager.client.messageFile
+        .bind(this.grpcManager.client),
+    )(request)
 
-      const jsonText = response.getFileBox()
-      if (jsonText) {
-        return this.FileBoxUuid.fromJSON(jsonText)
-      }
-    } catch (e) {
-      log.warn('PuppetService', 'messageFile() rejection: %s', (e as Error).message)
-      log.warn('PuppetService', [
-        'This might because you are using Wechaty v1.x with a Puppet Service v0.x',
-        'Contact your Wechaty Puppet Service provided to report this problem',
-        'Related issues:',
-        ' - https://github.com/wechaty/puppet-service/issues/179',
-        ' - https://github.com/wechaty/puppet-service/pull/170',
-      ].join('\n'))
+    const jsonText = response.getFileBox()
+    if (jsonText) {
+      return this.FileBoxUuid.fromJSON(jsonText)
     }
 
-    {
-      // Deprecated. `MessageFileStream` Will be removed after Dec 31, 2022
-      const request = new grpcPuppet.MessageFileStreamRequest()
-      request.setId(id)
-
-      const pbStream = this.grpcManager.client.messageFileStream(request)
-      // const fileBoxChunkStream = unpackFileBoxChunk(pbStream)
-      // return unpackFileBox(fileBoxChunkStream)
-      const fileBox = await unpackFileBoxFromPb(pbStream)
-      return fileBox
-    }
+    throw new Error(`failed to get filebox for message ${id}`)
   }
 
   override async messagePreview (id: string): Promise<FileBoxInterface | undefined> {
