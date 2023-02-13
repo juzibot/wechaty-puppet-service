@@ -39,8 +39,6 @@ import {
 import type { Store }     from 'redux'
 // import type { Subscription }  from 'rxjs'
 
-import { serializeFileBox }           from '../deprecated/serialize-file-box.js'
-
 import { millisecondsFromTimestamp }  from '../pure-functions/timestamp.js'
 
 import {
@@ -608,13 +606,6 @@ class PuppetService extends PUPPET.Puppet {
 
       const serializedFileBox = await this.serializeFileBox(fileBox)
       request.setFileBox(serializedFileBox)
-
-      {
-        // DEPRECATED, will be removed after Dec 31, 2022
-        const fileboxWrapper = new StringValue()
-        fileboxWrapper.setValue(await serializeFileBox(fileBox))
-        request.setFileboxStringValueDeprecated(fileboxWrapper)
-      }
 
       await util.promisify(
         this.grpcManager.client.contactAvatar
