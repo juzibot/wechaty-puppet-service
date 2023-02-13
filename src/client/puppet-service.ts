@@ -893,39 +893,22 @@ class PuppetService extends PUPPET.Puppet {
       imageType,
       PUPPET.types.Image[imageType],
     )
+    const request = new grpcPuppet.MessageImageRequest()
+    request.setId(messageId)
+    request.setType(imageType)
 
-    try {
-      const request = new grpcPuppet.MessageImageRequest()
-      request.setId(messageId)
-      request.setType(imageType)
+    const response = await util.promisify(
+      this.grpcManager.client.messageImage
+        .bind(this.grpcManager.client),
+    )(request)
 
-      const response = await util.promisify(
-        this.grpcManager.client.messageImage
-          .bind(this.grpcManager.client),
-      )(request)
+    const jsonText = response.getFileBox()
 
-      const jsonText = response.getFileBox()
-
-      if (jsonText) {
-        return this.FileBoxUuid.fromJSON(jsonText)
-      }
-
-    } catch (e) {
-      log.verbose('PuppetService', 'messageImage() rejection %s', (e as Error).message)
+    if (jsonText) {
+      return this.FileBoxUuid.fromJSON(jsonText)
     }
 
-    {
-      // Deprecated. Will be removed after Dec 31, 2022
-      const request = new grpcPuppet.MessageImageStreamRequest()
-      request.setId(messageId)
-      request.setType(imageType)
-
-      const pbStream = this.grpcManager.client.messageImageStream(request)
-      const fileBox = await unpackFileBoxFromPb(pbStream)
-      // const fileBoxChunkStream = unpackFileBoxChunk(stream)
-      // return unpackFileBox(fileBoxChunkStream)
-      return fileBox
-    }
+    throw new Error(`failed to get filebox for message ${messageId}`)
   }
 
   override async messageContact (
@@ -1286,47 +1269,32 @@ class PuppetService extends PUPPET.Puppet {
   ): Promise<void | string> {
     log.verbose('PuppetService', 'messageSendFile(%s, %s)', conversationId, fileBox)
 
-    try {
-      const request = new grpcPuppet.MessageSendFileRequest()
-      request.setConversationId(conversationId)
+    const request = new grpcPuppet.MessageSendFileRequest()
+    request.setConversationId(conversationId)
 
-      const serializedFileBox = await this.serializeFileBox(fileBox)
-      request.setFileBox(serializedFileBox)
+    const serializedFileBox = await this.serializeFileBox(fileBox)
+    request.setFileBox(serializedFileBox)
 
-      log.info('PuppetService', `messageSendFile(${conversationId}, ${fileBox}) about to call grpc`)
-      const response = await util.promisify(
-        this.grpcManager.client.messageSendFile
-          .bind(this.grpcManager.client),
-      )(request)
+    log.info('PuppetService', `messageSendFile(${conversationId}, ${fileBox}) about to call grpc`)
+    const response = await util.promisify(
+      this.grpcManager.client.messageSendFile
+        .bind(this.grpcManager.client),
+    )(request)
 
-      const messageId = response.getId()
-      log.info('PuppetService', `messageSendFile(${conversationId}, ${fileBox}) grpc called, messageId: ${messageId}`)
+    const messageId = response.getId()
+    log.info('PuppetService', `messageSendFile(${conversationId}, ${fileBox}) grpc called, messageId: ${messageId}`)
 
-      if (messageId) {
-        return messageId
-      } else {
-        /**
-         * Huan(202110): Deprecated: will be removed after Dec 31, 2022
-         */
-        const messageIdWrapper = response.getIdStringValueDeprecated()
-        if (messageIdWrapper) {
-          return messageIdWrapper.getValue()
-        }
+    if (messageId) {
+      return messageId
+    } else {
+      /**
+       * Huan(202110): Deprecated: will be removed after Dec 31, 2022
+       */
+      const messageIdWrapper = response.getIdStringValueDeprecated()
+      if (messageIdWrapper) {
+        return messageIdWrapper.getValue()
       }
-
-      return // void
-
-    } catch (e) {
-      log.verbose('PuppetService', 'messageSendFile() rejection: %s', (e as Error).message)
     }
-
-    /**
-     * Huan(202110): Deprecated: will be removed after Dec 31, 2022
-     *  The old server will not support `Upload` gRPC method,
-     *  which I'm expecting the above code will throw a exception,
-     *  then the below code will be executed.
-     */
-    return this.messageSendFileStream(conversationId, fileBox)
   }
 
   override async messageSendContact (
@@ -2518,43 +2486,6 @@ class PuppetService extends PUPPET.Puppet {
     const contactIdsList = response.getContactIdsList()
 
     return contactIdsList
-  }
-
-  /**
-   * @deprecated Will be removed in v2.0
-   */
-  private async messageSendFileStream (
-    conversationId : string,
-    file           : FileBoxInterface,
-  ): Promise<void | string> {
-    const request = await packConversationIdFileBoxToPb(grpcPuppet.MessageSendFileStreamRequest)(conversationId, file)
-
-    const response = await new Promise<grpcPuppet.MessageSendFileStreamResponse>((resolve, reject) => {
-      const stream = this.grpcManager.client.messageSendFileStream((err, response) => {
-        if (err) {
-          reject(err)
-        } else {
-          resolve(response)
-        }
-      })
-      request.pipe(stream as unknown as Writable) // Huan(202203): FIXME: as unknown as
-    })
-
-    const messageId = response.getId()
-
-    if (messageId) {
-      return messageId
-    }
-
-    {
-      /**
-       * Huan(202110): Deprecated: will be removed after Dec 31, 2022
-       */
-      const messageIdWrapper = response.getIdStringValueDeprecated()
-      if (messageIdWrapper) {
-        return messageIdWrapper.getValue()
-      }
-    }
   }
 
   healthCheckInterval?: NodeJS.Timer
