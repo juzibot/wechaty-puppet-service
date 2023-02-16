@@ -1,8 +1,9 @@
-import type {
+import {
   puppet,
 } from '@juzi/wechaty-grpc'
 
 import * as PUPPET from '@juzi/wechaty-puppet'
+import type { FileBox } from 'file-box'
 
 type grpcPuppet = typeof puppet
 
@@ -110,4 +111,69 @@ export const postPayloadToPb = (grpcPuppet: grpcPuppet, payload: PUPPET.payloads
   }
   pb.setVisibleListList(payload.visibleList || [])
   return pb
+}
+
+export const postPbToPayload = (post: puppet.PostPayloadClient, FileBoxUuid: typeof FileBox) => {
+  const payload: PUPPET.payloads.PostClient = {
+    type: post.getType(),
+    sayableList: [],
+    rootId: post.getRootId(),
+    parentId: post.getParentId(),
+    visibleList: post.getVisibleListList(),
+  }
+
+  const sayableList = post.getSayableListList()
+  for (const sayable of sayableList) {
+    let sayablePayload: PUPPET.payloads.Sayable | undefined
+    switch (sayable.getType()) {
+      case puppet.SayableType.SAYABLE_TYPE_TEXT:
+        sayablePayload = PUPPET.payloads.sayable.text(sayable.getText() || '', sayable.getMentionIdListList())
+        break
+      case puppet.SayableType.SAYABLE_TYPE_FILE: {
+        const fileJsonStr = sayable.getFileBox()
+        if (!fileJsonStr) {
+          break
+        }
+        const file = FileBoxUuid.fromJSON(fileJsonStr)
+        sayablePayload = PUPPET.payloads.sayable.attachment(file)
+        break
+      }
+      case puppet.SayableType.SAYABLE_TYPE_URL: {
+        const urlLinkPayloadPb = sayable.getUrlLink()
+        if (!urlLinkPayloadPb) {
+          break
+        }
+        const urlLinkPayload = urlLinkPbToPayload(urlLinkPayloadPb)
+        sayablePayload = PUPPET.payloads.sayable.url(urlLinkPayload)
+        break
+      }
+      case puppet.SayableType.SAYABLE_TYPE_CHANNEL: {
+        const channelPayloadPb = sayable.getChannel()
+        if (!channelPayloadPb) {
+          break
+        }
+        const channelPayload = channelPbToPayload(channelPayloadPb!)
+        sayablePayload = PUPPET.payloads.sayable.channel(channelPayload)
+        break
+      }
+      default:
+        throw new Error(`unsupported postSayableType type ${sayable.getType()}`)
+    }
+    if (sayablePayload) {
+      payload.sayableList.push(sayablePayload)
+    } else {
+      throw new Error(`unable to fetch sayable from ${JSON.stringify(sayable.toObject())}`)
+    }
+  }
+  const location = post.getLocation()
+  if (location) {
+    payload.location = {
+      name: location.getName() || '',
+      accuracy: location.getAccuracy() || 15,
+      address: location.getAddress() || '',
+      latitude: location.getLatitude(),
+      longitude: location.getLatitude(),
+    }
+  }
+  return payload
 }
