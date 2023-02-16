@@ -715,24 +715,24 @@ class PuppetService extends PUPPET.Puppet {
     if (payload.id) {
       throw new Error('cannot modify contactId')
     }
-    if (payload.gender) { request.setGender(payload.gender) }
-    if (payload.type) { request.setType(payload.type) }
-    if (payload.name) { request.setName(payload.name) }
-    if (payload.avatar) { request.setAvatar(payload.avatar) }
-    if (payload.address) { request.setAddress(payload.address) }
-    if (payload.alias) { request.setAlias(payload.alias) }
-    if (payload.city) { request.setCity(payload.city) }
-    if (payload.friend) { request.setFriend(payload.friend) }
-    if (payload.province) { request.setProvince(payload.province) }
-    if (payload.star) { request.setStar(payload.star) }
-    if (payload.weixin) { request.setWeixin(payload.weixin) }
-    if (payload.corporation) { request.setCorporation(payload.corporation) }
-    if (payload.title) { request.setTitle(payload.title) }
-    if (payload.description) { request.setDescription(payload.description) }
-    if (payload.coworker) { request.setCoworker(payload.coworker) }
-    if (payload.phone) { request.setPhonesList(payload.phone) }
-    if (payload.additionalInfo) { request.setAdditionalInfo(payload.additionalInfo) }
-    if (payload.tags) { request.setTagIdsList(payload.tags) }
+    if (typeof payload.gender !== 'undefined') { request.setGender(payload.gender) }
+    if (typeof payload.type !== 'undefined') { request.setType(payload.type) }
+    if (typeof payload.name !== 'undefined') { request.setName(payload.name) }
+    if (typeof payload.avatar !== 'undefined') { request.setAvatar(payload.avatar) }
+    if (typeof payload.address !== 'undefined') { request.setAddress(payload.address) }
+    if (typeof payload.alias !== 'undefined') { request.setAlias(payload.alias) }
+    if (typeof payload.city !== 'undefined') { request.setCity(payload.city) }
+    if (typeof payload.friend !== 'undefined') { request.setFriend(payload.friend) }
+    if (typeof payload.province !== 'undefined') { request.setProvince(payload.province) }
+    if (typeof payload.star !== 'undefined') { request.setStar(payload.star) }
+    if (typeof payload.weixin !== 'undefined') { request.setWeixin(payload.weixin) }
+    if (typeof payload.corporation !== 'undefined') { request.setCorporation(payload.corporation) }
+    if (typeof payload.title !== 'undefined') { request.setTitle(payload.title) }
+    if (typeof payload.description !== 'undefined') { request.setDescription(payload.description) }
+    if (typeof payload.coworker !== 'undefined') { request.setCoworker(payload.coworker) }
+    if (typeof payload.phone !== 'undefined') { request.setPhonesList(payload.phone) }
+    if (typeof payload.additionalInfo !== 'undefined') { request.setAdditionalInfo(payload.additionalInfo) }
+    if (typeof payload.tags !== 'undefined') { request.setTagIdsList(payload.tags) }
 
     await util.promisify(
       this.grpcManager.client.contactPayloadModify
