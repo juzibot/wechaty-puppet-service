@@ -58,7 +58,7 @@ import { packageJson }  from '../package-json.js'
 
 import { GrpcManager }  from './grpc-manager.js'
 import { PayloadStore } from './payload-store.js'
-import { channelPayloadToPb, channelPbToPayload, postPayloadToPb, urlLinkPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
+import { channelPayloadToPb, channelPbToPayload, postPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
 import type { MessageBroadcastTargets, MessageBroadcastTargetType } from '@juzi/wechaty-puppet/dist/esm/src/schemas/message.js'
 
 export type PuppetServiceOptions = PUPPET.PuppetOptions & {
@@ -1375,8 +1375,8 @@ class PuppetService extends PUPPET.Puppet {
     )(request)
 
     return {
-      contactIds: response.getContactIdsList() || [],
-      roomIds: response.getRoomIdsList() || [],
+      contactIds: response.getContactIdsList(),
+      roomIds: response.getRoomIdsList(),
     }
   }
 
@@ -1388,7 +1388,7 @@ class PuppetService extends PUPPET.Puppet {
     }
 
     const request = new grpcPuppet.CreateMessageBroadcastRequest()
-    const post = postPayloadToPb(grpcPuppet, content)
+    const post = await postPayloadToPb(grpcPuppet, content, this.serializeFileBox.bind(this))
     request.setContent(post)
     request.setTargetIdsList(targets)
     request.setType(type)
@@ -2242,7 +2242,7 @@ class PuppetService extends PUPPET.Puppet {
       throw new Error('can only publish client post now')
     }
     const request = new grpcPuppet.MomentPublishRequest()
-    const post = postPayloadToPb(grpcPuppet, payload)
+    const post = await postPayloadToPb(grpcPuppet, payload, this.serializeFileBox.bind(this))
     request.setPost(post)
 
     const result = await util.promisify(

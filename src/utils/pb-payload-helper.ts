@@ -3,7 +3,7 @@ import {
 } from '@juzi/wechaty-grpc'
 
 import * as PUPPET from '@juzi/wechaty-puppet'
-import type { FileBox } from 'file-box'
+import type { FileBox, FileBoxInterface } from 'file-box'
 
 type grpcPuppet = typeof puppet
 
@@ -62,7 +62,7 @@ export const channelPbToPayload = (channelPayloadPb: puppet.ChannelPayload) => {
   return channelPayload
 }
 
-export const postPayloadToPb = (grpcPuppet: grpcPuppet, payload: PUPPET.payloads.PostClient) => {
+export const postPayloadToPb = async (grpcPuppet: grpcPuppet, payload: PUPPET.payloads.PostClient, serializeFileBox: (filebox: FileBoxInterface) => Promise<string>) => {
   const pb = new grpcPuppet.PostPayloadClient()
   pb.setType(payload.type || 0)
   for (const item of payload.sayableList) {
@@ -75,7 +75,7 @@ export const postPayloadToPb = (grpcPuppet: grpcPuppet, payload: PUPPET.payloads
         break
       case PUPPET.types.Sayable.Attachment: {
         sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_FILE)
-        const serializedFileBox = typeof item.payload.filebox === 'string' ? item.payload.filebox : await this.serializeFileBox(item.payload.filebox)
+        const serializedFileBox = typeof item.payload.filebox === 'string' ? item.payload.filebox : (await serializeFileBox(item.payload.filebox))
         sayable.setFileBox(serializedFileBox)
         break
       }
