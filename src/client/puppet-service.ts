@@ -58,7 +58,8 @@ import { packageJson }  from '../package-json.js'
 
 import { GrpcManager }  from './grpc-manager.js'
 import { PayloadStore } from './payload-store.js'
-import { channelPayloadToPb, channelPbToPayload, urlLinkPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
+import { channelPayloadToPb, channelPbToPayload, postPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
+import type { MessageBroadcastTargets, MessageBroadcastTargetType } from '@juzi/wechaty-puppet/dist/esm/src/schemas/message.js'
 
 export type PuppetServiceOptions = PUPPET.PuppetOptions & {
   authority?  : string
@@ -715,24 +716,24 @@ class PuppetService extends PUPPET.Puppet {
     if (payload.id) {
       throw new Error('cannot modify contactId')
     }
-    if (payload.gender) { request.setGender(payload.gender) }
-    if (payload.type) { request.setType(payload.type) }
-    if (payload.name) { request.setName(payload.name) }
-    if (payload.avatar) { request.setAvatar(payload.avatar) }
-    if (payload.address) { request.setAddress(payload.address) }
-    if (payload.alias) { request.setAlias(payload.alias) }
-    if (payload.city) { request.setCity(payload.city) }
-    if (payload.friend) { request.setFriend(payload.friend) }
-    if (payload.province) { request.setProvince(payload.province) }
-    if (payload.star) { request.setStar(payload.star) }
-    if (payload.weixin) { request.setWeixin(payload.weixin) }
-    if (payload.corporation) { request.setCorporation(payload.corporation) }
-    if (payload.title) { request.setTitle(payload.title) }
-    if (payload.description) { request.setDescription(payload.description) }
-    if (payload.coworker) { request.setCoworker(payload.coworker) }
-    if (payload.phone) { request.setPhonesList(payload.phone) }
-    if (payload.additionalInfo) { request.setAdditionalInfo(payload.additionalInfo) }
-    if (payload.tags) { request.setTagIdsList(payload.tags) }
+    if (typeof payload.gender !== 'undefined') { request.setGender(payload.gender) }
+    if (typeof payload.type !== 'undefined') { request.setType(payload.type) }
+    if (typeof payload.name !== 'undefined') { request.setName(payload.name) }
+    if (typeof payload.avatar !== 'undefined') { request.setAvatar(payload.avatar) }
+    if (typeof payload.address !== 'undefined') { request.setAddress(payload.address) }
+    if (typeof payload.alias !== 'undefined') { request.setAlias(payload.alias) }
+    if (typeof payload.city !== 'undefined') { request.setCity(payload.city) }
+    if (typeof payload.friend !== 'undefined') { request.setFriend(payload.friend) }
+    if (typeof payload.province !== 'undefined') { request.setProvince(payload.province) }
+    if (typeof payload.star !== 'undefined') { request.setStar(payload.star) }
+    if (typeof payload.weixin !== 'undefined') { request.setWeixin(payload.weixin) }
+    if (typeof payload.corporation !== 'undefined') { request.setCorporation(payload.corporation) }
+    if (typeof payload.title !== 'undefined') { request.setTitle(payload.title) }
+    if (typeof payload.description !== 'undefined') { request.setDescription(payload.description) }
+    if (typeof payload.coworker !== 'undefined') { request.setCoworker(payload.coworker) }
+    if (typeof payload.phone !== 'undefined') { request.setPhonesList(payload.phone) }
+    if (typeof payload.additionalInfo !== 'undefined') { request.setAdditionalInfo(payload.additionalInfo) }
+    if (typeof payload.tags !== 'undefined') { request.setTagIdsList(payload.tags) }
 
     await util.promisify(
       this.grpcManager.client.contactPayloadModify
@@ -1362,6 +1363,41 @@ class PuppetService extends PUPPET.Puppet {
       ...pbUrlLinkPayload,
     }
     return payload
+  }
+
+  override async getMessageBroadcastTarget (): Promise<MessageBroadcastTargets> {
+    log.verbose('PuppetService', 'getMessageBroadcastTarget()')
+
+    const request = new grpcPuppet.GetMessageBroadcastTargetRequest()
+
+    const response = await util.promisify(
+      this.grpcManager.client.getMessageBroadcastTarget.bind(this.grpcManager.client),
+    )(request)
+
+    return {
+      contactIds: response.getContactIdsList(),
+      roomIds: response.getRoomIdsList(),
+    }
+  }
+
+  override async createMessageBroadcast (targets: string[], type: MessageBroadcastTargetType, content: PUPPET.payloads.Post): Promise<string | void> {
+    log.verbose('PuppetService', 'createMessageBroadcast()')
+
+    if (!PUPPET.payloads.isPostClient(content)) {
+      throw new Error('can only create broadcast with client post')
+    }
+
+    const request = new grpcPuppet.CreateMessageBroadcastRequest()
+    const post = await postPayloadToPb(grpcPuppet, content, this.serializeFileBox.bind(this))
+    request.setContent(post)
+    request.setTargetIdsList(targets)
+    request.setType(type)
+
+    const response = await util.promisify(
+      this.grpcManager.client.createMessageBroadcast.bind(this.grpcManager.client),
+    )(request)
+
+    return response.getId()
   }
 
   /**
@@ -2206,53 +2242,7 @@ class PuppetService extends PUPPET.Puppet {
       throw new Error('can only publish client post now')
     }
     const request = new grpcPuppet.MomentPublishRequest()
-    const post = new grpcPuppet.PostPayloadClient()
-    post.setType(grpcPuppet.PostType.POST_TYPE_MOMENT)
-    for (const item of payload.sayableList) {
-      const sayable = new grpcPuppet.PostSayable()
-      switch (item.type) {
-        case PUPPET.types.Sayable.Text:
-          sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_TEXT)
-          sayable.setText(item.payload.text)
-          sayable.setMentionIdListList(item.payload.mentions)
-          break
-        case PUPPET.types.Sayable.Attachment: {
-          sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_FILE)
-          const serializedFileBox = typeof item.payload.filebox === 'string' ? item.payload.filebox : await this.serializeFileBox(item.payload.filebox)
-          sayable.setFileBox(serializedFileBox)
-          break
-        }
-        case PUPPET.types.Sayable.Url: {
-          sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_URL)
-          const urlLinkPayload = item.payload
-          const pbUrlLinkPayload = urlLinkPayloadToPb(grpcPuppet, urlLinkPayload)
-          sayable.setUrlLink(pbUrlLinkPayload)
-          break
-        }
-        case PUPPET.types.Sayable.Channel: {
-          sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_CHANNEL)
-          const channelPayload = item.payload
-          const pbChannelPayload = channelPayloadToPb(grpcPuppet, channelPayload)
-          sayable.setChannel(pbChannelPayload)
-          break
-        }
-        default:
-          throw new Error(`postPublish unsupported type ${item.type}`)
-      }
-      post.addSayableList(sayable)
-    }
-    if (payload.rootId) { post.setRootId(payload.rootId) }
-    if (payload.parentId) { post.setParentId(payload.parentId) }
-    if (payload.location) {
-      const location = new grpcPuppet.LocationPayload()
-      location.setAccuracy(payload.location.accuracy)
-      location.setAddress(payload.location.address)
-      location.setName(payload.location.name)
-      location.setLatitude(payload.location.latitude)
-      location.setLongitude(payload.location.longitude)
-      post.setLocation(location)
-    }
-    post.setVisibleListList(payload.visibleList || [])
+    const post = await postPayloadToPb(grpcPuppet, payload, this.serializeFileBox.bind(this))
     request.setPost(post)
 
     const result = await util.promisify(

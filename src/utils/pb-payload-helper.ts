@@ -1,8 +1,9 @@
-import type {
+import {
   puppet,
 } from '@juzi/wechaty-grpc'
 
-import type * as PUPPET from '@juzi/wechaty-puppet'
+import * as PUPPET from '@juzi/wechaty-puppet'
+import type { FileBox, FileBoxInterface } from 'file-box'
 
 type grpcPuppet = typeof puppet
 
@@ -59,4 +60,120 @@ export const channelPbToPayload = (channelPayloadPb: puppet.ChannelPayload) => {
     ..._channelPayloadPb,
   }
   return channelPayload
+}
+
+export const postPayloadToPb = async (grpcPuppet: grpcPuppet, payload: PUPPET.payloads.PostClient, serializeFileBox: (filebox: FileBoxInterface) => Promise<string>) => {
+  const pb = new grpcPuppet.PostPayloadClient()
+  pb.setType(payload.type || 0)
+  for (const item of payload.sayableList) {
+    const sayable = new grpcPuppet.PostSayable()
+    switch (item.type) {
+      case PUPPET.types.Sayable.Text:
+        sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_TEXT)
+        sayable.setText(item.payload.text)
+        sayable.setMentionIdListList(item.payload.mentions)
+        break
+      case PUPPET.types.Sayable.Attachment: {
+        sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_FILE)
+        const serializedFileBox = typeof item.payload.filebox === 'string' ? item.payload.filebox : (await serializeFileBox(item.payload.filebox))
+        sayable.setFileBox(serializedFileBox)
+        break
+      }
+      case PUPPET.types.Sayable.Url: {
+        sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_URL)
+        const urlLinkPayload = item.payload
+        const pbUrlLinkPayload = urlLinkPayloadToPb(grpcPuppet, urlLinkPayload)
+        sayable.setUrlLink(pbUrlLinkPayload)
+        break
+      }
+      case PUPPET.types.Sayable.Channel: {
+        sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_CHANNEL)
+        const channelPayload = item.payload
+        const pbChannelPayload = channelPayloadToPb(grpcPuppet, channelPayload)
+        sayable.setChannel(pbChannelPayload)
+        break
+      }
+      default:
+        throw new Error(`postPublish unsupported type ${item.type}`)
+    }
+    pb.addSayableList(sayable)
+  }
+  if (payload.rootId) { pb.setRootId(payload.rootId) }
+  if (payload.parentId) { pb.setParentId(payload.parentId) }
+  if (payload.location) {
+    const location = new grpcPuppet.LocationPayload()
+    location.setAccuracy(payload.location.accuracy)
+    location.setAddress(payload.location.address)
+    location.setName(payload.location.name)
+    location.setLatitude(payload.location.latitude)
+    location.setLongitude(payload.location.longitude)
+    pb.setLocation(location)
+  }
+  pb.setVisibleListList(payload.visibleList || [])
+  return pb
+}
+
+export const postPbToPayload = (post: puppet.PostPayloadClient, FileBoxUuid: typeof FileBox) => {
+  const payload: PUPPET.payloads.PostClient = {
+    type: post.getType(),
+    sayableList: [],
+    rootId: post.getRootId(),
+    parentId: post.getParentId(),
+    visibleList: post.getVisibleListList(),
+  }
+
+  const sayableList = post.getSayableListList()
+  for (const sayable of sayableList) {
+    let sayablePayload: PUPPET.payloads.Sayable | undefined
+    switch (sayable.getType()) {
+      case puppet.SayableType.SAYABLE_TYPE_TEXT:
+        sayablePayload = PUPPET.payloads.sayable.text(sayable.getText() || '', sayable.getMentionIdListList())
+        break
+      case puppet.SayableType.SAYABLE_TYPE_FILE: {
+        const fileJsonStr = sayable.getFileBox()
+        if (!fileJsonStr) {
+          break
+        }
+        const file = FileBoxUuid.fromJSON(fileJsonStr)
+        sayablePayload = PUPPET.payloads.sayable.attachment(file)
+        break
+      }
+      case puppet.SayableType.SAYABLE_TYPE_URL: {
+        const urlLinkPayloadPb = sayable.getUrlLink()
+        if (!urlLinkPayloadPb) {
+          break
+        }
+        const urlLinkPayload = urlLinkPbToPayload(urlLinkPayloadPb)
+        sayablePayload = PUPPET.payloads.sayable.url(urlLinkPayload)
+        break
+      }
+      case puppet.SayableType.SAYABLE_TYPE_CHANNEL: {
+        const channelPayloadPb = sayable.getChannel()
+        if (!channelPayloadPb) {
+          break
+        }
+        const channelPayload = channelPbToPayload(channelPayloadPb!)
+        sayablePayload = PUPPET.payloads.sayable.channel(channelPayload)
+        break
+      }
+      default:
+        throw new Error(`unsupported postSayableType type ${sayable.getType()}`)
+    }
+    if (sayablePayload) {
+      payload.sayableList.push(sayablePayload)
+    } else {
+      throw new Error(`unable to fetch sayable from ${JSON.stringify(sayable.toObject())}`)
+    }
+  }
+  const location = post.getLocation()
+  if (location) {
+    payload.location = {
+      name: location.getName() || '',
+      accuracy: location.getAccuracy() || 15,
+      address: location.getAddress() || '',
+      latitude: location.getLatitude(),
+      longitude: location.getLatitude(),
+    }
+  }
+  return payload
 }
