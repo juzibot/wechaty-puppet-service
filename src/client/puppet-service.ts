@@ -58,7 +58,8 @@ import { packageJson }  from '../package-json.js'
 
 import { GrpcManager }  from './grpc-manager.js'
 import { PayloadStore } from './payload-store.js'
-import { channelPayloadToPb, channelPbToPayload, urlLinkPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
+import { channelPayloadToPb, channelPbToPayload, postPayloadToPb, urlLinkPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
+import type { MessageBroadcastTargets, MessageBroadcastTargetType } from '@juzi/wechaty-puppet/dist/esm/src/schemas/message.js'
 
 export type PuppetServiceOptions = PUPPET.PuppetOptions & {
   authority?  : string
@@ -1364,6 +1365,41 @@ class PuppetService extends PUPPET.Puppet {
     return payload
   }
 
+  override async getMessageBroadcastTarget (): Promise<MessageBroadcastTargets> {
+    log.verbose('PuppetService', 'getMessageBroadcastTarget()')
+
+    const request = new grpcPuppet.GetMessageBroadcastTargetRequest()
+
+    const response = await util.promisify(
+      this.grpcManager.client.getMessageBroadcastTarget.bind(this.grpcManager.client),
+    )(request)
+
+    return {
+      contactIds: response.getContactIdsList() || [],
+      roomIds: response.getRoomIdsList() || [],
+    }
+  }
+
+  override async createMessageBroadcast (targets: string[], type: MessageBroadcastTargetType, content: PUPPET.payloads.Post): Promise<string | void> {
+    log.verbose('PuppetService', 'createMessageBroadcast()')
+
+    if (!PUPPET.payloads.isPostClient(content)) {
+      throw new Error('can only create broadcast with client post')
+    }
+
+    const request = new grpcPuppet.CreateMessageBroadcastRequest()
+    const post = postPayloadToPb(grpcPuppet, content)
+    request.setContent(post)
+    request.setTargetIdsList(targets)
+    request.setType(type)
+
+    const response = await util.promisify(
+      this.grpcManager.client.createMessageBroadcast.bind(this.grpcManager.client),
+    )(request)
+
+    return response.getId()
+  }
+
   /**
    *
    * Room
@@ -2206,53 +2242,7 @@ class PuppetService extends PUPPET.Puppet {
       throw new Error('can only publish client post now')
     }
     const request = new grpcPuppet.MomentPublishRequest()
-    const post = new grpcPuppet.PostPayloadClient()
-    post.setType(grpcPuppet.PostType.POST_TYPE_MOMENT)
-    for (const item of payload.sayableList) {
-      const sayable = new grpcPuppet.PostSayable()
-      switch (item.type) {
-        case PUPPET.types.Sayable.Text:
-          sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_TEXT)
-          sayable.setText(item.payload.text)
-          sayable.setMentionIdListList(item.payload.mentions)
-          break
-        case PUPPET.types.Sayable.Attachment: {
-          sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_FILE)
-          const serializedFileBox = typeof item.payload.filebox === 'string' ? item.payload.filebox : await this.serializeFileBox(item.payload.filebox)
-          sayable.setFileBox(serializedFileBox)
-          break
-        }
-        case PUPPET.types.Sayable.Url: {
-          sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_URL)
-          const urlLinkPayload = item.payload
-          const pbUrlLinkPayload = urlLinkPayloadToPb(grpcPuppet, urlLinkPayload)
-          sayable.setUrlLink(pbUrlLinkPayload)
-          break
-        }
-        case PUPPET.types.Sayable.Channel: {
-          sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_CHANNEL)
-          const channelPayload = item.payload
-          const pbChannelPayload = channelPayloadToPb(grpcPuppet, channelPayload)
-          sayable.setChannel(pbChannelPayload)
-          break
-        }
-        default:
-          throw new Error(`postPublish unsupported type ${item.type}`)
-      }
-      post.addSayableList(sayable)
-    }
-    if (payload.rootId) { post.setRootId(payload.rootId) }
-    if (payload.parentId) { post.setParentId(payload.parentId) }
-    if (payload.location) {
-      const location = new grpcPuppet.LocationPayload()
-      location.setAccuracy(payload.location.accuracy)
-      location.setAddress(payload.location.address)
-      location.setName(payload.location.name)
-      location.setLatitude(payload.location.latitude)
-      location.setLongitude(payload.location.longitude)
-      post.setLocation(location)
-    }
-    post.setVisibleListList(payload.visibleList || [])
+    const post = postPayloadToPb(grpcPuppet, payload)
     request.setPost(post)
 
     const result = await util.promisify(
