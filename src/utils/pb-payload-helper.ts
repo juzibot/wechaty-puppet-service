@@ -22,6 +22,14 @@ export const miniProgramPayloadToPb = (grpcPuppet: grpcPuppet, miniProgramPayloa
   return pbMiniProgramPayload
 }
 
+export const miniProgramPbToPayload = (miniProgramPayloadPb: puppet.MiniProgramPayload) => {
+  const _miniProgramPayloadPb = miniProgramPayloadPb.toObject()
+  const miniProgramPayload: PUPPET.payloads.MiniProgram = {
+    ..._miniProgramPayloadPb,
+  }
+  return miniProgramPayload
+}
+
 export const urlLinkPayloadToPb = (grpcPuppet: grpcPuppet, urlLinkPayload: PUPPET.payloads.UrlLink) => {
   const pbUrlLinkPayload = new grpcPuppet.UrlLinkPayload()
   pbUrlLinkPayload.setUrl(urlLinkPayload.url)
@@ -93,6 +101,13 @@ export const postPayloadToPb = async (grpcPuppet: grpcPuppet, payload: PUPPET.pa
         sayable.setChannel(pbChannelPayload)
         break
       }
+      case PUPPET.types.Sayable.MiniProgram: {
+        sayable.setType(grpcPuppet.SayableType.SAYABLE_TYPE_MINIPROGRAM)
+        const miniProgramPayload = item.payload
+        const pbMiniProgramPayload = miniProgramPayloadToPb(grpcPuppet, miniProgramPayload)
+        sayable.setMiniProgram(pbMiniProgramPayload)
+        break
+      }
       default:
         throw new Error(`postPublish unsupported type ${item.type}`)
     }
@@ -154,6 +169,15 @@ export const postPbToPayload = (post: puppet.PostPayloadClient, FileBoxUuid: typ
         }
         const channelPayload = channelPbToPayload(channelPayloadPb!)
         sayablePayload = PUPPET.payloads.sayable.channel(channelPayload)
+        break
+      }
+      case puppet.SayableType.SAYABLE_TYPE_MINIPROGRAM: {
+        const miniProgramPayloadPb = sayable.getMiniProgram()
+        if (!miniProgramPayloadPb) {
+          break
+        }
+        const miniProgramPayload = miniProgramPbToPayload(miniProgramPayloadPb)
+        sayablePayload = PUPPET.payloads.sayable.miniProgram(miniProgramPayload)
         break
       }
       default:
