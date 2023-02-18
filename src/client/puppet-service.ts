@@ -59,7 +59,7 @@ import { packageJson }  from '../package-json.js'
 import { GrpcManager }  from './grpc-manager.js'
 import { PayloadStore } from './payload-store.js'
 import { channelPayloadToPb, channelPbToPayload, postPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
-import type { MessageBroadcastTargets, MessageBroadcastTargetType } from '@juzi/wechaty-puppet/dist/esm/src/schemas/message.js'
+import type { MessageBroadcastTargets } from '@juzi/wechaty-puppet/dist/esm/src/schemas/message.js'
 
 export type PuppetServiceOptions = PUPPET.PuppetOptions & {
   authority?  : string
@@ -1380,7 +1380,7 @@ class PuppetService extends PUPPET.Puppet {
     }
   }
 
-  override async createMessageBroadcast (targets: string[], type: MessageBroadcastTargetType, content: PUPPET.payloads.Post): Promise<string | void> {
+  override async createMessageBroadcast (targets: string[], content: PUPPET.payloads.Post): Promise<string | void> {
     log.verbose('PuppetService', 'createMessageBroadcast()')
 
     if (!PUPPET.payloads.isPostClient(content)) {
@@ -1391,7 +1391,6 @@ class PuppetService extends PUPPET.Puppet {
     const post = await postPayloadToPb(grpcPuppet, content, this.serializeFileBox.bind(this))
     request.setContent(post)
     request.setTargetIdsList(targets)
-    request.setType(type)
 
     const response = await util.promisify(
       this.grpcManager.client.createMessageBroadcast.bind(this.grpcManager.client),

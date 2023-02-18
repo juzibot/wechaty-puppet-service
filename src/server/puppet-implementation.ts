@@ -1122,7 +1122,6 @@ function puppetImplementation (
 
       try {
         const targets = call.request.getTargetIdsList()
-        const type = call.request.getType()
         const post = call.request.getContent()
 
         if (!post) {
@@ -1134,7 +1133,7 @@ function puppetImplementation (
 
         const payload = postPbToPayload(post, FileBoxUuid)
 
-        const id = await puppet.createMessageBroadcast(targets, type, payload)
+        const id = await puppet.createMessageBroadcast(targets, payload)
 
         const response = new grpcPuppet.CreateMessageBroadcastResponse()
         if (id) {
