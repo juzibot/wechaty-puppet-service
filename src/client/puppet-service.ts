@@ -1399,6 +1399,39 @@ class PuppetService extends PUPPET.Puppet {
     return response.getId()
   }
 
+  override async getMessageBroadcastStatus (id: string): Promise<{ status: PUPPET.types.BroadcastStatus; detail: { contactId?: string | undefined; roomId?: string | undefined; status: PUPPET.types.BroadcastTargetStatus }[] }> {
+    log.verbose('PuppetService', 'getMessageBroadcastStatus()')
+
+    const request = new grpcPuppet.GetMessageBroadcastStatusRequest()
+    request.setId(id)
+
+    const response = await util.promisify(
+      this.grpcManager.client.getMessageBroadcastStatus.bind(this.grpcManager.client),
+    )(request)
+
+    const result: {
+      status: PUPPET.types.BroadcastStatus;
+      detail: {
+        contactId?: string | undefined;
+        roomId?: string | undefined;
+        status: PUPPET.types.BroadcastTargetStatus
+      }[]
+    } = {
+      status: response.getStatus(),
+      detail: [],
+    }
+    const detailList = response.getDetailList()
+    for (const detail of detailList) {
+      result.detail.push({
+        contactId: detail.getContactId(),
+        roomId: detail.getRoomId(),
+        status: detail.getStatus(),
+      })
+    }
+
+    return result
+  }
+
   /**
    *
    * Room

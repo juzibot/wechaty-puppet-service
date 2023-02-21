@@ -1147,6 +1147,32 @@ function puppetImplementation (
       }
     },
 
+    getMessageBroadcastStatus: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'getMessageBroadcastStatus()')
+
+      try {
+        const id = call.request.getId()
+        const result = await puppet.getMessageBroadcastStatus(id)
+
+        const response = new grpcPuppet.GetMessageBroadcastStatusResponse()
+        response.setStatus(result.status)
+        const detailList: grpcPuppet.BroadcastTarget[] = []
+        for (const targetDetail of result.detail) {
+          const detail = new grpcPuppet.BroadcastTarget()
+          if (targetDetail.contactId) detail.setContactId(targetDetail.contactId)
+          if (targetDetail.roomId) detail.setRoomId(targetDetail.roomId)
+          detail.setStatus(targetDetail.status)
+          detailList.push(detail)
+        }
+        response.setDetailList(detailList)
+
+        return callback(null, response)
+
+      } catch (e) {
+        return grpcError('getMessageBroadcastStatus', e, callback)
+      }
+    },
+
     roomAdd: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'roomAdd()')
 
