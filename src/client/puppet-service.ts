@@ -731,9 +731,19 @@ class PuppetService extends PUPPET.Puppet {
     if (typeof payload.title !== 'undefined') { request.setTitle(payload.title) }
     if (typeof payload.description !== 'undefined') { request.setDescription(payload.description) }
     if (typeof payload.coworker !== 'undefined') { request.setCoworker(payload.coworker) }
-    if (typeof payload.phone !== 'undefined') { request.setPhonesList(payload.phone) }
+    if (typeof payload.phone !== 'undefined') {
+      request.setPhonesList(payload.phone)
+      if (payload.phone.length === 0) {
+        request.setClearPhones(true)
+      }
+    }
     if (typeof payload.additionalInfo !== 'undefined') { request.setAdditionalInfo(payload.additionalInfo) }
-    if (typeof payload.tags !== 'undefined') { request.setTagIdsList(payload.tags) }
+    if (typeof payload.tags !== 'undefined') {
+      request.setTagIdsList(payload.tags)
+      if (payload.tags.length === 0) {
+        request.setClearTagIds(true)
+      }
+    }
 
     await util.promisify(
       this.grpcManager.client.contactPayloadModify
