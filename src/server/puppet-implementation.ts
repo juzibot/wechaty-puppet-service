@@ -319,6 +319,13 @@ function puppetImplementation (
           tags: call.request.getTagIdsList(),
         }
 
+        if (call.request.getClearPhones()) {
+          payload.phone = []
+        }
+        if (call.request.getClearTagIds()) {
+          payload.tags = []
+        }
+
         await puppet.contactPayloadModify(contactId, payload)
         return callback(null, new grpcPuppet.ContactPayloadResponse())
       } catch (e) {
