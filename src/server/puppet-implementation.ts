@@ -1860,6 +1860,23 @@ function puppetImplementation (
 
     },
 
+    momentUnpublish: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'momentUnpublish()')
+
+      try {
+        const id = call.request.getMomentId()
+        await puppet.postUnpublish(id)
+
+        const response = new grpcPuppet.MomentUnpublishResponse()
+
+        return callback(null, response)
+
+      } catch (e) {
+        return grpcError('momentUnpublish', e, callback)
+      }
+
+    },
+
     postTap: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'postLike()')
 
