@@ -2297,6 +2297,17 @@ class PuppetService extends PUPPET.Puppet {
     return momentId
   }
 
+  override async postUnpublish (id: string): Promise<void> {
+    log.verbose('PuppetService', 'postUnpublish(%s)', id)
+
+    const request = new grpcPuppet.MomentUnpublishRequest()
+    request.setMomentId(id)
+
+    await util.promisify(
+      this.grpcManager.client.momentUnpublish.bind(this.grpcManager.client),
+    )(request)
+  }
+
   override async momentSignature (text?: string): Promise<void | string> {
     log.verbose('PuppetService', 'momentSignature(%s)', text)
 
