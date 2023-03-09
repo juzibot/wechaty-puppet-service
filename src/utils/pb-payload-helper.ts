@@ -58,7 +58,7 @@ export const channelPayloadToPb = (grpcPuppet: grpcPuppet, channelPayload: PUPPE
   if (channelPayload.thumbUrl) { pbChannelPayload.setThumbUrl(channelPayload.thumbUrl) }
   if (channelPayload.url) { pbChannelPayload.setUrl(channelPayload.url) }
   if (channelPayload.objectId) { pbChannelPayload.setObjectId(channelPayload.objectId) }
-  if (channelPayload.objectNonceId) { pbChannelPayload.setObjectId(channelPayload.objectNonceId) }
+  if (channelPayload.objectNonceId) { pbChannelPayload.setObjectNonceId(channelPayload.objectNonceId) }
   return pbChannelPayload
 }
 
