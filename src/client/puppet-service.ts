@@ -87,6 +87,8 @@ class PuppetService extends PUPPET.Puppet {
   protected _ducks: Ducks<{ puppet: typeof PuppetDuck }>
   protected _store: Store
 
+  private timeoutMilliseconds: number
+
   protected _grpcManager?: GrpcManager
   get grpcManager (): GrpcManager {
     if (!this._grpcManager) {
@@ -119,6 +121,7 @@ class PuppetService extends PUPPET.Puppet {
     this._cleanupCallbackList = []
 
     this.FileBoxUuid = uuidifyFileBoxGrpc(() => this.grpcManager.client)
+    this.timeoutMilliseconds = (options.timeoutSeconds || 2) * 1000 * 10 // 20min default, 40min for xiaoju-bot
   }
 
   protected async serializeFileBox (fileBox: FileBoxInterface): Promise<string> {
@@ -164,7 +167,10 @@ class PuppetService extends PUPPET.Puppet {
     log.verbose('PuppetService', 'start() setting up bridge grpc event stream ... done')
 
     log.verbose('PuppetService', 'start() starting grpc manager...')
-    await grpcManager.start()
+    const lastEventTimestamp = await this._payloadStore.miscellaneous.get('eventTimestamp')
+    const lastEventSeq = (Date.now() - Number(lastEventTimestamp || 0)) < this.timeoutMilliseconds ? await this._payloadStore.miscellaneous.get('eventSeq') : undefined
+    const accountId = await this._payloadStore.miscellaneous.get('accountId')
+    await grpcManager.start(lastEventSeq, accountId)
     log.verbose('PuppetService', 'start() starting grpc manager... done')
 
     log.verbose('PuppetService', 'start healthCheck')
@@ -254,9 +260,11 @@ class PuppetService extends PUPPET.Puppet {
       })
   }
 
-  private onGrpcStreamEvent (event: grpcPuppet.EventResponse): void {
+  private async onGrpcStreamEvent (event: grpcPuppet.EventResponse): void {
+
     const type    = event.getType()
     const payload = event.getPayload()
+    const seq     = event.getSeq()
 
     if (!NO_LOG_EVENTS.includes(type)) {
       log.info('PuppetService', `received grpc event ${EventTypeRev[type]} on ${new Date().toString()}, content: ${JSON.stringify(payload)}`)
@@ -275,6 +283,14 @@ class PuppetService extends PUPPET.Puppet {
       })
     }
 
+    if (seq) {
+      const lastEventSeq = await this._payloadStore.miscellaneous.get('eventSeq')
+      if (!lastEventSeq || (seq > Number(lastEventSeq) || seq === 1)) {
+        await this._payloadStore.miscellaneous.set('eventSeq', String(seq))
+        await this._payloadStore.miscellaneous.set('eventTimestamp', String(Date.now()))
+      }
+    }
+
     switch (type) {
       case grpcPuppet.EventType.EVENT_TYPE_DONG:
         this.emit('dong', JSON.parse(payload) as PUPPET.payloads.EventDong)
@@ -291,6 +307,7 @@ class PuppetService extends PUPPET.Puppet {
       case grpcPuppet.EventType.EVENT_TYPE_LOGIN:
         {
           const loginPayload = JSON.parse(payload) as PUPPET.payloads.EventLogin
+          await this._payloadStore.miscellaneous.set('accountId', loginPayload.contactId)
           ;(
             async () => this.login(loginPayload.contactId)
           )().catch(e =>
@@ -303,6 +320,7 @@ class PuppetService extends PUPPET.Puppet {
       case grpcPuppet.EventType.EVENT_TYPE_LOGOUT:
         {
           const logoutPayload = JSON.parse(payload) as PUPPET.payloads.EventLogout
+          await this._payloadStore.miscellaneous.delete('accountId')
           ;(
             async () => this.logout(logoutPayload.data)
           )().catch(e =>

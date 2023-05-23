@@ -144,7 +144,7 @@ class GrpcManager extends EventEmitter {
     log.verbose('GrpcManager', 'constructor() serverName(SNI): "%s"', this.serverName)
   }
 
-  async start (): Promise<void> {
+  async start (lastEventSeq?: string, accountId?: string): Promise<void> {
     log.verbose('GrpcManager', 'start()')
 
     /**
@@ -158,7 +158,7 @@ class GrpcManager extends EventEmitter {
      * 2. Connect to stream
      */
     log.verbose('GrpcManager', 'start() starting stream ...')
-    await this.startStream()
+    await this.startStream(lastEventSeq, accountId)
     log.verbose('GrpcManager', 'start() starting stream ... done')
 
     /**
@@ -287,7 +287,7 @@ class GrpcManager extends EventEmitter {
     }
   }
 
-  protected async startStream (): Promise<void> {
+  protected async startStream (lastEventSeq?: string, accountId?: string): Promise<void> {
     log.verbose('GrpcManager', 'startStream()')
 
     if (this.eventStream) {
@@ -296,7 +296,15 @@ class GrpcManager extends EventEmitter {
     }
 
     log.verbose('GrpcManager', 'startStream() grpc -> event() ...')
-    const eventStream = this.client.event(new puppet.EventRequest())
+
+    const eventRequest = new puppet.EventRequest()
+    if (lastEventSeq) {
+      eventRequest.setSeq(Number(lastEventSeq))
+    }
+    if (accountId) {
+      eventRequest.setAccountId(accountId)
+    }
+    const eventStream = this.client.event(eventRequest)
     log.verbose('GrpcManager', 'startStream() grpc -> event() ... done')
 
     /**
