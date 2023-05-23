@@ -260,7 +260,7 @@ class PuppetService extends PUPPET.Puppet {
       })
   }
 
-  private async onGrpcStreamEvent (event: grpcPuppet.EventResponse): void {
+  private async onGrpcStreamEvent (event: grpcPuppet.EventResponse): Promise<void> {
 
     const type    = event.getType()
     const payload = event.getPayload()
