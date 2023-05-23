@@ -12,6 +12,8 @@ import { FileBox, FileBoxType } from 'file-box'
 import PuppetService, { PuppetServer, PuppetServerOptions } from '../src/mod.js'
 
 const NIL_UUID_V4 = '00000000-0000-0000-0000-000000000000'
+const NIL_UUID_V4_2 = '00000000-0000-0000-0000-000000000001'
+
 const __dirname = path.resolve()
 
 test('message file test', async t => {
@@ -66,7 +68,7 @@ test('message file test', async t => {
 
 test('buffer file test', async t => {
   const PORT = await getPort()
-  const TOKEN = `insecure_${NIL_UUID_V4}`
+  const TOKEN = `insecure_${NIL_UUID_V4_2}`
   const ENDPOINT = `0.0.0.0:${PORT}`
 
   const FILE = path.join(__dirname, 'tests', 'fixtures', 'smoke-testing.ts')
