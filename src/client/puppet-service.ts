@@ -234,7 +234,7 @@ class PuppetService extends PUPPET.Puppet {
     log.verbose('PuppetService', 'bridgeGrpcEventStream(client)')
 
     client
-      .on('data', this.onGrpcStreamEvent.bind(this))
+      .on('data', this.onGrpcStreamEvent.bind(this) as any)
       .on('end', () => {
         log.verbose('PuppetService', 'bridgeGrpcEventStream() eventStream.on(end)')
       })
