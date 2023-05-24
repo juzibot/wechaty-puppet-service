@@ -307,6 +307,10 @@ class PuppetService extends PUPPET.Puppet {
       case grpcPuppet.EventType.EVENT_TYPE_LOGIN:
         {
           const loginPayload = JSON.parse(payload) as PUPPET.payloads.EventLogin
+          const accountId = await this._payloadStore.miscellaneous.get('accountId')
+          if (accountId !== loginPayload.contactId) {
+            await this._payloadStore.miscellaneous.delete('eventSeq')
+          }
           await this._payloadStore.miscellaneous.set('accountId', loginPayload.contactId)
           ;(
             async () => this.login(loginPayload.contactId)
