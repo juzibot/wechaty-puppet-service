@@ -46,11 +46,12 @@ class PayloadStore {
 
   // public message?    : LRU<string, MessagePayload>
 
-  public contact?    : FlashStore<string, PUPPET.payloads.Contact>
-  public roomMember? : FlashStore<string, StoreRoomMemberPayload>
-  public room?       : FlashStore<string, PUPPET.payloads.Room>
-  public tag?        : FlashStore<string, PUPPET.payloads.Tag>
-  public tagGroup?   : FlashStore<string, PUPPET.payloads.TagGroup>
+  public contact?      : FlashStore<string, PUPPET.payloads.Contact>
+  public roomMember?   : FlashStore<string, StoreRoomMemberPayload>
+  public room?         : FlashStore<string, PUPPET.payloads.Room>
+  public tag?          : FlashStore<string, PUPPET.payloads.Tag>
+  public tagGroup?     : FlashStore<string, PUPPET.payloads.TagGroup>
+  public miscellaneous : FlashStore<string, string>
 
   protected storeDir:   string
   protected accountId?: string
@@ -66,6 +67,12 @@ class PayloadStore {
       `v${major(VERSION)}.${minor(VERSION)}`,
     )
     log.silly('PayloadStore', 'constructor() storeDir: "%s"', this.storeDir)
+
+    if (!fs.existsSync(this.storeDir)) {
+      fs.mkdirSync(this.storeDir, { recursive: true })
+    }
+
+    this.miscellaneous = new FlashStore(path.join(this.storeDir, 'miscellaneous')) // account-free data
   }
 
   /**
@@ -147,6 +154,8 @@ class PayloadStore {
     if (this.accountId) {
       throw new Error('Can not destroy() a start()-ed store. Call stop() to stop it first')
     }
+
+    await this.miscellaneous.close()
 
     /**
      * Huan(202108): `fs.rm` was introduced from Node.js v14.14
