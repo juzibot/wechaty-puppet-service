@@ -2546,14 +2546,12 @@ class PuppetService extends PUPPET.Puppet {
   override async reset (): Promise<void> {
     if (!this._grpcManager) {
       log.warn('PuppetService', 'grpc manager not constructed, perform regular reset')
-      await super.reset()
-      return
+      return super.reset()
     }
 
     if (!this.isLoggedIn) {
       log.warn('PuppetService', 'puppet not logged in, perform regular reset')
-      await super.reset()
-      return
+      return super.reset()
     }
 
     this.grpcManager.stopStream()
@@ -2612,7 +2610,7 @@ class PuppetService extends PUPPET.Puppet {
         .finally(() => this.grpcManager.off('data', onLogin))
     } catch (e) {
       log.warn('PuppetService', 'waiting for event reset login error, will perform regular reset')
-      await this.reset()
+      return super.reset()
     }
     try {
       await timeoutPromise(readyFuture, ResetReadyTimeout)
