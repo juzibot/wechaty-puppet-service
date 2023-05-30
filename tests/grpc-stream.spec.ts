@@ -83,3 +83,58 @@ test('gRPC client breaks', async t => {
   // setTimeout(() => whyIsNodeRunning(), 1000)
   await puppetServer.stop()
 })
+
+test('gRPC event quick reconnect', async t => {
+  const TOKEN       = 'insecure_token2'
+  const PORT        = await getPort()
+  const ENDPOINT    = '0.0.0.0:' + PORT
+
+  const puppet = new PuppetMock() as any
+  const spyOnStart = sinon.spy(puppet, 'onStart')
+  /**
+    * Puppet Server
+    */
+  const serverOptions = {
+    endpoint: ENDPOINT,
+    puppet,
+    token: TOKEN,
+  } as PuppetServerOptions
+
+  const puppetServer = new PuppetServer(serverOptions)
+  await puppetServer.start()
+
+  /**
+    * Puppet Service Client
+    */
+  const puppetOptions = {
+    endpoint: ENDPOINT,
+    token: TOKEN,
+  } as PuppetOptions
+
+  const puppetService = new PuppetService(puppetOptions)
+  await puppetService.start()
+  t.ok(spyOnStart.called, 'should called the puppet server onStart() function')
+
+  // wait for login handling
+  const future = new Promise<void>(resolve => {
+    puppetService.once('login', () => {
+      resolve()
+    })
+  })
+  puppet.login('account')
+
+  await future
+  puppetService.on('login', () => {
+    t.fail('should not emit another login event because this should be a pain free reset')
+  })
+  puppetService.on('logout', (data) => {
+    if (data.data !== 'puppet stop()') { // this is the one called when puppetService.stop()
+      t.fail('should not emit another logout event because this should be a pain free reset')
+    }
+  })
+  await puppetService.reset()
+
+  // setTimeout(() => whyIsNodeRunning(), 1000)
+  await puppetService.stop()
+  await puppetServer.stop()
+})
