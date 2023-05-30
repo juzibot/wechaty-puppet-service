@@ -294,13 +294,27 @@ class EventStreamManager {
           this.offCallbackList.push(off)
           break
         }
+        case 'post-comment': {
+          const listener = (payload: PUPPET.payloads.EventPostComment) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_POST_COMMENT, payload)
+          this.puppet.on('post-comment', listener)
+          const off = () => this.puppet.off('post-comment', listener)
+          this.offCallbackList.push(off)
+          break
+        }
+        case 'post-tap': {
+          const listener = (payload: PUPPET.payloads.EventPostTap) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_POST_TAP, payload)
+          this.puppet.on('post-tap', listener)
+          const off = () => this.puppet.off('post-tap', listener)
+          this.offCallbackList.push(off)
+          break
+        }
         case 'reset':
           // the `reset` event should be dealed internally, should not send out
           break
 
         default:
           // Huan(202003): in default, the `eventName` type should be `never`, please check.
-          throw new Error('eventName ' + eventName + ' unsupported!')
+          log.warn('eventName ' + eventName + ' unsupported!')
       }
     }
 
