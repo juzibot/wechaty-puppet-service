@@ -60,6 +60,7 @@ import { GrpcManager }  from './grpc-manager.js'
 import { PayloadStore } from './payload-store.js'
 import { channelPayloadToPb, channelPbToPayload, postPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
 import type { MessageBroadcastTargets } from '@juzi/wechaty-puppet/dist/esm/src/schemas/message.js'
+import { timeoutPromise } from 'gerror'
 
 export type PuppetServiceOptions = PUPPET.PuppetOptions & {
   authority?  : string
@@ -73,6 +74,9 @@ export type PuppetServiceOptions = PUPPET.PuppetOptions & {
     disable? : boolean
   }
 }
+
+const ResetLoginTimeout = 30 * 1000
+const ResetReadyTimeout = 20 * 1000 // normally ready comes 15 seconds after login
 
 class PuppetService extends PUPPET.Puppet {
 
@@ -306,6 +310,10 @@ class PuppetService extends PUPPET.Puppet {
         break
       case grpcPuppet.EventType.EVENT_TYPE_LOGIN:
         {
+          if (this.waitingForLogin) {
+            log.warn('PuppetService', 'this login event is ignored because the it is expected by event stream reconnect')
+            return
+          }
           const loginPayload = JSON.parse(payload) as PUPPET.payloads.EventLogin
           const accountId = await this._payloadStore.miscellaneous.get('accountId')
           if (accountId !== loginPayload.contactId) {
@@ -350,6 +358,10 @@ class PuppetService extends PUPPET.Puppet {
         this.emit('post-tap', JSON.parse(payload) as PUPPET.payloads.EventPostTap)
         break
       case grpcPuppet.EventType.EVENT_TYPE_READY:
+        if (this.waitingForLogin) {
+          log.warn('PuppetService', 'this ready event is ignored because the it is expected by event stream reconnect')
+          return
+        }
         this.emit('ready', JSON.parse(payload) as PUPPET.payloads.EventReady)
         break
       case grpcPuppet.EventType.EVENT_TYPE_ROOM_INVITE:
@@ -2524,6 +2536,88 @@ class PuppetService extends PUPPET.Puppet {
 
   stopHealthCheck () {
     clearInterval(this.healthCheckInterval!)
+  }
+
+  // handle watchdog reset
+  // goal: pain free reset of reconnect within threshold (like 30 seconds?)
+
+  private waitingForLogin = false
+  private waitingForReady = false
+  override async reset (): Promise<void> {
+    if (!this._grpcManager) {
+      log.warn('PuppetService', 'grpc manager not constructed, perform regular reset')
+      return super.reset()
+    }
+
+    if (!this.isLoggedIn) {
+      log.warn('PuppetService', 'puppet not logged in, perform regular reset')
+      return super.reset()
+    }
+
+    this.grpcManager.stopStream()
+    const lastEventTimestamp = await this._payloadStore.miscellaneous.get('eventTimestamp')
+    const lastEventSeq = (Date.now() - Number(lastEventTimestamp || 0)) < this.timeoutMilliseconds ? await this._payloadStore.miscellaneous.get('eventSeq') : undefined
+    const accountId = await this._payloadStore.miscellaneous.get('accountId')
+
+    const onLoginResolve = (resolve: () => void) => {
+      const onLogin = (event: grpcPuppet.EventResponse) => {
+        const type = event.getType()
+        const payload = event.getPayload()
+        if (this.waitingForLogin && type === grpcPuppet.EventType.EVENT_TYPE_LOGIN) {
+          const payloadObj = JSON.parse(payload) as PUPPET.payloads.EventLogin
+          this.waitingForLogin = false
+          if (accountId && payloadObj.contactId !== accountId) {
+            throw new Error('login with a different account, perform regular reset')
+          }
+          resolve()
+        }
+      }
+      return onLogin
+    }
+    const onReadyResolve = (resolve: () => void) => {
+      const onReady = (event: grpcPuppet.EventResponse) => {
+        const type = event.getType()
+        if (this.waitingForReady && type === grpcPuppet.EventType.EVENT_TYPE_READY) {
+          this.waitingForReady = false
+          resolve()
+        }
+      }
+      return onReady
+    }
+
+    let onLogin: ReturnType<typeof onLoginResolve>
+    let onReady: ReturnType<typeof onReadyResolve>
+    const loginFuture = new Promise<void>(resolve => {
+      onLogin = onLoginResolve(resolve)
+      this.grpcManager.on('data', onLogin)
+    })
+    const readyFuture = new Promise<void>(resolve => {
+      onReady = onReadyResolve(resolve)
+      this.grpcManager.on('data', onReady)
+    })
+
+    this.waitingForLogin = true
+    this.waitingForReady = true
+
+    // wait for server to clear stream
+    await new Promise(resolve => {
+      setTimeout(resolve, 5000)
+    })
+
+    await this.grpcManager.startStream(lastEventSeq, accountId)
+    try {
+      await timeoutPromise(loginFuture, ResetLoginTimeout)
+        .finally(() => this.grpcManager.off('data', onLogin))
+    } catch (e) {
+      log.warn('PuppetService', 'waiting for event reset login error, will perform regular reset')
+      return super.reset()
+    }
+    try {
+      await timeoutPromise(readyFuture, ResetReadyTimeout)
+        .finally(() => this.grpcManager.off('data', onReady))
+    } catch (e) {
+      log.warn('PuppetService', 'waiting for event reset ready error, will do nothing')
+    }
   }
 
 }

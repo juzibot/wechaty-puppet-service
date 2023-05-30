@@ -287,7 +287,7 @@ class GrpcManager extends EventEmitter {
     }
   }
 
-  protected async startStream (lastEventSeq?: string, accountId?: string): Promise<void> {
+  async startStream (lastEventSeq?: string, accountId?: string): Promise<void> {
     log.verbose('GrpcManager', 'startStream()')
 
     if (this.eventStream) {
@@ -400,7 +400,7 @@ class GrpcManager extends EventEmitter {
     log.verbose('GrpcManager', 'startStream() initializing event stream ... done')
 
     /**
-     * Re-emit the peeked data if there's any
+     * Re-emit the peeked data if there' s any
      */
     if (peekedData) {
       log.verbose('GrpcManager', 'startStream() sending back the peeked data ...')
@@ -412,7 +412,7 @@ class GrpcManager extends EventEmitter {
     log.verbose('GrpcManager', 'startStream() ... done')
   }
 
-  protected stopStream (): void {
+  stopStream (): void {
     log.verbose('GrpcManager', 'stopStream()')
 
     if (!this.eventStream) {
@@ -434,6 +434,7 @@ class GrpcManager extends EventEmitter {
     // this.eventStream.cancel()
 
     try {
+      eventStream.cancel()
       log.verbose('GrpcManager', 'stopStream() destroying event stream ...')
       eventStream.destroy()
       log.verbose('GrpcManager', 'stopStream() destroying event stream ... done')
