@@ -2569,7 +2569,6 @@ class PuppetService extends PUPPET.Puppet {
           const payloadObj = JSON.parse(payload) as PUPPET.payloads.EventLogin
           this.waitingForLogin = false
           if (accountId && payloadObj.contactId !== accountId) {
-            console.log(accountId, payloadObj.contactId)
             throw new Error('login with a different account, perform regular reset')
           }
           resolve()
