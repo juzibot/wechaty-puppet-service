@@ -358,7 +358,7 @@ class PuppetService extends PUPPET.Puppet {
         this.emit('post-tap', JSON.parse(payload) as PUPPET.payloads.EventPostTap)
         break
       case grpcPuppet.EventType.EVENT_TYPE_READY:
-        if (this.waitingForLogin) {
+        if (this.waitingForReady) {
           log.warn('PuppetService', 'this ready event is ignored because the it is expected by event stream reconnect')
           return
         }
