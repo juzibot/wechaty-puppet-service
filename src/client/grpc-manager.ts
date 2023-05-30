@@ -434,7 +434,6 @@ class GrpcManager extends EventEmitter {
     // this.eventStream.cancel()
 
     try {
-      eventStream.cancel()
       log.verbose('GrpcManager', 'stopStream() destroying event stream ...')
       eventStream.destroy()
       log.verbose('GrpcManager', 'stopStream() destroying event stream ... done')
