@@ -61,6 +61,7 @@ import { PayloadStore } from './payload-store.js'
 import { channelPayloadToPb, channelPbToPayload, postPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
 import type { MessageBroadcastTargets } from '@juzi/wechaty-puppet/dist/esm/src/schemas/message.js'
 import { timeoutPromise } from 'gerror'
+import { BooleanIndicator } from 'state-switch'
 
 export type PuppetServiceOptions = PUPPET.PuppetOptions & {
   authority?  : string
@@ -126,6 +127,9 @@ class PuppetService extends PUPPET.Puppet {
 
     this.FileBoxUuid = uuidifyFileBoxGrpc(() => this.grpcManager.client)
     this.timeoutMilliseconds = (options.timeoutSeconds || 2) * 1000 * 10 // 20min default, 40min for xiaoju-bot
+
+    this.reconnectIndicator = new BooleanIndicator()
+    this.reconnectIndicator.value(false)
   }
 
   protected async serializeFileBox (fileBox: FileBoxInterface): Promise<string> {
@@ -2543,6 +2547,7 @@ class PuppetService extends PUPPET.Puppet {
 
   private waitingForLogin = false
   private waitingForReady = false
+  private reconnectIndicator: BooleanIndicator
   override async reset (): Promise<void> {
     if (!this._grpcManager) {
       log.warn('PuppetService', 'grpc manager not constructed, perform regular reset')
@@ -2553,6 +2558,13 @@ class PuppetService extends PUPPET.Puppet {
       log.warn('PuppetService', 'puppet not logged in, perform regular reset')
       return super.reset()
     }
+
+    if (this.reconnectIndicator.value()) {
+      log.warn('PuppetService', 'already trying to reconnect, pass this one')
+      return
+    }
+
+    this.reconnectIndicator.value(true)
 
     this.grpcManager.stopStream()
     const lastEventTimestamp = await this._payloadStore.miscellaneous.get('eventTimestamp')
@@ -2607,7 +2619,10 @@ class PuppetService extends PUPPET.Puppet {
     await this.grpcManager.startStream(lastEventSeq, accountId)
     try {
       await timeoutPromise(loginFuture, ResetLoginTimeout)
-        .finally(() => this.grpcManager.off('data', onLogin))
+        .finally(() => {
+          this.reconnectIndicator.value(false)
+          this.grpcManager.off('data', onLogin)
+        })
     } catch (e) {
       log.warn('PuppetService', 'waiting for event reset login error, will perform regular reset')
       return super.reset()
