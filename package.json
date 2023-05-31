@@ -80,6 +80,7 @@
     "redux-observable": "^2.0.0",
     "rxjs": "^7.5.5",
     "semver": "^7.3.5",
+    "state-switch": "^1.7.1",
     "stronger-typed-streams": "^0.2.0",
     "uuid": "^8.3.2",
     "wechaty-token": "^1.0.6"
