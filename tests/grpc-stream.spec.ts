@@ -132,7 +132,12 @@ test('gRPC event quick reconnect', async t => {
       t.fail('should not emit another logout event because this should be a pain free reset')
     }
   })
-  await puppetService.reset()
+  const promises = [
+    puppetService.reset(),
+    puppetService.reset(),
+    puppetService.reset(),
+  ]
+  await Promise.all(promises)
 
   // setTimeout(() => whyIsNodeRunning(), 1000)
   await puppetService.stop()
