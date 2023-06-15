@@ -1547,10 +1547,9 @@ function puppetImplementation (
         }
 
         let set = false
-        for (const key in permission) {
-          if (typeof permission[key] === 'boolean') {
-            set = true
-          }
+
+        if (typeof permission.sendMessage === 'boolean' || typeof permission.invitationCheck === 'boolean' || typeof permission.roomTopicEdit === 'boolean') {
+          set = true
         }
 
         const result = await puppet.roomPermission(roomId, set ? permission : undefined)
