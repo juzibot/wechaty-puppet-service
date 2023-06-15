@@ -1897,6 +1897,50 @@ class PuppetService extends PUPPET.Puppet {
     return payload
   }
 
+  override async roomPermission (roomId: string, permission?: Partial<PUPPET.types.RoomPermission>): Promise<void | PUPPET.types.RoomPermission> {
+    log.verbose('PuppetService', 'roomPermission(%s, %s)', roomId, JSON.stringify(permission))
+
+    const request = new grpcPuppet.RoomPermissionRequest()
+    request.setId(roomId)
+    if (permission) {
+      if (typeof permission.invitationCheck === 'boolean') {
+        request.setInvitationCheck(permission.invitationCheck)
+      }
+      if (typeof permission.sendMessage === 'boolean') {
+        request.setSendMessage(permission.sendMessage)
+      }
+      if (typeof permission.roomTopicEdit === 'boolean') {
+        request.setRoomTopicEdit(permission.roomTopicEdit)
+      }
+    }
+
+    const response = await util.promisify(
+      this.grpcManager.client.roomPermission
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const result: PUPPET.types.RoomPermission = {
+      sendMessage: response.getSendMessage(),
+      invitationCheck: response.getInvitationCheck(),
+      roomTopicEdit: response.getRoomTopicEdit(),
+    }
+
+    return result
+  }
+
+  override async roomOwnerTransfer (roomId: string, contactId: string): Promise<void> {
+    log.verbose('PuppetService', 'roomOwnerTransfer(%s, %s)', roomId, contactId)
+
+    const request = new grpcPuppet.RoomOwnerTransferRequest()
+    request.setId(roomId)
+    request.setContactId(contactId)
+
+    await util.promisify(
+      this.grpcManager.client.roomOwnerTransfer
+        .bind(this.grpcManager.client),
+    )(request)
+  }
+
   /**
    *
    * Friendship
@@ -2590,7 +2634,6 @@ class PuppetService extends PUPPET.Puppet {
       const onReady = (event: grpcPuppet.EventResponse) => {
         const type = event.getType()
         if (this.waitingForReady && type === grpcPuppet.EventType.EVENT_TYPE_READY) {
-          this.waitingForReady = false
           resolve()
         }
       }
@@ -2620,6 +2663,7 @@ class PuppetService extends PUPPET.Puppet {
     try {
       await timeoutPromise(loginFuture, ResetLoginTimeout)
         .finally(() => {
+          this.waitingForLogin = false
           this.reconnectIndicator.value(false)
           this.grpcManager.off('data', onLogin)
         })
@@ -2629,7 +2673,10 @@ class PuppetService extends PUPPET.Puppet {
     }
     try {
       await timeoutPromise(readyFuture, ResetReadyTimeout)
-        .finally(() => this.grpcManager.off('data', onReady))
+        .finally(() => {
+          this.waitingForReady = false
+          this.grpcManager.off('data', onReady)
+        })
     } catch (e) {
       log.warn('PuppetService', 'waiting for event reset ready error, will do nothing')
     }
