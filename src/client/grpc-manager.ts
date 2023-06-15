@@ -304,6 +304,8 @@ class GrpcManager extends EventEmitter {
     if (accountId) {
       eventRequest.setAccountId(accountId)
     }
+    log.info('GrpcManager', `startStream() connecting event stream with account ${accountId} and seq ${lastEventSeq}`)
+
     const eventStream = this.client.event(eventRequest)
     log.verbose('GrpcManager', 'startStream() grpc -> event() ... done')
 
