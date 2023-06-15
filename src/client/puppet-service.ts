@@ -2590,7 +2590,6 @@ class PuppetService extends PUPPET.Puppet {
       const onReady = (event: grpcPuppet.EventResponse) => {
         const type = event.getType()
         if (this.waitingForReady && type === grpcPuppet.EventType.EVENT_TYPE_READY) {
-          this.waitingForReady = false
           resolve()
         }
       }
@@ -2620,6 +2619,7 @@ class PuppetService extends PUPPET.Puppet {
     try {
       await timeoutPromise(loginFuture, ResetLoginTimeout)
         .finally(() => {
+          this.waitingForLogin = false
           this.reconnectIndicator.value(false)
           this.grpcManager.off('data', onLogin)
         })
@@ -2629,7 +2629,10 @@ class PuppetService extends PUPPET.Puppet {
     }
     try {
       await timeoutPromise(readyFuture, ResetReadyTimeout)
-        .finally(() => this.grpcManager.off('data', onReady))
+        .finally(() => {
+          this.waitingForReady = false
+          this.grpcManager.off('data', onReady)
+        })
     } catch (e) {
       log.warn('PuppetService', 'waiting for event reset ready error, will do nothing')
     }
