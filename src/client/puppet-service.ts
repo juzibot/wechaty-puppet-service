@@ -2651,15 +2651,29 @@ class PuppetService extends PUPPET.Puppet {
       this.grpcManager.on('data', onReady)
     })
 
+    const startTime = Date.now()
+    const timeoutMilliseconds = this.timeoutMilliseconds / 10 // 2 min default, 4 min xiaoju-bot
+    while (true) {
+      try {
+        await this.grpcManager.startStream(lastEventSeq, accountId)
+        break
+      } catch (e) {
+        if (Date.now() - startTime < timeoutMilliseconds) {
+          log.warn('failed to start stream, will try again in 15 seconds')
+          await new Promise(resolve => {
+            setTimeout(resolve, 5000)
+          })
+        } else {
+          log.warn('failed to start stream and reaches timeout, will perform regular reset')
+          this.reconnectIndicator.value(false)
+          return super.reset()
+        }
+      }
+    }
+
     this.waitingForLogin = true
     this.waitingForReady = true
 
-    // wait for server to clear stream
-    await new Promise(resolve => {
-      setTimeout(resolve, 5000)
-    })
-
-    await this.grpcManager.startStream(lastEventSeq, accountId)
     try {
       await timeoutPromise(loginFuture, ResetLoginTimeout)
         .finally(() => {
