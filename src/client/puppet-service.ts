@@ -2655,7 +2655,7 @@ class PuppetService extends PUPPET.Puppet {
     const timeoutMilliseconds = this.timeoutMilliseconds / 10 // 2 min default, 4 min xiaoju-bot
     while (true) {
       try {
-        await this.grpcManager.startStream(lastEventSeq, accountId)
+        await timeoutPromise(this.grpcManager.startStream(lastEventSeq, accountId), 30 * 1000)
         break
       } catch (e) {
         if (Date.now() - startTime < timeoutMilliseconds) {
