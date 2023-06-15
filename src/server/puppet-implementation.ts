@@ -1535,6 +1535,55 @@ function puppetImplementation (
       }
     },
 
+    roomPermission: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'roomPermission()')
+
+      try {
+        const roomId = call.request.getId()
+        const permission: Partial<PUPPET.types.RoomPermission> = {
+          sendMessage: call.request.getSendMessage(),
+          invitationCheck: call.request.getInvitationCheck(),
+          roomTopicEdit: call.request.getRoomTopicEdit(),
+        }
+
+        let set = false
+        for (const key in permission) {
+          if (typeof permission[key] === 'boolean') {
+            set = true
+          }
+        }
+
+        const result = await puppet.roomPermission(roomId, set ? permission : undefined)
+
+        const response = new grpcPuppet.RoomPermissionResponse()
+
+        if (!set) {
+          const permissionResult = result as PUPPET.types.RoomPermission
+          response.setSendMessage(permissionResult.sendMessage)
+          response.setRoomTopicEdit(permissionResult.roomTopicEdit)
+          response.setInvitationCheck(permissionResult.invitationCheck)
+        }
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('roomOwnerTransfer', e, callback)
+      }
+    },
+
+    roomOwnerTransfer: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'roomOwnerTransfer()')
+
+      try {
+        const roomId = call.request.getId()
+        const contactId = call.request.getContactId()
+
+        await puppet.roomOwnerTransfer(roomId, contactId)
+
+        return callback(null, new grpcPuppet.RoomOwnerTransferResponse())
+      } catch (e) {
+        return grpcError('roomOwnerTransfer', e, callback)
+      }
+    },
+
     start: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'start()')
       void call
