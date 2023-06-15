@@ -1897,6 +1897,50 @@ class PuppetService extends PUPPET.Puppet {
     return payload
   }
 
+  override async roomPermission (roomId: string, permission?: Partial<PUPPET.types.RoomPermission>): Promise<void | PUPPET.types.RoomPermission> {
+    log.verbose('PuppetService', 'roomPermission(%s, %s)', roomId, JSON.stringify(permission))
+
+    const request = new grpcPuppet.RoomPermissionRequest()
+    request.setId(roomId)
+    if (permission) {
+      if (typeof permission.invitationCheck === 'boolean') {
+        request.setInvitationCheck(permission.invitationCheck)
+      }
+      if (typeof permission.sendMessage === 'boolean') {
+        request.setSendMessage(permission.sendMessage)
+      }
+      if (typeof permission.roomTopicEdit === 'boolean') {
+        request.setRoomTopicEdit(permission.roomTopicEdit)
+      }
+    }
+
+    const response = await util.promisify(
+      this.grpcManager.client.roomPermission
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const result: PUPPET.types.RoomPermission = {
+      sendMessage: response.getSendMessage(),
+      invitationCheck: response.getInvitationCheck(),
+      roomTopicEdit: response.getRoomTopicEdit(),
+    }
+
+    return result
+  }
+
+  override async roomOwnerTransfer (roomId: string, contactId: string): Promise<void> {
+    log.verbose('PuppetService', 'roomOwnerTransfer(%s, %s)', roomId, contactId)
+
+    const request = new grpcPuppet.RoomOwnerTransferRequest()
+    request.setId(roomId)
+    request.setContactId(contactId)
+
+    await util.promisify(
+      this.grpcManager.client.roomOwnerTransfer
+        .bind(this.grpcManager.client),
+    )(request)
+  }
+
   /**
    *
    * Friendship
