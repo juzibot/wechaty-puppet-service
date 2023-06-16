@@ -1,7 +1,6 @@
 import {
   puppet,
 } from '@juzi/wechaty-grpc'
-import { OptionalBoolean } from '@juzi/wechaty-grpc/dist/esm/commonjs/generated/puppet.cjs'
 
 import * as PUPPET from '@juzi/wechaty-puppet'
 import type { FileBox, FileBoxInterface } from 'file-box'
@@ -205,19 +204,19 @@ export const postPbToPayload = (post: puppet.PostPayloadClient, FileBoxUuid: typ
 
 export const OptionalBooleanWrapper = (val?: boolean) => {
   if (typeof val === 'boolean') {
-    return val ? OptionalBoolean.BOOL_TRUE : OptionalBoolean.BOOL_FALSE
+    return val ? puppet.OptionalBoolean.BOOL_TRUE : puppet.OptionalBoolean.BOOL_FALSE
   } else {
-    return OptionalBoolean.BOOL_UNSET
+    return puppet.OptionalBoolean.BOOL_UNSET
   }
 }
 
-export const OptionalBooleanUnwrapper = (val: 0 | 1 | 2) => {
+export const OptionalBooleanUnwrapper = (val: puppet.OptionalBooleanMap[keyof puppet.OptionalBooleanMap]) => {
   switch (val) {
-    case OptionalBoolean.BOOL_TRUE:
+    case puppet.OptionalBoolean.BOOL_TRUE:
       return true
-    case OptionalBoolean.BOOL_FALSE:
+    case puppet.OptionalBoolean.BOOL_FALSE:
       return false
-    case OptionalBoolean.BOOL_UNSET:
+    case puppet.OptionalBoolean.BOOL_UNSET:
     default:
       return undefined
   }
