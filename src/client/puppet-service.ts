@@ -1911,11 +1911,11 @@ class PuppetService extends PUPPET.Puppet {
         set = true
       }
       if (typeof permission.sendMessage === 'boolean') {
-        request.setInvitationCheck(OptionalBooleanWrapper(permission.sendMessage))
+        request.setSendMessage(OptionalBooleanWrapper(permission.sendMessage))
         set = true
       }
       if (typeof permission.roomTopicEdit === 'boolean') {
-        request.setInvitationCheck(OptionalBooleanWrapper(permission.roomTopicEdit))
+        request.setRoomTopicEdit(OptionalBooleanWrapper(permission.roomTopicEdit))
         set = true
       }
     }
