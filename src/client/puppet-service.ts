@@ -62,7 +62,6 @@ import { OptionalBooleanWrapper, channelPayloadToPb, channelPbToPayload, postPay
 import type { MessageBroadcastTargets } from '@juzi/wechaty-puppet/dist/esm/src/schemas/message.js'
 import { timeoutPromise } from 'gerror'
 import { BooleanIndicator } from 'state-switch'
-import { Bool_Optional, OptionalBoolean } from '@juzi/wechaty-grpc/dist/esm/out/wechaty/puppet/util_pb.js'
 
 export type PuppetServiceOptions = PUPPET.PuppetOptions & {
   authority?  : string
