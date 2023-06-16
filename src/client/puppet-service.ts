@@ -58,10 +58,11 @@ import { packageJson }  from '../package-json.js'
 
 import { GrpcManager }  from './grpc-manager.js'
 import { PayloadStore } from './payload-store.js'
-import { channelPayloadToPb, channelPbToPayload, postPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
+import { OptionalBooleanWrapper, channelPayloadToPb, channelPbToPayload, postPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
 import type { MessageBroadcastTargets } from '@juzi/wechaty-puppet/dist/esm/src/schemas/message.js'
 import { timeoutPromise } from 'gerror'
 import { BooleanIndicator } from 'state-switch'
+import { Bool_Optional, OptionalBoolean } from '@juzi/wechaty-grpc/dist/esm/out/wechaty/puppet/util_pb.js'
 
 export type PuppetServiceOptions = PUPPET.PuppetOptions & {
   authority?  : string
@@ -1902,15 +1903,21 @@ class PuppetService extends PUPPET.Puppet {
 
     const request = new grpcPuppet.RoomPermissionRequest()
     request.setId(roomId)
+
+    let set = false
+
     if (permission) {
       if (typeof permission.invitationCheck === 'boolean') {
-        request.setInvitationCheck(permission.invitationCheck)
+        request.setInvitationCheck(OptionalBooleanWrapper(permission.invitationCheck))
+        set = true
       }
       if (typeof permission.sendMessage === 'boolean') {
-        request.setSendMessage(permission.sendMessage)
+        request.setInvitationCheck(OptionalBooleanWrapper(permission.sendMessage))
+        set = true
       }
       if (typeof permission.roomTopicEdit === 'boolean') {
-        request.setRoomTopicEdit(permission.roomTopicEdit)
+        request.setInvitationCheck(OptionalBooleanWrapper(permission.roomTopicEdit))
+        set = true
       }
     }
 
@@ -1925,7 +1932,7 @@ class PuppetService extends PUPPET.Puppet {
       roomTopicEdit: response.getRoomTopicEdit(),
     }
 
-    return result
+    return set ? undefined : result
   }
 
   override async roomOwnerTransfer (roomId: string, contactId: string): Promise<void> {

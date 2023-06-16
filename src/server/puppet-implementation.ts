@@ -43,7 +43,7 @@ import {
 import { log } from '../config.js'
 import { grpcError }          from './grpc-error.js'
 import { EventStreamManager } from './event-stream-manager.js'
-import { channelPayloadToPb, postPbToPayload, urlLinkPayloadToPb } from '../utils/pb-payload-helper.js'
+import { OptionalBooleanUnwrapper, channelPayloadToPb, postPbToPayload, urlLinkPayloadToPb } from '../utils/pb-payload-helper.js'
 
 function puppetImplementation (
   puppet      : PUPPET.impls.PuppetInterface,
@@ -1541,9 +1541,9 @@ function puppetImplementation (
       try {
         const roomId = call.request.getId()
         const permission: Partial<PUPPET.types.RoomPermission> = {
-          sendMessage: call.request.getSendMessage(),
-          invitationCheck: call.request.getInvitationCheck(),
-          roomTopicEdit: call.request.getRoomTopicEdit(),
+          sendMessage: OptionalBooleanUnwrapper(call.request.getSendMessage()),
+          invitationCheck: OptionalBooleanUnwrapper(call.request.getInvitationCheck()),
+          roomTopicEdit: OptionalBooleanUnwrapper(call.request.getRoomTopicEdit()),
         }
 
         let set = false
