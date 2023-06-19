@@ -43,7 +43,7 @@ import {
 import { log } from '../config.js'
 import { grpcError }          from './grpc-error.js'
 import { EventStreamManager } from './event-stream-manager.js'
-import { OptionalBooleanUnwrapper, channelPayloadToPb, postPbToPayload, urlLinkPayloadToPb } from '../utils/pb-payload-helper.js'
+import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, channelPayloadToPb, postPbToPayload, urlLinkPayloadToPb } from '../utils/pb-payload-helper.js'
 
 function puppetImplementation (
   puppet      : PUPPET.impls.PuppetInterface,
@@ -1541,14 +1541,16 @@ function puppetImplementation (
       try {
         const roomId = call.request.getId()
         const permission: Partial<PUPPET.types.RoomPermission> = {
-          sendMessage: OptionalBooleanUnwrapper(call.request.getSendMessage()),
-          invitationCheck: OptionalBooleanUnwrapper(call.request.getInvitationCheck()),
-          roomTopicEdit: OptionalBooleanUnwrapper(call.request.getRoomTopicEdit()),
+          inviteConfirm: OptionalBooleanUnwrapper(call.request.getInviteConfirm()),
+          adminOnlyManage: OptionalBooleanUnwrapper(call.request.getAdminOnlyManage()),
+          adminOnlyAtAll: OptionalBooleanUnwrapper(call.request.getAdminOnlyAtAll()),
+          muteAll: OptionalBooleanUnwrapper(call.request.getMuteAll()),
+          forbidRoomTopicEdit: OptionalBooleanUnwrapper(call.request.getForbidRoomTopicEdit()),
         }
 
         let set = false
 
-        if (typeof permission.sendMessage === 'boolean' || typeof permission.invitationCheck === 'boolean' || typeof permission.roomTopicEdit === 'boolean') {
+        if (typeof permission.inviteConfirm === 'boolean' || typeof permission.adminOnlyManage === 'boolean' || typeof permission.adminOnlyAtAll === 'boolean' || typeof permission.muteAll === 'boolean' || typeof permission.forbidRoomTopicEdit === 'boolean') {
           set = true
         }
 
@@ -1558,9 +1560,11 @@ function puppetImplementation (
 
         if (!set) {
           const permissionResult = result as PUPPET.types.RoomPermission
-          response.setSendMessage(permissionResult.sendMessage)
-          response.setRoomTopicEdit(permissionResult.roomTopicEdit)
-          response.setInvitationCheck(permissionResult.invitationCheck)
+          response.setInviteConfirm(OptionalBooleanWrapper(permission.inviteConfirm))
+          response.setAdminOnlyManage(OptionalBooleanWrapper(permission.adminOnlyManage))
+          response.setAdminOnlyAtAll(OptionalBooleanWrapper(permission.adminOnlyAtAll))
+          response.setMuteAll(OptionalBooleanWrapper(permission.muteAll))
+          response.setForbidRoomTopicEdit(OptionalBooleanWrapper(permission.forbidRoomTopicEdit))
         }
         return callback(null, response)
       } catch (e) {

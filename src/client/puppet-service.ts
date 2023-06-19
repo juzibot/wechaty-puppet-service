@@ -58,7 +58,7 @@ import { packageJson }  from '../package-json.js'
 
 import { GrpcManager }  from './grpc-manager.js'
 import { PayloadStore } from './payload-store.js'
-import { OptionalBooleanWrapper, channelPayloadToPb, channelPbToPayload, postPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
+import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, channelPayloadToPb, channelPbToPayload, postPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
 import type { MessageBroadcastTargets } from '@juzi/wechaty-puppet/dist/esm/src/schemas/message.js'
 import { timeoutPromise } from 'gerror'
 import { BooleanIndicator } from 'state-switch'
@@ -1897,7 +1897,7 @@ class PuppetService extends PUPPET.Puppet {
     return payload
   }
 
-  override async roomPermission (roomId: string, permission?: Partial<PUPPET.types.RoomPermission>): Promise<void | PUPPET.types.RoomPermission> {
+  override async roomPermission (roomId: string, permission?: Partial<PUPPET.types.RoomPermission>): Promise<void | Partial<PUPPET.types.RoomPermission>> {
     log.verbose('PuppetService', 'roomPermission(%s, %s)', roomId, JSON.stringify(permission))
 
     const request = new grpcPuppet.RoomPermissionRequest()
@@ -1906,18 +1906,12 @@ class PuppetService extends PUPPET.Puppet {
     let set = false
 
     if (permission) {
-      if (typeof permission.invitationCheck === 'boolean') {
-        request.setInvitationCheck(OptionalBooleanWrapper(permission.invitationCheck))
-        set = true
-      }
-      if (typeof permission.sendMessage === 'boolean') {
-        request.setSendMessage(OptionalBooleanWrapper(permission.sendMessage))
-        set = true
-      }
-      if (typeof permission.roomTopicEdit === 'boolean') {
-        request.setRoomTopicEdit(OptionalBooleanWrapper(permission.roomTopicEdit))
-        set = true
-      }
+      set = true
+      request.setInviteConfirm(OptionalBooleanWrapper(permission.inviteConfirm))
+      request.setAdminOnlyManage(OptionalBooleanWrapper(permission.adminOnlyManage))
+      request.setAdminOnlyAtAll(OptionalBooleanWrapper(permission.adminOnlyAtAll))
+      request.setMuteAll(OptionalBooleanWrapper(permission.muteAll))
+      request.setForbidRoomTopicEdit(OptionalBooleanWrapper(permission.forbidRoomTopicEdit))
     }
 
     const response = await util.promisify(
@@ -1925,10 +1919,12 @@ class PuppetService extends PUPPET.Puppet {
         .bind(this.grpcManager.client),
     )(request)
 
-    const result: PUPPET.types.RoomPermission = {
-      sendMessage: response.getSendMessage(),
-      invitationCheck: response.getInvitationCheck(),
-      roomTopicEdit: response.getRoomTopicEdit(),
+    const result: Partial<PUPPET.types.RoomPermission> = {
+      inviteConfirm: OptionalBooleanUnwrapper(response.getInviteConfirm()),
+      adminOnlyManage: OptionalBooleanUnwrapper(response.getAdminOnlyManage()),
+      adminOnlyAtAll: OptionalBooleanUnwrapper(response.getAdminOnlyAtAll()),
+      muteAll: OptionalBooleanUnwrapper(response.getMuteAll()),
+      forbidRoomTopicEdit: OptionalBooleanUnwrapper(response.getForbidRoomTopicEdit()),
     }
 
     return set ? undefined : result
