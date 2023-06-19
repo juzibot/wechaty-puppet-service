@@ -1559,12 +1559,12 @@ function puppetImplementation (
         const response = new grpcPuppet.RoomPermissionResponse()
 
         if (!set) {
-          const permissionResult = result as PUPPET.types.RoomPermission
-          response.setInviteConfirm(OptionalBooleanWrapper(permission.inviteConfirm))
-          response.setAdminOnlyManage(OptionalBooleanWrapper(permission.adminOnlyManage))
-          response.setAdminOnlyAtAll(OptionalBooleanWrapper(permission.adminOnlyAtAll))
-          response.setMuteAll(OptionalBooleanWrapper(permission.muteAll))
-          response.setForbidRoomTopicEdit(OptionalBooleanWrapper(permission.forbidRoomTopicEdit))
+          const permissionResult = result as Partial<PUPPET.types.RoomPermission>
+          response.setInviteConfirm(OptionalBooleanWrapper(permissionResult.inviteConfirm))
+          response.setAdminOnlyManage(OptionalBooleanWrapper(permissionResult.adminOnlyManage))
+          response.setAdminOnlyAtAll(OptionalBooleanWrapper(permissionResult.adminOnlyAtAll))
+          response.setMuteAll(OptionalBooleanWrapper(permissionResult.muteAll))
+          response.setForbidRoomTopicEdit(OptionalBooleanWrapper(permissionResult.forbidRoomTopicEdit))
         }
         return callback(null, response)
       } catch (e) {
