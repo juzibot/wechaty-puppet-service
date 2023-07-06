@@ -155,6 +155,9 @@ class PuppetService extends PUPPET.Puppet {
   override async onStart (): Promise<void> {
     log.verbose('PuppetService', 'onStart()')
 
+    this.waitingForLogin = false
+    this.waitingForReady = false
+
     if (this._grpcManager) {
       log.warn('PuppetService', 'onStart() found this.grpc is already existed. dropped.')
       this._grpcManager = undefined
@@ -2636,6 +2639,7 @@ class PuppetService extends PUPPET.Puppet {
       const onReady = (event: grpcPuppet.EventResponse) => {
         const type = event.getType()
         if (this.waitingForReady && type === grpcPuppet.EventType.EVENT_TYPE_READY) {
+          this.waitingForReady = false
           resolve()
         }
       }
