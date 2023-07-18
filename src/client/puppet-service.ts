@@ -314,8 +314,8 @@ class PuppetService extends PUPPET.Puppet {
         break
       case grpcPuppet.EventType.EVENT_TYPE_LOGIN:
         {
-          if (this.waitingForLogin) {
-            log.warn('PuppetService', 'this login event is ignored because the it is expected by event stream reconnect')
+          if (this.waitingForLogin && this.isLoggedIn) {
+            log.warn('PuppetService', 'this login event is ignored because the it is expected by event stream reconnect and this puppet is already logged in')
             return
           }
           const loginPayload = JSON.parse(payload) as PUPPET.payloads.EventLogin
@@ -362,8 +362,8 @@ class PuppetService extends PUPPET.Puppet {
         this.emit('post-tap', JSON.parse(payload) as PUPPET.payloads.EventPostTap)
         break
       case grpcPuppet.EventType.EVENT_TYPE_READY:
-        if (this.waitingForReady) {
-          log.warn('PuppetService', 'this ready event is ignored because the it is expected by event stream reconnect')
+        if (this.waitingForReady && this.readyIndicator.value()) {
+          log.warn('PuppetService', 'this ready event is ignored because the it is expected by event stream reconnect and this puppet is already ready')
           return
         }
         this.emit('ready', JSON.parse(payload) as PUPPET.payloads.EventReady)
