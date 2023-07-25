@@ -395,6 +395,22 @@ function puppetImplementation (
 
     },
 
+    contactSelfRoomAlias: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'contactSelfRoomAlias()')
+
+      try {
+        const roomId = call.request.getRoomId()
+        const alias = call.request.getAlias()
+        await puppet.contactSelfRoomAlias(roomId, alias)
+
+        return callback(null, new grpcPuppet.ContactSelfRoomAliasResponse())
+
+      } catch (e) {
+        return grpcError('contactSelfRoomAlias', e, callback)
+      }
+
+    },
+
     ding: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'ding()')
 
