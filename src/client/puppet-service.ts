@@ -828,6 +828,19 @@ class PuppetService extends PUPPET.Puppet {
     )(request)
   }
 
+  override async contactSelfRoomAlias (roomId: string, alias: string): Promise<void> {
+    log.verbose('PuppetService', 'contactSelfRoomAlias(%s, %s)', roomId, alias)
+
+    const request = new grpcPuppet.ContactSelfRoomAliasRequest()
+    request.setRoomId(roomId)
+    request.setAlias(alias)
+
+    await util.promisify(
+      this.grpcManager.client.contactSelfRoomAlias
+        .bind(this.grpcManager.client),
+    )(request)
+  }
+
   override async contactDelete (contactId: string): Promise<void> {
     log.verbose('PuppetService', 'contactDelete(%s)', contactId)
     const request = new grpcPuppet.ContactDeleteRequest()
