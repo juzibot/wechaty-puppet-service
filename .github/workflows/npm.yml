@@ -29,8 +29,8 @@ jobs:
       - name: Install Dependencies
         run: npm install
 
-      - name: Set up TS
-        run: npm install typescript@4.7.3
+      # - name: Set up TS
+      #   run: npm install typescript@4.7.3
 
       - name: Test
         run: npm test
@@ -50,8 +50,8 @@ jobs:
       - name: Install Dependencies
         run: npm install
 
-      - name: Set up TS
-        run: npm install typescript@4.7.3
+      # - name: Set up TS
+      #   run: npm install typescript@4.7.3
 
       - name: Generate Package JSON
         run: ./scripts/generate-package-json.sh
@@ -78,8 +78,8 @@ jobs:
       - name: Install Dependencies
         run: npm install
 
-      - name: Set up TS
-        run: npm install typescript@4.7.3
+      # - name: Set up TS
+      #   run: npm install typescript@4.7.3
 
       - name: Generate Package JSON
         run: ./scripts/generate-package-json.sh
