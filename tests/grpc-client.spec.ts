@@ -1,10 +1,9 @@
 #!/usr/bin/env -S node --no-warnings --loader ts-node/esm
 
 import { test }  from 'tstest'
-import {
+import type {
   PuppetOptions,
-  log,
-}                 from '@juzi/wechaty-puppet'
+} from '@juzi/wechaty-puppet'
 import PuppetMock from '@juzi/wechaty-puppet-mock'
 import getPort from 'get-port'
 
