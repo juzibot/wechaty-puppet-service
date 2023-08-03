@@ -2631,6 +2631,7 @@ class PuppetService extends PUPPET.Puppet {
 
     this.grpcManager.stopStream()
     const { lastEventSeq } = await this.getEventData()
+    const accountId = await this._payloadStore.miscellaneous.get('accountId')
 
     const onLoginResolve = (resolve: () => void) => {
       const onLogin = (event: grpcPuppet.EventResponse) => {
