@@ -178,8 +178,7 @@ class PuppetService extends PUPPET.Puppet {
     log.verbose('PuppetService', 'start() setting up bridge grpc event stream ... done')
 
     log.verbose('PuppetService', 'start() starting grpc manager...')
-    const lastEventTimestamp = await this._payloadStore.miscellaneous.get('eventTimestamp')
-    const lastEventSeq = (Date.now() - Number(lastEventTimestamp || 0)) < this.timeoutMilliseconds ? await this._payloadStore.miscellaneous.get('eventSeq') : undefined
+    const { lastEventSeq } = await this.getEventData()
     const accountId = await this._payloadStore.miscellaneous.get('accountId')
     await grpcManager.start(lastEventSeq, accountId)
     log.verbose('PuppetService', 'start() starting grpc manager... done')
@@ -2629,9 +2628,7 @@ class PuppetService extends PUPPET.Puppet {
     this.reconnectIndicator.value(true)
 
     this.grpcManager.stopStream()
-    const lastEventTimestamp = await this._payloadStore.miscellaneous.get('eventTimestamp')
-    const lastEventSeq = (Date.now() - Number(lastEventTimestamp || 0)) < this.timeoutMilliseconds ? await this._payloadStore.miscellaneous.get('eventSeq') : undefined
-    const accountId = await this._payloadStore.miscellaneous.get('accountId')
+    const { lastEventSeq } = await this.getEventData()
 
     const onLoginResolve = (resolve: () => void) => {
       const onLogin = (event: grpcPuppet.EventResponse) => {
@@ -2712,6 +2709,21 @@ class PuppetService extends PUPPET.Puppet {
         })
     } catch (e) {
       log.warn('PuppetService', 'waiting for event reset ready error, will do nothing')
+    }
+  }
+
+  async getEventData () {
+    const lastEventTimestamp = await this._payloadStore.miscellaneous.get('eventTimestamp')
+    let lastEventSeq = await this._payloadStore.miscellaneous.get('eventSeq')
+    if ((Date.now() - Number(lastEventTimestamp || 0)) > this.timeoutMilliseconds) {
+      log.warn(`last event was ${(Date.now() - Number(lastEventTimestamp || 0)) / 1000} seconds ago, will not request event cache`)
+      lastEventSeq = undefined
+    }
+
+    log.info(`getEventData() timestamp: ${lastEventTimestamp}, seq: ${lastEventSeq}`)
+    return {
+      lastEventSeq,
+      lastEventTimestamp,
     }
   }
 
