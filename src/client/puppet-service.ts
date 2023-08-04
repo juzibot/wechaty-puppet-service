@@ -275,9 +275,10 @@ class PuppetService extends PUPPET.Puppet {
     const type    = event.getType()
     const payload = event.getPayload()
     const seq     = event.getSeq()
+    const timestamp = String(Date.now())
 
     if (!NO_LOG_EVENTS.includes(type)) {
-      log.info('PuppetService', `received grpc event ${EventTypeRev[type]} on ${new Date().toString()}, content: ${JSON.stringify(payload)}, seq: ${seq}`)
+      log.info('PuppetService', `received grpc event ${EventTypeRev[type]} on ${new Date().toString()}, content: ${JSON.stringify(payload)}, seq: ${seq}, timestamp: ${timestamp}`)
     }
 
     log.silly('PuppetService',
@@ -296,10 +297,8 @@ class PuppetService extends PUPPET.Puppet {
     if (seq) {
       const lastEventSeq = await this._payloadStore.miscellaneous.get('eventSeq')
       if (!lastEventSeq || (seq > Number(lastEventSeq) || seq === 1)) {
-        const timestamp = String(Date.now())
         await this._payloadStore.miscellaneous.set('eventSeq', String(seq))
         await this._payloadStore.miscellaneous.set('eventTimestamp', timestamp)
-        log.info('PuppetService', `eventSeq: ${seq}, timestamp: ${timestamp}`)
       }
     }
 
