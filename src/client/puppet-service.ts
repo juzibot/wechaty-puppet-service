@@ -28,15 +28,7 @@ import {
   StringValue,
   puppet as grpcPuppet,
 }                         from '@juzi/wechaty-grpc'
-import {
-  puppet$,
-  Duck as PuppetDuck,
-}                         from '@juzi/wechaty-redux'
-import {
-  Ducks,
-  // Bundle,
-}                         from 'ducks'
-import type { Store }     from 'redux'
+
 // import type { Subscription }  from 'rxjs'
 
 import { millisecondsFromTimestamp }  from '../pure-functions/timestamp.js'
@@ -83,14 +75,7 @@ class PuppetService extends PUPPET.Puppet {
 
   static override readonly VERSION = VERSION
 
-  protected _cleanupCallbackList: (() => void)[]
   protected _payloadStore: PayloadStore
-
-  /**
-   * Wechaty Redux
-   */
-  protected _ducks: Ducks<{ puppet: typeof PuppetDuck }>
-  protected _store: Store
 
   private timeoutMilliseconds: number
 
@@ -119,11 +104,6 @@ class PuppetService extends PUPPET.Puppet {
     })
 
     this.hookPayloadStore()
-
-    this._ducks = new Ducks({ puppet: PuppetDuck })
-    this._store = this._ducks.configureStore()
-
-    this._cleanupCallbackList = []
 
     this.FileBoxUuid = uuidifyFileBoxGrpc(() => this.grpcManager.client)
     this.timeoutMilliseconds = (options.timeoutSeconds || 2) * 1000 * 60 // 2 hours default, 4 hours for xiaoju-bot
@@ -186,24 +166,11 @@ class PuppetService extends PUPPET.Puppet {
     log.verbose('PuppetService', 'start healthCheck')
     this.startHealthCheck()
 
-    /**
-     * Ducks management
-     */
-    const subscription = puppet$(this as any)
-      .subscribe(this._store.dispatch)
-
-    this._cleanupCallbackList.push(
-      () => subscription.unsubscribe(),
-    )
-
     log.verbose('PuppetService', 'onStart() ... done')
   }
 
   override async onStop (): Promise<void> {
     log.verbose('PuppetService', 'onStop()')
-
-    this._cleanupCallbackList.map(setImmediate)
-    this._cleanupCallbackList.length = 0
 
     if (this._grpcManager) {
       log.verbose('PuppetService', 'onStop() stopping grpc manager ...')

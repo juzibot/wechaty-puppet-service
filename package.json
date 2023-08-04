@@ -71,7 +71,6 @@
   },
   "dependencies": {
     "@juzi/wechaty-grpc": "^1.0.59",
-    "@juzi/wechaty-redux": "^1.0.1",
     "clone-class": "^1.1.1",
     "ducks": "^1.0.2",
     "file-box": "^1.5.5",
