@@ -126,7 +126,7 @@ class PuppetService extends PUPPET.Puppet {
     this._cleanupCallbackList = []
 
     this.FileBoxUuid = uuidifyFileBoxGrpc(() => this.grpcManager.client)
-    this.timeoutMilliseconds = (options.timeoutSeconds || 2) * 1000 * 10 // 20min default, 40min for xiaoju-bot
+    this.timeoutMilliseconds = (options.timeoutSeconds || 2) * 1000 * 60 // 2 hours default, 4 hours for xiaoju-bot
 
     this.reconnectIndicator = new BooleanIndicator()
     this.reconnectIndicator.value(false)
