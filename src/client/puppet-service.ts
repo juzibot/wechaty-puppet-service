@@ -366,7 +366,9 @@ class PuppetService extends PUPPET.Puppet {
         log.warn('PuppetService', 'onGrpcStreamEvent() got an EventType.EVENT_TYPE_RESET ?')
         // the `reset` event should be dealed not send out
         break
-
+      case grpcPuppet.EventType.EVENT_TYPE_VERIFY_CODE:
+        this.emit('verify-code', JSON.parse(payload) as PUPPET.payloads.EventVerifyCode)
+        break
       case grpcPuppet.EventType.EVENT_TYPE_UNSPECIFIED:
         log.error('PuppetService', 'onGrpcStreamEvent() got an EventType.EVENT_TYPE_UNSPECIFIED ?')
         break

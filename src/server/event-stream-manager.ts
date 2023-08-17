@@ -308,6 +308,13 @@ class EventStreamManager {
           this.offCallbackList.push(off)
           break
         }
+        case 'verify-code': {
+          const listener = (payload: PUPPET.payloads.EventVerifyCode) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_VERIFY_CODE, payload)
+          this.puppet.on('verify-code', listener)
+          const off = () => this.puppet.off('verify-code', listener)
+          this.offCallbackList.push(off)
+          break
+        }
         case 'reset':
           // the `reset` event should be dealed internally, should not send out
           break
