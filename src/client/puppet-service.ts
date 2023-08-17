@@ -468,6 +468,42 @@ class PuppetService extends PUPPET.Puppet {
     super.onDirty({ payloadId, payloadType })
   }
 
+  override async enterVerifyCode (id: string, code: string): Promise<void> {
+    log.verbose('PuppetService', 'enterVerifyCode(%s, %s)', id, code)
+
+    const request = new grpcPuppet.EnterVerifyCodeRequest()
+    request.setId(id)
+    request.setCode(code)
+
+    await util.promisify(
+      this.grpcManager.client.enterVerifyCode
+        .bind(this.grpcManager.client),
+    )(request)
+  }
+
+  override async cancelVerifyCode (id: string): Promise<void> {
+    log.verbose('PuppetService', 'cancelVerifyCode(%s)', id)
+
+    const request = new grpcPuppet.CancelVerifyCodeRequest()
+    request.setId(id)
+
+    await util.promisify(
+      this.grpcManager.client.cancelVerifyCode
+        .bind(this.grpcManager.client),
+    )(request)
+  }
+
+  override async refreshQRCode (): Promise<void> {
+    log.verbose('PuppetService', 'refreshQRCode(%s)')
+
+    const request = new grpcPuppet.RefreshQRCodeRequest()
+
+    await util.promisify(
+      this.grpcManager.client.refreshQRCode
+        .bind(this.grpcManager.client),
+    )(request)
+  }
+
   /**
    *
    * Contact

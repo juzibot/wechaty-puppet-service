@@ -611,6 +611,53 @@ function puppetImplementation (
       }
     },
 
+    enterVerifyCode: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'enterVerifyCode()')
+      void call // empty arguments
+
+      try {
+        const id = call.request.getId()
+        const code = call.request.getCode()
+
+        await puppet.enterVerifyCode(id, code)
+
+        return callback(null, new grpcPuppet.EnterVerifyCodeResponse())
+
+      } catch (e) {
+        return grpcError('logout', e, callback)
+      }
+    },
+
+    cancelVerifyCode: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'cancelVerifyCode()')
+      void call // empty arguments
+
+      try {
+        const id = call.request.getId()
+
+        await puppet.cancelVerifyCode(id)
+
+        return callback(null, new grpcPuppet.CancelVerifyCodeResponse())
+
+      } catch (e) {
+        return grpcError('logout', e, callback)
+      }
+    },
+
+    refreshQRCode: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'refreshQRCode()')
+      void call // empty arguments
+
+      try {
+        await puppet.refreshQRCode()
+
+        return callback(null, new grpcPuppet.RefreshQRCodeResponse())
+
+      } catch (e) {
+        return grpcError('logout', e, callback)
+      }
+    },
+
     messageContact: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'messageContact()')
 
