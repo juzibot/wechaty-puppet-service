@@ -1510,6 +1510,7 @@ function puppetImplementation (
         response.setOwnerId(payload.ownerId || '')
         response.setTopic(payload.topic)
         response.setAdditionalInfo(payload.additionalInfo || '')
+        response.setRoomRemark(payload.remark || '')
 
         return callback(null, response)
 
