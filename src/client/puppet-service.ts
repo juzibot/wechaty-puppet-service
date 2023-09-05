@@ -1534,6 +1534,7 @@ class PuppetService extends PUPPET.Puppet {
       ownerId       : response.getOwnerId(),
       topic         : response.getTopic(),
       additionalInfo: response.getAdditionalInfo(),
+      remark        : response.getRoomRemark(),
     }
 
     await this._payloadStore.room?.set(id, payload)
