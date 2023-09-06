@@ -1965,6 +1965,38 @@ class PuppetService extends PUPPET.Puppet {
     )(request)
   }
 
+  override async roomAddAdmins (
+    roomId     : string,
+    contactIdList  : string[],
+  ): Promise<void> {
+    log.verbose('PuppetService', 'roomAddAdmins(%s, %s)', roomId, contactIdList)
+
+    const request = new grpcPuppet.RoomAdminsRequest()
+    request.setId(roomId)
+    request.setContactIds(contactIdList)
+
+    await util.promisify(
+      this.grpcManager.client.roomAddAdmins
+        .bind(this.grpcManager.client),
+    )(request)
+  }
+
+  override async roomDelAdmins (
+    roomId    : string,
+    contactIdList : string[],
+  ): Promise<void> {
+    log.verbose('PuppetService', 'roomDelAdmins(%s, %s)', roomId, contactIdList)
+
+    const request = new grpcPuppet.RoomAdminsRequest()
+    request.setId(roomId)
+    request.setContactIds(contactIdList)
+
+    await util.promisify(
+      this.grpcManager.client.roomDelAdmins
+        .bind(this.grpcManager.client),
+    )(request)
+  }
+
   /**
    *
    * Friendship

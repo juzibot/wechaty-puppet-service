@@ -1632,7 +1632,7 @@ function puppetImplementation (
         }
         return callback(null, response)
       } catch (e) {
-        return grpcError('roomOwnerTransfer', e, callback)
+        return grpcError('roomPermission', e, callback)
       }
     },
 
@@ -1648,6 +1648,36 @@ function puppetImplementation (
         return callback(null, new grpcPuppet.RoomOwnerTransferResponse())
       } catch (e) {
         return grpcError('roomOwnerTransfer', e, callback)
+      }
+    },
+
+    roomAddAdmins: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'roomAddAdmins()')
+
+      try {
+        const roomId = call.request.getId()
+        const contactIdList = call.request.getContactIds()
+
+        await puppet.roomAddAdmins(roomId, contactIdList)
+
+        return callback(null, new grpcPuppet.RoomAdminsResponse())
+      } catch (e) {
+        return grpcError('roomAddAdmins', e, callback)
+      }
+    },
+
+    roomDelAdmins: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'roomDelAdmins()')
+
+      try {
+        const roomId = call.request.getId()
+        const contactIdList = call.request.getContactIds()
+
+        await puppet.roomDelAdmins(roomId, contactIdList)
+
+        return callback(null, new grpcPuppet.RoomAdminsResponse())
+      } catch (e) {
+        return grpcError('roomDelAdmins', e, callback)
       }
     },
 
