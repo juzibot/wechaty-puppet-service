@@ -1656,7 +1656,7 @@ function puppetImplementation (
 
       try {
         const roomId = call.request.getId()
-        const contactIdList = call.request.getContactIds()
+        const contactIdList = call.request.getContactIdsList()
 
         await puppet.roomAddAdmins(roomId, contactIdList)
 
@@ -1671,7 +1671,7 @@ function puppetImplementation (
 
       try {
         const roomId = call.request.getId()
-        const contactIdList = call.request.getContactIds()
+        const contactIdList = call.request.getContactIdsList()
 
         await puppet.roomDelAdmins(roomId, contactIdList)
 

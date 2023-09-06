@@ -1973,7 +1973,7 @@ class PuppetService extends PUPPET.Puppet {
 
     const request = new grpcPuppet.RoomAdminsRequest()
     request.setId(roomId)
-    request.setContactIds(contactIdList)
+    request.setContactIdsList(contactIdList)
 
     await util.promisify(
       this.grpcManager.client.roomAddAdmins
@@ -1989,7 +1989,7 @@ class PuppetService extends PUPPET.Puppet {
 
     const request = new grpcPuppet.RoomAdminsRequest()
     request.setId(roomId)
-    request.setContactIds(contactIdList)
+    request.setContactIdsList(contactIdList)
 
     await util.promisify(
       this.grpcManager.client.roomDelAdmins
