@@ -50,7 +50,7 @@ import { packageJson }  from '../package-json.js'
 
 import { GrpcManager }  from './grpc-manager.js'
 import { PayloadStore } from './payload-store.js'
-import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, channelPayloadToPb, channelPbToPayload, postPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
+import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPbToPayload, channelPayloadToPb, channelPbToPayload, postPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
 import type { MessageBroadcastTargets } from '@juzi/wechaty-puppet/dist/esm/src/schemas/message.js'
 import { timeoutPromise } from 'gerror'
 import { BooleanIndicator } from 'state-switch'
@@ -995,6 +995,24 @@ class PuppetService extends PUPPET.Puppet {
     )(request)
 
     const payload = channelPbToPayload(response.getChannel()!)
+
+    return payload
+  }
+
+  override async messageCallRecord (
+    messageId: string,
+  ): Promise<PUPPET.payloads.CallRecord> {
+    log.verbose('PuppetService', 'messageCallRecord(%s)', messageId)
+
+    const request = new grpcPuppet.MessageCallRecordRequest()
+    request.setId(messageId)
+
+    const response = await util.promisify(
+      this.grpcManager.client.messageCallRecord
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const payload = callRecordPbToPayload(response.getCallRecord()!)
 
     return payload
   }

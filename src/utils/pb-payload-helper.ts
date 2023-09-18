@@ -221,3 +221,14 @@ export const OptionalBooleanUnwrapper = (val: puppet.OptionalBooleanMap[keyof pu
       return undefined
   }
 }
+
+export const callRecordPbToPayload = (callRecordPb: puppet.CallRecordPayload) => {
+  const callRecordPayload: PUPPET.payloads.CallRecord = {
+    starter: callRecordPb.getStarterId(),
+    participants: callRecordPb.getParticipantIdsList() || [],
+    length: callRecordPb.getLength() || 0,
+    type: callRecordPb.getType(),
+    status: callRecordPb.getStatus(),
+  }
+  return callRecordPayload
+}
