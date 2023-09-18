@@ -225,10 +225,21 @@ export const OptionalBooleanUnwrapper = (val: puppet.OptionalBooleanMap[keyof pu
 export const callRecordPbToPayload = (callRecordPb: puppet.CallRecordPayload) => {
   const callRecordPayload: PUPPET.payloads.CallRecord = {
     starter: callRecordPb.getStarterId(),
-    participants: callRecordPb.getParticipantIdsList() || [],
-    length: callRecordPb.getLength() || 0,
+    participants: callRecordPb.getParticipantIdsList(),
+    length: callRecordPb.getLength(),
     type: callRecordPb.getType(),
     status: callRecordPb.getStatus(),
   }
   return callRecordPayload
+}
+
+export const callRecordPayloadToPb = (grpcPuppet: grpcPuppet, callRecordPayload: PUPPET.payloads.CallRecord) => {
+  const pbCallRecordPayload = new grpcPuppet.CallRecordPayload()
+  pbCallRecordPayload.setStarterId(callRecordPayload.starter)
+  pbCallRecordPayload.setParticipantIdsList(callRecordPayload.participants)
+  pbCallRecordPayload.setLength(callRecordPayload.length)
+  pbCallRecordPayload.setType(callRecordPayload.type)
+  pbCallRecordPayload.setStatus(callRecordPayload.status)
+
+  return pbCallRecordPayload
 }
