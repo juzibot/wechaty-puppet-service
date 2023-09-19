@@ -43,7 +43,7 @@ import {
 import { log } from '../config.js'
 import { grpcError }          from './grpc-error.js'
 import { EventStreamManager } from './event-stream-manager.js'
-import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, channelPayloadToPb, postPbToPayload, urlLinkPayloadToPb } from '../utils/pb-payload-helper.js'
+import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPayloadToPb, channelPayloadToPb, postPbToPayload, urlLinkPayloadToPb } from '../utils/pb-payload-helper.js'
 
 function puppetImplementation (
   puppet      : PUPPET.impls.PuppetInterface,
@@ -814,6 +814,27 @@ function puppetImplementation (
         const pbChannelPayload = channelPayloadToPb(grpcPuppet, payload)
 
         response.setChannel(pbChannelPayload)
+
+        return callback(null, response)
+
+      } catch (e) {
+        return grpcError('messageMiniProgram', e, callback)
+      }
+    },
+
+    messageCallRecord: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'messageCallRecord()')
+
+      try {
+        const id = call.request.getId()
+
+        const payload = await puppet.messageCallRecord(id)
+
+        const response = new grpcPuppet.MessageCallRecordResponse()
+
+        const pbChannelPayload = callRecordPayloadToPb(grpcPuppet, payload)
+
+        response.setCallRecord(pbChannelPayload)
 
         return callback(null, response)
 
