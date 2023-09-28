@@ -51,7 +51,7 @@ class PayloadStore {
   public room?         : FlashStore<string, PUPPET.payloads.Room>
   public tag?          : FlashStore<string, PUPPET.payloads.Tag>
   public tagGroup?     : FlashStore<string, PUPPET.payloads.TagGroup>
-  public miscellaneous : FlashStore<string, string>
+  public miscellaneous?: FlashStore<string, string>
 
   protected storeDir:   string
   protected accountId?: string
@@ -72,7 +72,11 @@ class PayloadStore {
       fs.mkdirSync(this.storeDir, { recursive: true })
     }
 
-    this.miscellaneous = new FlashStore(path.join(this.storeDir, 'miscellaneous')) // account-free data
+    try {
+      this.miscellaneous = new FlashStore(path.join(this.storeDir, 'miscellaneous')) // account-free data
+    } catch (e) {
+      log.error('PayloadStore', 'constructor() store failed to init, will continue without it.')
+    }
   }
 
   /**

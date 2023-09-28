@@ -159,7 +159,7 @@ class PuppetService extends PUPPET.Puppet {
 
     log.verbose('PuppetService', 'start() starting grpc manager...')
     const { lastEventSeq } = await this.getEventData()
-    const accountId = await this._payloadStore.miscellaneous.get('accountId')
+    const accountId = await this._payloadStore.miscellaneous?.get('accountId') || ''
     await grpcManager.start(lastEventSeq, accountId)
     log.verbose('PuppetService', 'start() starting grpc manager... done')
 
@@ -262,10 +262,12 @@ class PuppetService extends PUPPET.Puppet {
     }
 
     if (seq) {
-      const lastEventSeq = await this._payloadStore.miscellaneous.get('eventSeq')
-      if (!lastEventSeq || (seq > Number(lastEventSeq) || seq === 1)) {
-        await this._payloadStore.miscellaneous.set('eventSeq', String(seq))
-        await this._payloadStore.miscellaneous.set('eventTimestamp', timestamp)
+      if (this._payloadStore.miscellaneous) {
+        const lastEventSeq = await this._payloadStore.miscellaneous.get('eventSeq')
+        if (!lastEventSeq || (seq > Number(lastEventSeq) || seq === 1)) {
+          await this._payloadStore.miscellaneous.set('eventSeq', String(seq))
+          await this._payloadStore.miscellaneous.set('eventTimestamp', timestamp)
+        }
       }
     }
 
@@ -289,12 +291,14 @@ class PuppetService extends PUPPET.Puppet {
             return
           }
           const loginPayload = JSON.parse(payload) as PUPPET.payloads.EventLogin
-          const accountId = await this._payloadStore.miscellaneous.get('accountId')
-          if (accountId !== loginPayload.contactId) {
-            await this._payloadStore.miscellaneous.delete('eventSeq')
+          if (this._payloadStore.miscellaneous) {
+            const accountId = await this._payloadStore.miscellaneous.get('accountId')
+            if (accountId !== loginPayload.contactId) {
+              await this._payloadStore.miscellaneous.delete('eventSeq')
+            }
+            await this._payloadStore.miscellaneous.set('accountId', loginPayload.contactId)
           }
-          await this._payloadStore.miscellaneous.set('accountId', loginPayload.contactId)
-          ;(
+          (
             async () => this.login(loginPayload.contactId)
           )().catch(e =>
             log.error('PuppetService', 'onGrpcStreamEvent() this.login() rejection %s',
@@ -306,7 +310,7 @@ class PuppetService extends PUPPET.Puppet {
       case grpcPuppet.EventType.EVENT_TYPE_LOGOUT:
         {
           const logoutPayload = JSON.parse(payload) as PUPPET.payloads.EventLogout
-          await this._payloadStore.miscellaneous.delete('accountId')
+          await this._payloadStore.miscellaneous?.delete('accountId')
           ;(
             async () => this.logout(logoutPayload.data)
           )().catch(e =>
@@ -2686,7 +2690,7 @@ class PuppetService extends PUPPET.Puppet {
 
     this.grpcManager.stopStream()
     const { lastEventSeq } = await this.getEventData()
-    const accountId = await this._payloadStore.miscellaneous.get('accountId')
+    const accountId = await this._payloadStore.miscellaneous?.get('accountId') || ''
 
     const onLoginResolve = (resolve: () => void) => {
       const onLogin = (event: grpcPuppet.EventResponse) => {
@@ -2771,8 +2775,8 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   async getEventData () {
-    const lastEventTimestamp = await this._payloadStore.miscellaneous.get('eventTimestamp')
-    let lastEventSeq = await this._payloadStore.miscellaneous.get('eventSeq')
+    const lastEventTimestamp = await this._payloadStore.miscellaneous?.get('eventTimestamp') || 0
+    let lastEventSeq = await this._payloadStore.miscellaneous?.get('eventSeq')
     if ((Date.now() - Number(lastEventTimestamp || 0)) > this.timeoutMilliseconds) {
       log.warn(`last event was ${(Date.now() - Number(lastEventTimestamp || 0)) / 1000} seconds ago, will not request event cache`)
       lastEventSeq = undefined
