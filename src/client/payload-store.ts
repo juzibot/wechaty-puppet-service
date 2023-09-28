@@ -159,7 +159,7 @@ class PayloadStore {
       throw new Error('Can not destroy() a start()-ed store. Call stop() to stop it first')
     }
 
-    await this.miscellaneous.close()
+    await this.miscellaneous?.close()
 
     /**
      * Huan(202108): `fs.rm` was introduced from Node.js v14.14

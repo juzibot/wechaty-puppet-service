@@ -2653,7 +2653,7 @@ class PuppetService extends PUPPET.Puppet {
     return contactIdsList
   }
 
-  healthCheckInterval?: NodeJS.Timer
+  healthCheckInterval?: NodeJS.Timeout
   startHealthCheck () {
     this.healthCheckInterval = setInterval(() => {
       this.ding('healthCheck')
