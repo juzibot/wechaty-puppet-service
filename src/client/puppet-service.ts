@@ -143,9 +143,9 @@ class PuppetService extends PUPPET.Puppet {
       this._grpcManager = undefined
     }
 
-    log.verbose('PuppetService', 'start() instanciating GrpcManager ...')
+    log.info('PuppetService', 'start() instanciating GrpcManager ...')
     const grpcManager = new GrpcManager(this.options)
-    log.verbose('PuppetService', 'start() instanciating GrpcManager ... done')
+    log.info('PuppetService', 'start() instanciating GrpcManager ... done')
 
     /**
      * Huan(202108): when we started the event stream,
@@ -153,35 +153,35 @@ class PuppetService extends PUPPET.Puppet {
      */
     this._grpcManager = grpcManager
 
-    log.verbose('PuppetService', 'start() setting up bridge grpc event stream ...')
+    log.info('PuppetService', 'start() setting up bridge grpc event stream ...')
     this.bridgeGrpcEventStream(grpcManager)
-    log.verbose('PuppetService', 'start() setting up bridge grpc event stream ... done')
+    log.info('PuppetService', 'start() setting up bridge grpc event stream ... done')
 
-    log.verbose('PuppetService', 'start() starting grpc manager...')
+    log.info('PuppetService', 'start() starting grpc manager...')
     const { lastEventSeq } = await this.getEventData()
     const accountId = await this._payloadStore.miscellaneous?.get('accountId') || ''
     await grpcManager.start(lastEventSeq, accountId)
-    log.verbose('PuppetService', 'start() starting grpc manager... done')
+    log.info('PuppetService', 'start() starting grpc manager... done')
 
-    log.verbose('PuppetService', 'start healthCheck')
+    log.info('PuppetService', 'start healthCheck')
     this.startHealthCheck()
 
-    log.verbose('PuppetService', 'onStart() ... done')
+    log.info('PuppetService', 'onStart() ... done')
   }
 
   override async onStop (): Promise<void> {
-    log.verbose('PuppetService', 'onStop()')
+    log.info('PuppetService', 'onStop()')
 
     if (this._grpcManager) {
-      log.verbose('PuppetService', 'onStop() stopping grpc manager ...')
+      log.info('PuppetService', 'onStop() stopping grpc manager ...')
       const grpcManager = this._grpcManager
       this._grpcManager = undefined
       await grpcManager.stop()
-      log.verbose('PuppetService', 'onStop() stopping grpc manager ... done')
+      log.info('PuppetService', 'onStop() stopping grpc manager ... done')
     }
 
-    log.verbose('PuppetService', 'onStop() ... done')
-    log.verbose('PuppetService', 'stop healthCheck')
+    log.info('PuppetService', 'onStop() ... done')
+    log.info('PuppetService', 'stop healthCheck')
     this.stopHealthCheck()
   }
 
