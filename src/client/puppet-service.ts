@@ -50,7 +50,7 @@ import { packageJson }  from '../package-json.js'
 
 import { GrpcManager }  from './grpc-manager.js'
 import { PayloadStore } from './payload-store.js'
-import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPbToPayload, channelPayloadToPb, channelPbToPayload, postPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
+import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPbToPayload, channelPayloadToPb, channelPbToPayload, chatHistoryPbToPayload, postPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
 import type { MessageBroadcastTargets } from '@juzi/wechaty-puppet/dist/esm/src/schemas/message.js'
 import { timeoutPromise } from 'gerror'
 import { BooleanIndicator } from 'state-switch'
@@ -1021,6 +1021,24 @@ class PuppetService extends PUPPET.Puppet {
     return payload
   }
 
+  override async messageChatHistory (
+    messageId: string,
+  ): Promise<PUPPET.payloads.ChatHistory[]> {
+    log.verbose('PuppetService', 'messageChatHistory(%s)', messageId)
+
+    const request = new grpcPuppet.MessageChatHistoryRequest()
+    request.setId(messageId)
+
+    const response = await util.promisify(
+      this.grpcManager.client.messageChatHistory
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const payload = chatHistoryPbToPayload(this.FileBoxUuid, response.getChatHistoryListList()!)
+
+    return payload
+  }
+
   override async messageSendMiniProgram (
     conversationId     : string,
     miniProgramPayload : PUPPET.payloads.MiniProgram,
@@ -1183,22 +1201,29 @@ class PuppetService extends PUPPET.Puppet {
 
   override async messageForward (
     conversationId: string,
-    messageId: string,
+    messageIds: string | string[],
   ): Promise<string | void> {
-    log.verbose('PuppetService', 'messageForward(%s, %s)', conversationId, messageId)
+    log.verbose('PuppetService', 'messageForward(%s, %s)', conversationId, messageIds)
 
     const request = new grpcPuppet.MessageForwardRequest()
     request.setConversationId(conversationId)
-    request.setMessageId(messageId)
+    if (Array.isArray(messageIds)) {
+      request.setMessageIdsList(messageIds)
+      if (messageIds.length === 1) {
+        request.setMessageId(messageIds[0] as string)
+      }
+    } else {
+      request.setMessageId(messageIds)
+    }
 
-    log.info('PuppetService', `messageForward(${conversationId}, ${messageId}) about to call grpc`)
+    log.info('PuppetService', `messageForward(${conversationId}, ${messageIds}) about to call grpc`)
     const response = await util.promisify(
       this.grpcManager.client.messageForward
         .bind(this.grpcManager.client),
     )(request)
 
     const forwardedMessageId = response.getId()
-    log.info('PuppetService', `messageForward(${conversationId}, ${messageId}) grpc called, messageId: ${forwardedMessageId}`)
+    log.info('PuppetService', `messageForward(${conversationId}, ${messageIds}) grpc called, messageId: ${forwardedMessageId}`)
 
     if (forwardedMessageId) {
       return forwardedMessageId

@@ -43,7 +43,7 @@ import {
 import { log } from '../config.js'
 import { grpcError }          from './grpc-error.js'
 import { EventStreamManager } from './event-stream-manager.js'
-import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPayloadToPb, channelPayloadToPb, postPbToPayload, urlLinkPayloadToPb } from '../utils/pb-payload-helper.js'
+import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPayloadToPb, channelPayloadToPb, chatHistoryPayloadToPb, postPbToPayload, urlLinkPayloadToPb } from '../utils/pb-payload-helper.js'
 
 function puppetImplementation (
   puppet      : PUPPET.impls.PuppetInterface,
@@ -701,8 +701,14 @@ function puppetImplementation (
       try {
         const conversationId = call.request.getConversationId()
         const messageId = call.request.getMessageId()
+        const messageIds = call.request.getMessageIdsList()
 
         const id = await puppet.messageForward(conversationId, messageId)
+        if (messageIds.length > 1) {
+          await puppet.messageForward(conversationId, messageIds)
+        } else {
+          await puppet.messageForward(conversationId, messageId || messageId[0] || '')
+        }
 
         const response = new grpcPuppet.MessageForwardResponse()
         if (id) {
@@ -835,6 +841,27 @@ function puppetImplementation (
         const pbChannelPayload = callRecordPayloadToPb(grpcPuppet, payload)
 
         response.setCallRecord(pbChannelPayload)
+
+        return callback(null, response)
+
+      } catch (e) {
+        return grpcError('messageMiniProgram', e, callback)
+      }
+    },
+
+    messageChatHistory: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'messageChatHistory()')
+
+      try {
+        const id = call.request.getId()
+
+        const payloadList = await puppet.messageChatHistory(id)
+
+        const response = new grpcPuppet.MessageChatHistoryResponse()
+
+        const pbChatHistoryPayloadList = await chatHistoryPayloadToPb(grpcPuppet, payloadList, serializeFileBox)
+
+        response.setChatHistoryListList(pbChatHistoryPayloadList)
 
         return callback(null, response)
 
