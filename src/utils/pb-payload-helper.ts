@@ -1,3 +1,4 @@
+/* eslint-disable no-case-declarations */
 import {
   puppet,
 } from '@juzi/wechaty-grpc'
@@ -37,6 +38,25 @@ export const urlLinkPayloadToPb = (grpcPuppet: grpcPuppet, urlLinkPayload: PUPPE
   if (urlLinkPayload.description) { pbUrlLinkPayload.setDescription(urlLinkPayload.description) }
   if (urlLinkPayload.thumbnailUrl) { pbUrlLinkPayload.setThumbnailUrl(urlLinkPayload.thumbnailUrl) }
   return pbUrlLinkPayload
+}
+
+export const locationPayloadToPb = (grpcPuppet: grpcPuppet, locationPayload: PUPPET.payloads.Location) => {
+  const pbLocationPayload = new grpcPuppet.LocationPayload()
+  pbLocationPayload.setLatitude(locationPayload.latitude)
+  pbLocationPayload.setLongitude(locationPayload.longitude)
+  pbLocationPayload.setAccuracy(locationPayload.accuracy)
+  pbLocationPayload.setAddress(locationPayload.address)
+  pbLocationPayload.setName(locationPayload.name)
+  return pbLocationPayload
+}
+
+export const locationPbToPayload = (locationPayloadPb: puppet.LocationPayload) => {
+  const _locationPayloadPb = locationPayloadPb.toObject()
+  const payload: PUPPET.payloads.Location = {
+    ..._locationPayloadPb,
+  }
+
+  return payload
 }
 
 export const urlLinkPbToPayload = (urlLinkPayloadPb: puppet.UrlLinkPayload) => {
@@ -116,13 +136,8 @@ export const postPayloadToPb = async (grpcPuppet: grpcPuppet, payload: PUPPET.pa
   if (payload.rootId) { pb.setRootId(payload.rootId) }
   if (payload.parentId) { pb.setParentId(payload.parentId) }
   if (payload.location) {
-    const location = new grpcPuppet.LocationPayload()
-    location.setAccuracy(payload.location.accuracy)
-    location.setAddress(payload.location.address)
-    location.setName(payload.location.name)
-    location.setLatitude(payload.location.latitude)
-    location.setLongitude(payload.location.longitude)
-    pb.setLocation(location)
+    const pbLocationPayload = locationPayloadToPb(grpcPuppet, payload.location)
+    pb.setLocation(pbLocationPayload)
   }
   pb.setVisibleListList(payload.visibleList || [])
   return pb
@@ -242,4 +257,116 @@ export const callRecordPayloadToPb = (grpcPuppet: grpcPuppet, callRecordPayload:
   pbCallRecordPayload.setStatus(callRecordPayload.status)
 
   return pbCallRecordPayload
+}
+
+export const chatHistoryPbToPayload = (FileBoxUuid: typeof FileBox, chatHistoryPb: puppet.ChatHistoryPayload[]) => {
+  const chatHistoryPayloadList: PUPPET.payloads.ChatHistory[] = []
+  for (const payload of chatHistoryPb) {
+    const jsonText = payload.getAvatar()
+
+    const chatHistoryContent = payload.getMessage()
+
+    if (!chatHistoryContent) {
+      continue
+    }
+
+    let message: any
+    switch (chatHistoryContent.getType()) {
+      case puppet.ChatHistoryContentType.TEXT:
+        message = chatHistoryContent.getText()!
+        break
+      case puppet.ChatHistoryContentType.FILE:
+        message = chatHistoryContent.getFileBox()!
+        break
+      case puppet.ChatHistoryContentType.LOCATION:
+        message = locationPbToPayload(chatHistoryContent.getLocation()!)
+        break
+      case puppet.ChatHistoryContentType.URL:
+        message = urlLinkPbToPayload(chatHistoryContent.getUrlLink()!)
+        break
+      case puppet.ChatHistoryContentType.MINI_PROGRAM:
+        message = miniProgramPbToPayload(chatHistoryContent.getMiniProgram()!)
+        break
+      case puppet.ChatHistoryContentType.CHANNEL:
+        message = channelPbToPayload(chatHistoryContent.getChannel()!)
+        break
+      case puppet.ChatHistoryContentType.CHAT_HISTORY:
+        message = chatHistoryPbToPayload(FileBoxUuid, chatHistoryContent.getChatHistoryList()!)
+        break
+      default:
+        throw new Error(`Invalid chat history content type: ${chatHistoryContent.getType()}`)
+    }
+
+    const chatHistoryPayload: PUPPET.payloads.ChatHistory = {
+      type: payload.getType(),
+      avatar: FileBoxUuid.fromJSON(jsonText),
+      senderName: payload.getSenderName(),
+      corpName: payload.getCorpName(),
+      time: payload.getTime(),
+      message,
+    }
+    chatHistoryPayloadList.push(chatHistoryPayload)
+  }
+  return chatHistoryPayloadList
+}
+
+export const chatHistoryPayloadToPb = async (grpcPuppet: grpcPuppet, chatHistoryPayloadList: PUPPET.payloads.ChatHistory[], serializeFileBox: (fileBox: FileBoxInterface) => Promise<string>) => {
+  const list = []
+  for (const chatHistoryPayload of chatHistoryPayloadList) {
+    const pbChatHistoryPayload = new grpcPuppet.ChatHistoryPayload()
+
+    pbChatHistoryPayload.setType(chatHistoryPayload.type)
+    const avatarSerializedFileBox = await serializeFileBox(chatHistoryPayload.avatar)
+    pbChatHistoryPayload.setAvatar(avatarSerializedFileBox)
+    pbChatHistoryPayload.setSenderName(chatHistoryPayload.senderName)
+    pbChatHistoryPayload.setCorpName(chatHistoryPayload.corpName)
+    pbChatHistoryPayload.setTime(chatHistoryPayload.time)
+
+    const pbChatHistoryContent = new grpcPuppet.ChatHistoryContent()
+    switch (chatHistoryPayload.type) {
+      case PUPPET.types.Message.Text:
+      case PUPPET.types.Message.Contact:
+        pbChatHistoryContent.setType(grpcPuppet.ChatHistoryContentType.TEXT)
+        pbChatHistoryContent.setText(chatHistoryPayload.message)
+        break
+      case PUPPET.types.Message.Image:
+      case PUPPET.types.Message.Attachment:
+      case PUPPET.types.Message.Video:
+        pbChatHistoryContent.setType(grpcPuppet.ChatHistoryContentType.FILE)
+        pbChatHistoryContent.setFileBox(await serializeFileBox(chatHistoryPayload.message))
+        break
+      case PUPPET.types.Message.Location:
+        pbChatHistoryContent.setType(grpcPuppet.ChatHistoryContentType.LOCATION)
+        const pbLocationPayload = locationPayloadToPb(grpcPuppet, chatHistoryPayload.message)
+        pbChatHistoryContent.setLocation(pbLocationPayload)
+        break
+      case PUPPET.types.Message.Url:
+        pbChatHistoryContent.setType(grpcPuppet.ChatHistoryContentType.URL)
+        const pbUrlLinkPayload = urlLinkPayloadToPb(grpcPuppet, chatHistoryPayload.message)
+        pbChatHistoryContent.setUrlLink(pbUrlLinkPayload)
+        break
+      case PUPPET.types.Message.MiniProgram:
+        pbChatHistoryContent.setType(grpcPuppet.ChatHistoryContentType.MINI_PROGRAM)
+        const pbMiniProgramPayload = miniProgramPayloadToPb(grpcPuppet, chatHistoryPayload.message)
+        pbChatHistoryContent.setMiniProgram(pbMiniProgramPayload)
+        break
+      case PUPPET.types.Message.Channel:
+        pbChatHistoryContent.setType(grpcPuppet.ChatHistoryContentType.CHANNEL)
+        const pbChannelPayload = channelPayloadToPb(grpcPuppet, chatHistoryPayload.message)
+        pbChatHistoryContent.setChannel(pbChannelPayload)
+        break
+      case PUPPET.types.Message.ChatHistory:
+        pbChatHistoryContent.setType(grpcPuppet.ChatHistoryContentType.CHAT_HISTORY)
+        const pbChatHistoryPayload = await chatHistoryPayloadToPb(grpcPuppet, chatHistoryPayload.message, serializeFileBox)
+        pbChatHistoryContent.setChatHistoryList(pbChatHistoryPayload)
+        break
+      default:
+        throw new Error(`ChatHistoryContent unsupported type ${chatHistoryPayload.type}`)
+    }
+    pbChatHistoryPayload.setMessage(pbChatHistoryContent)
+
+    list.push(pbChatHistoryPayload)
+  }
+
+  return list
 }
