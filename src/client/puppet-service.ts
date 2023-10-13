@@ -2809,8 +2809,8 @@ class PuppetService extends PUPPET.Puppet {
         accountId: '',
       }
     }
-    const lastEventTimestamp = await this._payloadStore.miscellaneous?.get('eventTimestamp')
-    let lastEventSeq = await this._payloadStore.miscellaneous?.get('eventSeq')
+    const lastEventTimestamp = await this._payloadStore.miscellaneous?.get('lastEventTimestamp')
+    let lastEventSeq = await this._payloadStore.miscellaneous?.get('lastEventSeq')
     if ((Date.now() - Number(lastEventTimestamp || 0)) > this.timeoutMilliseconds) {
       log.warn(`last event was ${(Date.now() - Number(lastEventTimestamp || 0)) / 1000} seconds ago, will not request event cache`)
       lastEventSeq = undefined
