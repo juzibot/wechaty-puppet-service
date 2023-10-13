@@ -158,8 +158,7 @@ class PuppetService extends PUPPET.Puppet {
     log.info('PuppetService', 'start() setting up bridge grpc event stream ... done')
 
     log.info('PuppetService', 'start() starting grpc manager...')
-    const { lastEventSeq } = await this.getEventData()
-    const accountId = await this._payloadStore.miscellaneous?.get('accountId') || ''
+    const { lastEventSeq, accountId } = await this.getMiscellaneousStoreData()
     await grpcManager.start(lastEventSeq, accountId)
     log.info('PuppetService', 'start() starting grpc manager... done')
 
@@ -261,13 +260,13 @@ class PuppetService extends PUPPET.Puppet {
       })
     }
 
-    if (seq) {
-      if (this._payloadStore.miscellaneous) {
-        const lastEventSeq = await this._payloadStore.miscellaneous.get('eventSeq')
-        if (!lastEventSeq || (seq > Number(lastEventSeq) || seq === 1)) {
-          await this._payloadStore.miscellaneous.set('eventSeq', String(seq))
-          await this._payloadStore.miscellaneous.set('eventTimestamp', timestamp)
-        }
+    if (seq && !envVars.WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()) {
+      const { lastEventSeq } = await this.getMiscellaneousStoreData()
+      if (!lastEventSeq || (seq > Number(lastEventSeq) || seq === 1)) {
+        await this.setMiscellaneousStoreData({
+          lastEventSeq: seq.toString(),
+          lastEventTimestamp: timestamp,
+        })
       }
     }
 
@@ -291,12 +290,14 @@ class PuppetService extends PUPPET.Puppet {
             return
           }
           const loginPayload = JSON.parse(payload) as PUPPET.payloads.EventLogin
-          if (this._payloadStore.miscellaneous) {
-            const accountId = await this._payloadStore.miscellaneous.get('accountId')
+          if (!envVars.WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()) {
+            const { accountId } = await this.getMiscellaneousStoreData()
             if (accountId !== loginPayload.contactId) {
-              await this._payloadStore.miscellaneous.delete('eventSeq')
+              await this.resetMiscellaneousStoreData()
+              await this.setMiscellaneousStoreData({
+                accountId,
+              })
             }
-            await this._payloadStore.miscellaneous.set('accountId', loginPayload.contactId)
           }
           (
             async () => this.login(loginPayload.contactId)
@@ -310,7 +311,9 @@ class PuppetService extends PUPPET.Puppet {
       case grpcPuppet.EventType.EVENT_TYPE_LOGOUT:
         {
           const logoutPayload = JSON.parse(payload) as PUPPET.payloads.EventLogout
-          await this._payloadStore.miscellaneous?.delete('accountId')
+          if (!envVars.WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()) {
+            await this.resetMiscellaneousStoreData()
+          }
           ;(
             async () => this.logout(logoutPayload.data)
           )().catch(e =>
@@ -2714,8 +2717,7 @@ class PuppetService extends PUPPET.Puppet {
     this.reconnectIndicator.value(true)
 
     this.grpcManager.stopStream()
-    const { lastEventSeq } = await this.getEventData()
-    const accountId = await this._payloadStore.miscellaneous?.get('accountId') || ''
+    const { lastEventSeq, accountId } = await this.getMiscellaneousStoreData()
 
     const onLoginResolve = (resolve: () => void) => {
       const onLogin = (event: grpcPuppet.EventResponse) => {
@@ -2799,19 +2801,57 @@ class PuppetService extends PUPPET.Puppet {
     }
   }
 
-  async getEventData () {
-    const lastEventTimestamp = await this._payloadStore.miscellaneous?.get('eventTimestamp') || 0
+  async getMiscellaneousStoreData () {
+    if (envVars.WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()) {
+      return {
+        lastEventSeq: undefined,
+        lastEventTimestamp: undefined,
+        accountId: '',
+      }
+    }
+    const lastEventTimestamp = await this._payloadStore.miscellaneous?.get('eventTimestamp')
     let lastEventSeq = await this._payloadStore.miscellaneous?.get('eventSeq')
     if ((Date.now() - Number(lastEventTimestamp || 0)) > this.timeoutMilliseconds) {
       log.warn(`last event was ${(Date.now() - Number(lastEventTimestamp || 0)) / 1000} seconds ago, will not request event cache`)
       lastEventSeq = undefined
     }
+    const accountId = await this._payloadStore.miscellaneous?.get('accountId')
 
-    log.info(`getEventData() timestamp: ${lastEventTimestamp}, seq: ${lastEventSeq}`)
+    log.info(`getMiscellaneousStoreData() timestamp: ${lastEventTimestamp}, seq: ${lastEventSeq}`)
+
     return {
       lastEventSeq,
       lastEventTimestamp,
+      accountId,
     }
+  }
+
+  async setMiscellaneousStoreData (data: {
+    lastEventSeq?: string,
+    lastEventTimestamp?: string,
+    accountId?: string,
+  }) {
+    if (envVars.WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()) {
+      return
+    }
+    if (typeof data.lastEventSeq !== 'undefined') {
+      await this._payloadStore.miscellaneous?.set('lastEventSeq', data.lastEventSeq)
+    }
+    if (typeof data.lastEventTimestamp !== 'undefined') {
+      await this._payloadStore.miscellaneous?.set('lastEventTimestamp', data.lastEventTimestamp)
+    }
+    if (typeof data.accountId !== 'undefined') {
+      await this._payloadStore.miscellaneous?.set('accountId', data.accountId)
+    }
+  }
+
+  async resetMiscellaneousStoreData () {
+    if (envVars.WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()) {
+      return
+    }
+    await this._payloadStore.miscellaneous?.delete('lastEventSeq')
+    await this._payloadStore.miscellaneous?.delete('lastEventTimestamp')
+    await this._payloadStore.miscellaneous?.delete('accountId')
   }
 
 }

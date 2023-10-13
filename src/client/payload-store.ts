@@ -31,6 +31,7 @@ import {
   VERSION,
   log,
 }             from '../config.js'
+import { WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE } from '../env-vars.js'
 
 const { major, minor } = semverPkg
 
@@ -72,10 +73,8 @@ class PayloadStore {
       fs.mkdirSync(this.storeDir, { recursive: true })
     }
 
-    try {
+    if (WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()) {
       this.miscellaneous = new FlashStore(path.join(this.storeDir, 'miscellaneous')) // account-free data
-    } catch (e) {
-      log.error('PayloadStore', 'constructor() store failed to init, will continue without it.')
     }
   }
 
