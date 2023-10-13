@@ -73,7 +73,7 @@ class PayloadStore {
       fs.mkdirSync(this.storeDir, { recursive: true })
     }
 
-    if (WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()) {
+    if (!WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()) {
       this.miscellaneous = new FlashStore(path.join(this.storeDir, 'miscellaneous')) // account-free data
     }
   }
