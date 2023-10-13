@@ -295,7 +295,7 @@ class PuppetService extends PUPPET.Puppet {
             if (accountId !== loginPayload.contactId) {
               await this.resetMiscellaneousStoreData()
               await this.setMiscellaneousStoreData({
-                accountId,
+                accountId: loginPayload.contactId,
               })
             }
           }
