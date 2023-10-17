@@ -448,12 +448,12 @@ class PuppetService extends PUPPET.Puppet {
    * `onDirty()` is called when the puppet emit `dirty` event.
    *  the event listener will be registered in `start()` from the `PuppetAbstract` class
    */
-  override onDirty (
+  override async onDirty (
     {
       payloadType,
       payloadId,
     }: PUPPET.payloads.EventDirty,
-  ): void {
+  ): Promise<void> {
     log.verbose('PuppetService', 'onDirty(%s<%s>, %s)', PUPPET.types.Dirty[payloadType], payloadType, payloadId)
 
     const dirtyMap = {
@@ -468,8 +468,11 @@ class PuppetService extends PUPPET.Puppet {
       [PUPPET.types.Dirty.Unspecified]:  async (id: string) => { throw new Error('Unspecified type with id: ' + id) },
     }
 
-    const dirtyFuncSync = this.wrapAsync(dirtyMap[payloadType])
-    dirtyFuncSync(payloadId)
+    try {
+      await dirtyMap[payloadType](payloadId)
+    } catch (error) {
+      this.emit('error', error)
+    }
 
     /**
      * We need to call `super.onDirty()` to clean the `PuppetAbstract` LRUCache
