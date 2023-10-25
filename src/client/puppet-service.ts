@@ -324,7 +324,7 @@ class PuppetService extends PUPPET.Puppet {
         }
         break
       case grpcPuppet.EventType.EVENT_TYPE_DIRTY:
-        await this.onDirty(JSON.parse(payload))
+        await this.fastDirty(JSON.parse(payload))
         this.emit('dirty', JSON.parse(payload) as PUPPET.payloads.EventDirty)
         break
       case grpcPuppet.EventType.EVENT_TYPE_MESSAGE:
@@ -449,13 +449,13 @@ class PuppetService extends PUPPET.Puppet {
    * `onDirty()` is called when the puppet emit `dirty` event.
    *  the event listener will be registered in `start()` from the `PuppetAbstract` class
    */
-  override async onDirty (
+  async fastDirty (
     {
       payloadType,
       payloadId,
     }: PUPPET.payloads.EventDirty,
   ): Promise<void> {
-    log.verbose('PuppetService', 'onDirty(%s<%s>, %s)', PUPPET.types.Dirty[payloadType], payloadType, payloadId)
+    log.verbose('PuppetService', 'fastDirty(%s<%s>, %s)', PUPPET.types.Dirty[payloadType], payloadType, payloadId)
 
     const dirtyMap = {
       [PUPPET.types.Dirty.Contact]:      async (id: string) => this._payloadStore.contact?.delete(id),
@@ -474,11 +474,6 @@ class PuppetService extends PUPPET.Puppet {
     } catch (error) {
       this.emit('error', error)
     }
-
-    /**
-     * We need to call `super.onDirty()` to clean the `PuppetAbstract` LRUCache
-     */
-    super.onDirty({ payloadId, payloadType })
   }
 
   override async enterVerifyCode (id: string, code: string): Promise<void> {
