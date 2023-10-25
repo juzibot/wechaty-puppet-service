@@ -324,6 +324,7 @@ class PuppetService extends PUPPET.Puppet {
         }
         break
       case grpcPuppet.EventType.EVENT_TYPE_DIRTY:
+        await this.onDirty(JSON.parse(payload))
         this.emit('dirty', JSON.parse(payload) as PUPPET.payloads.EventDirty)
         break
       case grpcPuppet.EventType.EVENT_TYPE_MESSAGE:
