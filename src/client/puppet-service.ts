@@ -2816,8 +2816,6 @@ class PuppetService extends PUPPET.Puppet {
     }
     const accountId = await this._payloadStore.miscellaneous?.get('accountId')
 
-    log.info(`getMiscellaneousStoreData() timestamp: ${lastEventTimestamp}, seq: ${lastEventSeq}`)
-
     return {
       lastEventSeq,
       lastEventTimestamp,
