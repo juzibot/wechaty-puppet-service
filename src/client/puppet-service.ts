@@ -746,6 +746,8 @@ class PuppetService extends PUPPET.Puppet {
       weixin        : response.getWeixin(),
       additionalInfo: response.getAdditionalInfo(),
       tags          : response.getTagIdsList(),
+      realName      : response.getRealName(),
+      aka           : response.getAka(),
     }
 
     await this._payloadStore.contact?.set(id, payload)
@@ -812,6 +814,30 @@ class PuppetService extends PUPPET.Puppet {
 
     await util.promisify(
       this.grpcManager.client.contactSelfName
+        .bind(this.grpcManager.client),
+    )(request)
+  }
+
+  override async contactSelfRealName (realName: string): Promise<void> {
+    log.verbose('PuppetService', 'contactSelfRealName(%s)', realName)
+
+    const request = new grpcPuppet.ContactSelfRealNameRequest()
+    request.setRealName(realName)
+
+    await util.promisify(
+      this.grpcManager.client.contactSelfRealName
+        .bind(this.grpcManager.client),
+    )(request)
+  }
+
+  override async contactSelfAka (aka: string): Promise<void> {
+    log.verbose('PuppetService', 'contactSelfAka(%s)', aka)
+
+    const request = new grpcPuppet.ContactSelfAkaRequest()
+    request.setAka(aka)
+
+    await util.promisify(
+      this.grpcManager.client.contactSelfAka
         .bind(this.grpcManager.client),
     )(request)
   }
