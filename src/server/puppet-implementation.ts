@@ -283,6 +283,8 @@ function puppetImplementation (
         response.setDescription(payload.description || '')
         response.setAdditionalInfo(payload.additionalInfo || '')
         response.setTagIdsList(payload.tags || [])
+        response.setRealName(payload.realName || '')
+        response.setAka(payload.aka || '')
 
         return callback(null, response)
       } catch (e) {
@@ -359,6 +361,34 @@ function puppetImplementation (
 
       } catch (e) {
         return grpcError('contactSelfName', e, callback)
+      }
+    },
+
+    contactSelfRealName: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'contactSelfRealName()')
+
+      try {
+        const realName = call.request.getRealName()
+        await puppet.contactSelfRealName(realName)
+
+        return callback(null, new grpcPuppet.ContactSelfRealNameResponse())
+
+      } catch (e) {
+        return grpcError('contactSelfRealName', e, callback)
+      }
+    },
+
+    contactSelfAka: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'contactSelfAka()')
+
+      try {
+        const aka = call.request.getAka()
+        await puppet.contactSelfAka(aka)
+
+        return callback(null, new grpcPuppet.ContactSelfAkaResponse())
+
+      } catch (e) {
+        return grpcError('contactSelfAka', e, callback)
       }
     },
 
