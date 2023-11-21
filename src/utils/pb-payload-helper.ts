@@ -276,7 +276,7 @@ export const chatHistoryPbToPayload = (FileBoxUuid: typeof FileBox, chatHistoryP
         message = chatHistoryContent.getText()!
         break
       case puppet.ChatHistoryContentType.FILE:
-        message = chatHistoryContent.getFileBox()!
+        message = FileBoxUuid.fromJSON(chatHistoryContent.getFileBox()!)
         break
       case puppet.ChatHistoryContentType.LOCATION:
         message = locationPbToPayload(chatHistoryContent.getLocation()!)
