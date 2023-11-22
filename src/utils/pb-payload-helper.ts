@@ -303,6 +303,7 @@ export const chatHistoryPbToPayload = (FileBoxUuid: typeof FileBox, chatHistoryP
       senderName: payload.getSenderName(),
       corpName: payload.getCorpName(),
       time: payload.getTime(),
+      title: payload.getTitle(),
       message,
     }
     chatHistoryPayloadList.push(chatHistoryPayload)
@@ -321,6 +322,9 @@ export const chatHistoryPayloadToPb = async (grpcPuppet: grpcPuppet, chatHistory
     pbChatHistoryPayload.setSenderName(chatHistoryPayload.senderName)
     pbChatHistoryPayload.setCorpName(chatHistoryPayload.corpName)
     pbChatHistoryPayload.setTime(chatHistoryPayload.time)
+    if (chatHistoryPayload.title) {
+      pbChatHistoryPayload.setTitle(chatHistoryPayload.title)
+    }
 
     const pbChatHistoryContent = new grpcPuppet.ChatHistoryContent()
     switch (chatHistoryPayload.type) {
