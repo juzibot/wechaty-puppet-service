@@ -2706,6 +2706,30 @@ class PuppetService extends PUPPET.Puppet {
     return contactIdsList
   }
 
+  override async getContactExternalUserId (
+    contactIds: string[],
+    serviceProviderId?: string,
+  ): Promise<PUPPET.types.ContactIdExternalUserIdPair[]> {
+    log.verbose('PuppetService', 'getContactExternalUserId(%s, %s)', JSON.stringify(contactIds), serviceProviderId)
+
+    const request = new grpcPuppet.GetContactExternalUserIdRequest()
+
+    const response = await util.promisify(
+      this.grpcManager.client.getContactExternalUserId.bind(this.grpcManager.client),
+    )(request)
+
+    const pairs = response.getContactExternalUserIdParisList()
+    const result: PUPPET.types.ContactIdExternalUserIdPair[] = []
+    for (const pair of pairs) {
+      result.push({
+        contactId: pair.getContactId(),
+        externalUserId: pair.getExternalUserId(),
+      })
+    }
+
+    return result
+  }
+
   healthCheckInterval?: NodeJS.Timeout
   startHealthCheck () {
     this.healthCheckInterval = setInterval(() => {
