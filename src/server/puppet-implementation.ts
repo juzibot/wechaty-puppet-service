@@ -2278,6 +2278,32 @@ function puppetImplementation (
       }
     },
 
+    getContactExternalUserId: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'getContactExternalUserId()')
+
+      try {
+        const contactIds = call.request.getContactIdsList()
+        const serviceProviderId = call.request.getServiceProviderId()
+
+        const pairs = await puppet.getContactExternalUserId(contactIds, serviceProviderId)
+
+        const response = new grpcPuppet.GetContactExternalUserIdResponse()
+        const contactExternalUserIdParisList: grpcPuppet.ContactExternalUserIdPair[] = []
+        for (const pair of pairs) {
+          const grpcPair = new grpcPuppet.ContactExternalUserIdPair()
+          grpcPair.setContactId(pair.contactId)
+          grpcPair.setExternalUserId(pair.externalUserId)
+        }
+
+        response.setContactExternalUserIdParisList(contactExternalUserIdParisList)
+
+        return callback(null, response)
+
+      } catch (e) {
+        return grpcError('momentVisibleList', e, callback)
+      }
+    },
+
     download: async (call) => {
       log.verbose('PuppetServiceImpl', 'download()')
 
