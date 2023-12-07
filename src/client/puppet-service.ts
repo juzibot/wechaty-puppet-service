@@ -2714,6 +2714,10 @@ class PuppetService extends PUPPET.Puppet {
 
     const request = new grpcPuppet.GetContactExternalUserIdRequest()
 
+    request.setContactIdsList(contactIds)
+    if (serviceProviderId) {
+      request.setServiceProviderId(serviceProviderId)
+    }
     const response = await util.promisify(
       this.grpcManager.client.getContactExternalUserId.bind(this.grpcManager.client),
     )(request)
