@@ -2295,7 +2295,7 @@ function puppetImplementation (
           grpcPair.setExternalUserId(pair.externalUserId)
         }
 
-        response.setContactExternalUserIdParisList(contactExternalUserIdParisList)
+        response.setContactExternalUserIdPairsList(contactExternalUserIdParisList)
 
         return callback(null, response)
 

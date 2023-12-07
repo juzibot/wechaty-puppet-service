@@ -2718,7 +2718,7 @@ class PuppetService extends PUPPET.Puppet {
       this.grpcManager.client.getContactExternalUserId.bind(this.grpcManager.client),
     )(request)
 
-    const pairs = response.getContactExternalUserIdParisList()
+    const pairs = response.getContactExternalUserIdPairsList()
     const result: PUPPET.types.ContactIdExternalUserIdPair[] = []
     for (const pair of pairs) {
       result.push({
