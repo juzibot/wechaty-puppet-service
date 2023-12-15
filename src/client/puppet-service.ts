@@ -453,7 +453,7 @@ class PuppetService extends PUPPET.Puppet {
       payloadType,
       payloadId,
     }: PUPPET.payloads.EventDirty,
-  ): Promise<void> {
+  ): void {
     log.verbose('PuppetService', 'onDirty(%s<%s>, %s)', PUPPET.types.Dirty[payloadType], payloadType, payloadId)
 
     const dirtyMap = {
