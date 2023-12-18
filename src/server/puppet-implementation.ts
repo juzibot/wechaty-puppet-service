@@ -1759,6 +1759,20 @@ function puppetImplementation (
       }
     },
 
+    roomDismiss: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'roomDismiss()')
+
+      try {
+        const roomId = call.request.getId()
+
+        await puppet.roomDismiss(roomId)
+
+        return callback(null, new grpcPuppet.RoomDismissResponse())
+      } catch (e) {
+        return grpcError('roomDismiss', e, callback)
+      }
+    },
+
     start: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'start()')
       void call
