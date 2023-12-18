@@ -63,6 +63,7 @@
     "esquery": "1.4.0",
     "get-port": "^6.1.2",
     "temp": "^0.9.4",
+    "ts-node": "10.9.1",
     "typed-emitter": "^1.5.0-from-event",
     "utility-types": "^3.10.0",
     "why-is-node-running": "^2.2.1"
