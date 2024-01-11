@@ -2300,7 +2300,69 @@ function puppetImplementation (
         return callback(null, response)
 
       } catch (e) {
-        return grpcError('momentVisibleList', e, callback)
+        return grpcError('getContactExternalUserId', e, callback)
+      }
+    },
+
+    getRoomAntiSpamStrategyList: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'getRoomAntiSpamStrategyList()')
+
+      try {
+        void call
+
+        const strategies = await puppet.getRoomAntiSpamStrategyList()
+
+        const response = new grpcPuppet.GetRoomAntiSpamStrategyListResponse()
+        const strategyPbList: grpcPuppet.RoomAntiSpamStrategy[] = []
+
+        for (const strategy of strategies) {
+          const strategyPb = new grpcPuppet.RoomAntiSpamStrategy()
+          strategyPb.setId(strategy.id)
+          strategyPb.setName(strategy.name)
+          strategyPbList.push(strategyPb)
+        }
+
+        response.setStrategiesList(strategyPbList)
+
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('getRoomAntiSpamStrategyList', e, callback)
+      }
+    },
+
+    getRoomAntiSpamStrategyEffectRoomList: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'getRoomAntiSpamStrategyEffectRoomList()')
+
+      try {
+        const strategyId = call.request.getStrategyId()
+
+        const roomIds = await puppet.getRoomAntiSpamStrategyEffectRoomList(strategyId)
+
+        const response = new grpcPuppet.GetRoomAntiSpamStrategyEffectRoomListResponse()
+
+        response.setRoomIdsList(roomIds)
+
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('getRoomAntiSpamStrategyEffectRoomList', e, callback)
+      }
+    },
+
+    applyRoomAntiSpamStrategy: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'applyRoomAntiSpamStrategy()')
+
+      try {
+        const strategyId = call.request.getStrategyId()
+        const roomIds = call.request.getRoomIdsList()
+        const active = call.request.getActive()
+
+        await puppet.applyRoomAntiSpamStrategy(strategyId, roomIds, active)
+
+        const response = new grpcPuppet.ApplyRoomAntiSpamStrategyResponse()
+
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('applyRoomAntiSpamStrategy', e, callback)
       }
     },
 
