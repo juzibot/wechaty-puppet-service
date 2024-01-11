@@ -2072,6 +2072,18 @@ class PuppetService extends PUPPET.Puppet {
     )(request)
   }
 
+  override async roomDismiss (roomId: string): Promise<void> {
+    log.verbose('PuppetService', 'roomDelAdmins(%s)', roomId)
+
+    const request = new grpcPuppet.RoomDismissRequest()
+    request.setId(roomId)
+
+    await util.promisify(
+      this.grpcManager.client.roomDismiss
+        .bind(this.grpcManager.client),
+    )(request)
+  }
+
   /**
    *
    * Friendship
