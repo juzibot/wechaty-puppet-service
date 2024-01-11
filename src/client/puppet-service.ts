@@ -2072,6 +2072,18 @@ class PuppetService extends PUPPET.Puppet {
     )(request)
   }
 
+  override async roomDismiss (roomId: string): Promise<void> {
+    log.verbose('PuppetService', 'roomDelAdmins(%s)', roomId)
+
+    const request = new grpcPuppet.RoomDismissRequest()
+    request.setId(roomId)
+
+    await util.promisify(
+      this.grpcManager.client.roomDismiss
+        .bind(this.grpcManager.client),
+    )(request)
+  }
+
   /**
    *
    * Friendship
@@ -2732,6 +2744,56 @@ class PuppetService extends PUPPET.Puppet {
     }
 
     return result
+  }
+
+  override async getRoomAntiSpamStrategyList (): Promise<PUPPET.types.RoomAntiSpamStrategy[]> {
+    log.verbose('PuppetService', 'getRoomAntiSpamStrategyList()')
+
+    const request = new grpcPuppet.GetRoomAntiSpamStrategyListRequest()
+
+    const response = await util.promisify(
+      this.grpcManager.client.getRoomAntiSpamStrategyList.bind(this.grpcManager.client),
+    )(request)
+
+    const result: PUPPET.types.RoomAntiSpamStrategy[] = []
+    const strategies = response.getStrategiesList()
+
+    for (const strategy of strategies) {
+      result.push({
+        id: strategy.getId(),
+        name: strategy.getName(),
+      })
+    }
+
+    return result
+  }
+
+  override async getRoomAntiSpamStrategyEffectRoomList (strategyId: string): Promise<string[]> {
+    log.verbose('PuppetService', 'getRoomAntiSpamStrategyEffectRoomList(%s)', strategyId)
+
+    const request = new grpcPuppet.GetRoomAntiSpamStrategyEffectRoomListRequest()
+    request.setStrategyId(strategyId)
+
+    const response = await util.promisify(
+      this.grpcManager.client.getRoomAntiSpamStrategyEffectRoomList.bind(this.grpcManager.client),
+    )(request)
+
+    const result = response.getRoomIdsList()
+
+    return result
+  }
+
+  override async applyRoomAntiSpamStrategy (strategyId: string, roomIds: string[], active: boolean): Promise<void> {
+    log.verbose('PuppetService', 'applyRoomAntiSpamStrategy(%s, %s, %s)', strategyId, roomIds, active)
+
+    const request = new grpcPuppet.ApplyRoomAntiSpamStrategyRequest()
+    request.setStrategyId(strategyId)
+    request.setRoomIdsList(roomIds)
+    request.setActive(active)
+
+    await util.promisify(
+      this.grpcManager.client.applyRoomAntiSpamStrategy.bind(this.grpcManager.client),
+    )(request)
   }
 
   healthCheckInterval?: NodeJS.Timeout
