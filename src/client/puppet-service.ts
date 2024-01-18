@@ -1307,6 +1307,31 @@ class PuppetService extends PUPPET.Puppet {
       type          : response.getType() as number,
       quoteId       : response.getQuoteId(),
       additionalInfo: response.getAdditionalInfo(),
+      textContent   : [],
+    }
+
+    const textContentListPb = response.getTextContentsList()
+    for (const textContentPb of textContentListPb) {
+      const type = textContentPb.getType()
+      const contentData = {
+        type,
+        text: textContentPb.getText(),
+      } as PUPPET.types.TextContent
+      switch (contentData.type) {
+        case PUPPET.types.TextContentType.Regular:
+          break
+        case PUPPET.types.TextContentType.At: {
+          const data = textContentPb.getData()
+          const contactId = data?.getContactId()
+          contentData.data = {
+            contactId: contactId || '',
+          }
+          break
+        }
+        default:
+          log.warn('PuppetService', `unknown text content type ${type}`)
+      }
+      payload.textContent?.push(contentData)
     }
 
     // log.silly('PuppetService', 'messageRawPayload(%s) cache SET', id)
