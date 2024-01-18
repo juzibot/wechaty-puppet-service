@@ -1310,7 +1310,7 @@ class PuppetService extends PUPPET.Puppet {
       textContent   : [],
     }
 
-    const textContentListPb = response.getTextContentsList() || []
+    const textContentListPb = response.getTextContentsList()
     for (const textContentPb of textContentListPb) {
       const type = textContentPb.getType()
       const contentData = {

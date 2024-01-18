@@ -940,9 +940,10 @@ function puppetImplementation (
         const textContentPbs = []
         for (const textContent of (textContents || [])) {
           const textContentPb = new grpcPuppet.TextContent()
+          const type = textContent.type
           textContentPb.setText(textContent.text)
-          textContentPb.setType(textContent.type)
-          switch (textContent.type) {
+          textContentPb.setType(type)
+          switch (type) {
             case TextContentType.Regular:
               break
             case TextContentType.At: {
@@ -952,7 +953,7 @@ function puppetImplementation (
               break
             }
             default:
-              log.warn('PuppetServiceImpl', `unknown text content type ${textContent.type}`)
+              log.warn('PuppetServiceImpl', `unknown text content type ${type}`)
               break
           }
           textContentPbs.push(textContentPb)
