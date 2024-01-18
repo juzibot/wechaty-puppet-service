@@ -44,6 +44,7 @@ import { log } from '../config.js'
 import { grpcError }          from './grpc-error.js'
 import { EventStreamManager } from './event-stream-manager.js'
 import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPayloadToPb, channelPayloadToPb, chatHistoryPayloadToPb, postPbToPayload, urlLinkPayloadToPb } from '../utils/pb-payload-helper.js'
+import { TextContentType } from '@juzi/wechaty-puppet/types'
 
 function puppetImplementation (
   puppet      : PUPPET.impls.PuppetInterface,
@@ -934,6 +935,29 @@ function puppetImplementation (
         response.setType(payload.type as grpcPuppet.MessageTypeMap[keyof grpcPuppet.MessageTypeMap])
         response.setQuoteId(payload.quoteId || '')
         response.setAdditionalInfo(payload.additionalInfo || '')
+
+        const textContents = payload.textContent
+        const textContentPbs = []
+        for (const textContent of (textContents || [])) {
+          const textContentPb = new grpcPuppet.TextContent()
+          textContentPb.setText(textContent.text)
+          textContentPb.setType(textContent.type)
+          switch (textContent.type) {
+            case TextContentType.Regular:
+              break
+            case TextContentType.At: {
+              const data = new grpcPuppet.TextContentData()
+              data.setContactId(textContent.data.contactId)
+              textContentPb.setData(data)
+              break
+            }
+            default:
+              log.warn('PuppetServiceImpl', `unknown text content type ${textContent.type}`)
+              break
+          }
+          textContentPbs.push(textContentPb)
+        }
+        response.setTextContentsList(textContentPbs)
 
         return callback(null, response)
 
