@@ -2370,6 +2370,23 @@ class PuppetService extends PUPPET.Puppet {
 
   }
 
+  override async tagTagModify (
+    tagId: string,
+    tagNewName: string,
+  ): Promise<void> {
+    log.verbose('PuppetService', 'tagTagModify(%s, %s)', tagId, tagNewName)
+
+    const request = new grpcPuppet.TagTagModifyRequest()
+    request.setTagId(tagId)
+    request.setTagNewName(tagNewName)
+
+    await util.promisify(
+      this.grpcManager.client.tagTagModify
+        .bind(this.grpcManager.client),
+    )(request)
+
+  }
+
   override async tagGroupList (): Promise<string[]> {
     log.verbose('PuppetService', 'tagGroupList()')
 

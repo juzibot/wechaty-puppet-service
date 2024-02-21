@@ -1945,6 +1945,21 @@ function puppetImplementation (
       }
     },
 
+    tagTagModify: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'tagTagModify()')
+
+      try {
+        const tagId = call.request.getTagId()
+        const tagNewName = call.request.getTagNewName()
+
+        await puppet.tagTagModify(tagId, tagNewName)
+
+        return callback(null, new grpcPuppet.TagTagModifyResponse())
+      } catch (e) {
+        return grpcError('tagTagModify', e, callback)
+      }
+    },
+
     tagGroupList: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'tagGroupList()')
       void call
