@@ -1916,13 +1916,19 @@ function puppetImplementation (
 
       try {
         const tagGroupId = call.request.getTagGroupId()
-        const tagName = call.request.getTagName()
+        const tagNameList = call.request.getTagNameList()
 
-        const result = await puppet.tagTagAdd(tagName, tagGroupId)
+        const result = await puppet.tagTagAdd(tagNameList, tagGroupId)
         const response = new grpcPuppet.TagTagAddResponse()
 
         if (result) {
-          response.setTagId(result)
+          const tagInfoList : grpcPuppet.TagTagInfo[] = result.map(i => {
+            const tagInfo = new grpcPuppet.TagTagInfo()
+            tagInfo.setTagId(i.id)
+            tagInfo.setTagName(i.name)
+            return tagInfo
+          })
+          response.setTagInfoList(tagInfoList)
         }
 
         return callback(null, response)
@@ -1935,9 +1941,9 @@ function puppetImplementation (
       log.verbose('PuppetServiceImpl', 'tagTagDelete()')
 
       try {
-        const tagId = call.request.getTagId()
+        const tagIdList = call.request.getTagIdList()
 
-        await puppet.tagTagDelete(tagId)
+        await puppet.tagTagDelete(tagIdList)
 
         return callback(null, new grpcPuppet.TagTagDeleteResponse())
       } catch (e) {
@@ -1949,12 +1955,28 @@ function puppetImplementation (
       log.verbose('PuppetServiceImpl', 'tagTagModify()')
 
       try {
-        const tagId = call.request.getTagId()
-        const tagNewName = call.request.getTagNewName()
+        const tagInfoList = call.request.getTagNewInfoList()
+        const newInfoList : PUPPET.types.TagInfo[] = tagInfoList.map(i => {
+          const info :PUPPET.types.TagInfo = {
+            id  : i.getTagId(),
+            name: i.getTagName(),
+          }
+          return info
+        })
 
-        await puppet.tagTagModify(tagId, tagNewName)
+        const result = await puppet.tagTagModify(newInfoList)
+        const response = new grpcPuppet.TagTagModifyResponse()
+        if (result) {
+          const tagInfoList : grpcPuppet.TagTagInfo[] = result.map(i => {
+            const tagInfo = new grpcPuppet.TagTagInfo()
+            tagInfo.setTagId(i.id)
+            tagInfo.setTagName(i.name)
+            return tagInfo
+          })
+          response.setTagInfoList(tagInfoList)
+        }
 
-        return callback(null, new grpcPuppet.TagTagModifyResponse())
+        return callback(null, response)
       } catch (e) {
         return grpcError('tagTagModify', e, callback)
       }
