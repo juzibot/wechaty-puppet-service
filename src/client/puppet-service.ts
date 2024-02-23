@@ -2333,35 +2333,38 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   override async tagTagAdd (
-    tagName: string,
+    tagNameList: string[],
     tagGroupId?: string,
-  ): Promise<string | void> {
-    log.verbose('PuppetService', 'tagTagAdd(%s, %s)', tagName, tagGroupId)
+  ): Promise<PUPPET.types.TagInfo[] | void> {
+    log.verbose('PuppetService', 'tagTagAdd(%s, %s)', tagNameList, tagGroupId)
 
     const request = new grpcPuppet.TagTagAddRequest()
 
     if (typeof tagGroupId !== 'undefined') {
       request.setTagGroupId(tagGroupId)
     }
-    request.setTagName(tagName)
+    request.setTagNameList(tagNameList)
 
     const result = await util.promisify(
       this.grpcManager.client.tagTagAdd
         .bind(this.grpcManager.client),
     )(request)
 
-    const id = result.getTagId()
+    const tagInfoList:PUPPET.types.TagInfo[] = result.getTagInfoList().map(i => ({
+      id  : i.getTagId(),
+      name: i.getTagName(),
+    }))
 
-    return id
+    return tagInfoList
   }
 
   override async tagTagDelete (
-    tagId: string,
+    tagIdList: string[],
   ): Promise<void> {
-    log.verbose('PuppetService', 'tagTagDelete(%s)', tagId)
+    log.verbose('PuppetService', 'tagTagDelete(%s)', tagIdList)
 
     const request = new grpcPuppet.TagTagDeleteRequest()
-    request.setTagId(tagId)
+    request.setTagIdList(tagIdList)
 
     await util.promisify(
       this.grpcManager.client.tagTagDelete
@@ -2371,20 +2374,30 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   override async tagTagModify (
-    tagId: string,
-    tagNewName: string,
-  ): Promise<void> {
-    log.verbose('PuppetService', 'tagTagModify(%s, %s)', tagId, tagNewName)
+    tagNewInfoList: PUPPET.types.TagInfo[],
+  ): Promise<PUPPET.types.TagInfo[] | void> {
+    log.verbose('PuppetService', 'tagTagModify(%o)', tagNewInfoList)
 
     const request = new grpcPuppet.TagTagModifyRequest()
-    request.setTagId(tagId)
-    request.setTagNewName(tagNewName)
+    const newInfoList = tagNewInfoList.map(i => {
+      const tagInfo = new grpcPuppet.TagTagInfo()
+      tagInfo.setTagId(i.id)
+      tagInfo.setTagName(i.name)
+      return tagInfo
+    })
+    request.setTagNewInfoList(newInfoList)
 
-    await util.promisify(
+    const result = await util.promisify(
       this.grpcManager.client.tagTagModify
         .bind(this.grpcManager.client),
     )(request)
 
+    const tagInfoList:PUPPET.types.TagInfo[] = result.getTagInfoList().map(i => ({
+      id  : i.getTagId(),
+      name: i.getTagName(),
+    }))
+
+    return tagInfoList
   }
 
   override async tagGroupList (): Promise<string[]> {
