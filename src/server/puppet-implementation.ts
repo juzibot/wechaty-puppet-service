@@ -582,7 +582,9 @@ function puppetImplementation (
 
       try {
         const phone = call.request.getPhone()
-        const contactId = await puppet.friendshipSearchPhone(phone)
+        const type = call.request.getType()
+
+        const contactId = await puppet.friendshipSearchPhone(phone, type)
 
         const response = new grpcPuppet.FriendshipSearchPhoneResponse()
 
@@ -613,7 +615,8 @@ function puppetImplementation (
          *  @link https://github.com/wechaty/grpc/issues/174
          */
         const handle = call.request.getWeixin()
-        const contactId = await puppet.friendshipSearchHandle(handle)
+        const type = call.request.getType()
+        const contactId = await puppet.friendshipSearchHandle(handle, type)
 
         const response = new grpcPuppet.FriendshipSearchHandleResponse()
 

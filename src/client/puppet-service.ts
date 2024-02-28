@@ -54,6 +54,7 @@ import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPbToPayload
 import type { MessageBroadcastTargets } from '@juzi/wechaty-puppet/dist/esm/src/schemas/message.js'
 import { timeoutPromise } from 'gerror'
 import { BooleanIndicator } from 'state-switch'
+import type { Contact } from '@juzi/wechaty-puppet/types'
 
 export type PuppetServiceOptions = PUPPET.PuppetOptions & {
   authority?  : string
@@ -2116,11 +2117,18 @@ class PuppetService extends PUPPET.Puppet {
    */
   override async friendshipSearchPhone (
     phone: string,
+    type?: Contact,
   ): Promise<string | null> {
     log.verbose('PuppetService', 'friendshipSearchPhone(%s)', phone)
 
     const request = new grpcPuppet.FriendshipSearchPhoneRequest()
     request.setPhone(phone)
+
+    if (typeof (type) === 'undefined') {
+      request.setType(grpcPuppet.ContactType.CONTACT_TYPE_PERSONAL)
+    } else {
+      request.setType(type)
+    }
 
     const response = await util.promisify(
       this.grpcManager.client.friendshipSearchPhone
@@ -2145,6 +2153,7 @@ class PuppetService extends PUPPET.Puppet {
 
   override async friendshipSearchHandle (
     handle: string,
+    type?: Contact,
   ): Promise<string | null> {
     log.verbose('PuppetService', 'friendshipSearchHandle(%s)', handle)
 
@@ -2154,6 +2163,11 @@ class PuppetService extends PUPPET.Puppet {
      *  @link https://github.com/wechaty/grpc/issues/174
      */
     request.setWeixin(handle)
+    if (typeof (type) === 'undefined') {
+      request.setType(grpcPuppet.ContactType.CONTACT_TYPE_PERSONAL)
+    } else {
+      request.setType(type)
+    }
 
     const response = await util.promisify(
       this.grpcManager.client.friendshipSearchHandle
