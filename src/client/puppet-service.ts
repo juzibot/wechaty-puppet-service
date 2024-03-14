@@ -2865,6 +2865,32 @@ class PuppetService extends PUPPET.Puppet {
     )(request)
   }
 
+  override async getCorpMessageInterceptionStrategies (): Promise<PUPPET.types.CorpMessageInterceptionStrategy[]> {
+    log.verbose('PuppetService', 'getCorpMessageInterceptionStrategies()')
+
+    const request = new grpcPuppet.GetCorpMessageInterceptionStrategiesRequest()
+
+    const response = await util.promisify(
+      this.grpcManager.client.getCorpMessageInterceptionStrategies.bind(this.grpcManager.client),
+    )(request)
+
+    const result: PUPPET.types.CorpMessageInterceptionStrategy[] = []
+
+    for (const strategyPb of response.getStrategiesList()) {
+      const strategy: PUPPET.types.CorpMessageInterceptionStrategy = {
+        name: strategyPb.getName(),
+        words: strategyPb.getWordsList(),
+        phoneNumber: strategyPb.getPhoneNumber(),
+        email: strategyPb.getEmail(),
+        redPacket: strategyPb.getRedPacket(),
+        type: strategyPb.getType(),
+      }
+      result.push(strategy)
+    }
+
+    return result
+  }
+
   healthCheckInterval?: NodeJS.Timeout
   startHealthCheck () {
     this.healthCheckInterval = setInterval(() => {

@@ -2445,6 +2445,36 @@ function puppetImplementation (
       }
     },
 
+    getCorpMessageInterceptionStrategies: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'getCorpMessageInterceptionStrategies()')
+
+      try {
+        void call
+
+        const strategies = await puppet.getCorpMessageInterceptionStrategies()
+
+        const response = new grpcPuppet.GetCorpMessageInterceptionStrategiesResponse()
+        const strategiesPb: grpcPuppet.CorpMessageInterceptionStrategy[] = []
+
+        for (const strategy of strategies) {
+          const strategyPb = new grpcPuppet.CorpMessageInterceptionStrategy()
+          strategyPb.setName(strategy.name)
+          strategyPb.setWordsList(strategy.words)
+          strategyPb.setPhoneNumber(strategy.phoneNumber)
+          strategyPb.setEmail(strategy.email)
+          strategyPb.setRedPacket(strategy.redPacket)
+          strategyPb.setType(strategy.type)
+          strategiesPb.push(strategyPb)
+        }
+
+        response.setStrategiesList(strategiesPb)
+
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('applyRoomAntiSpamStrategy', e, callback)
+      }
+    },
+
     download: async (call) => {
       log.verbose('PuppetServiceImpl', 'download()')
 
