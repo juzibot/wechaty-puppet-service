@@ -1617,6 +1617,7 @@ function puppetImplementation (
         response.setTopic(payload.topic)
         response.setAdditionalInfo(payload.additionalInfo || '')
         response.setRoomRemark(payload.remark || '')
+        response.setExternal(!!payload.external)
 
         return callback(null, response)
 
