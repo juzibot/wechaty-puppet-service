@@ -1639,6 +1639,11 @@ class PuppetService extends PUPPET.Puppet {
       external      : response.getExternal(),
     }
 
+    const createTime = response.getCreateTime()
+    if (createTime) {
+      payload.createTime = millisecondsFromTimestamp(createTime)
+    }
+
     await this._payloadStore.room?.set(id, payload)
     log.silly('PuppetService', 'roomRawPayload(%s) cache SET', id)
 

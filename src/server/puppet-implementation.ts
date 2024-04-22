@@ -1618,6 +1618,9 @@ function puppetImplementation (
         response.setAdditionalInfo(payload.additionalInfo || '')
         response.setRoomRemark(payload.remark || '')
         response.setExternal(!!payload.external)
+        if (payload.createTime) {
+          response.setCreateTime(timestampFromMilliseconds(payload.createTime))
+        }
 
         return callback(null, response)
 
