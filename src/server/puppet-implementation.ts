@@ -1250,6 +1250,40 @@ function puppetImplementation (
       }
     },
 
+    messageSendPost: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'messageSendPost()')
+
+      try {
+        const conversationId = call.request.getConversationId()
+        const post = call.request.getContent()
+
+        if (!post) {
+          throw new Error('no post found')
+        }
+        if (
+          post.getType() === grpcPuppet.PostType.POST_TYPE_CHANNEL
+          || post.getType() === grpcPuppet.PostType.POST_TYPE_BROADCAST
+          || post.getType() === grpcPuppet.PostType.POST_TYPE_UNSPECIFIED
+        ) {
+          throw new Error('cannot send post with non-message post type')
+        }
+
+        const payload = postPbToPayload(post, FileBoxUuid)
+
+        const id = await puppet.messageSendPost(conversationId, payload)
+
+        const response = new grpcPuppet.MessageSendPostResponse()
+        if (id) {
+          response.setId(id)
+        }
+
+        return callback(null, response)
+
+      } catch (e) {
+        return grpcError('messageSendPost', e, callback)
+      }
+    },
+
     messageUrl: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'messageUrl()')
 

@@ -1509,6 +1509,31 @@ class PuppetService extends PUPPET.Puppet {
     }
   }
 
+  override async messageSendPost (
+    conversationId: string,
+    postPayload: PUPPET.payloads.PostClient,
+  ): Promise<void | string> {
+    log.verbose('PuppetService', 'messageSendPost("%s", %s)', conversationId, JSON.stringify(postPayload))
+
+    const request = new grpcPuppet.MessageSendPostRequest()
+    const post = await postPayloadToPb(grpcPuppet, postPayload, this.serializeFileBox.bind(this))
+    request.setContent(post)
+    request.setConversationId(conversationId)
+
+    log.info('PuppetService', `messageSendPost(${conversationId}, ${postPayload}) about to call grpc`)
+    const response = await util.promisify(
+      this.grpcManager.client.messageSendPost
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const messageId = response.getId()
+    log.info('PuppetService', `messageSendPost(${conversationId}, ${postPayload}) grpc called, messageId: ${messageId}`)
+
+    if (messageId) {
+      return messageId
+    }
+  }
+
   override async messageUrl (messageId: string): Promise<PUPPET.payloads.UrlLink> {
     log.verbose('PuppetService', 'messageUrl(%s)', messageId)
 
