@@ -56,11 +56,11 @@ const uuidRegisterGrpc: (grpcClient: () => pbPuppet.PuppetClient) => UuidSaver =
     const initRequest = new pbPuppet.UploadRequest()
     request.write(initRequest)
 
-    setImmediate(() => {
+    setTimeout(() => {
       stream
         .pipe(chunkEncoder(pbPuppet.UploadRequest))
         .pipe(request)
-    })
+    }, 1000)
 
   })
 
