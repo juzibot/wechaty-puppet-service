@@ -52,11 +52,17 @@ const uuidRegisterGrpc: (grpcClient: () => pbPuppet.PuppetClient) => UuidSaver =
       } else {
         resolve(response)
       }
-    }) as unknown as Writable  // Huan(202203) FIXME: as unknown as
+    })
 
-    stream
-      .pipe(chunkEncoder(pbPuppet.UploadRequest))
-      .pipe(request)
+    const initRequest = new pbPuppet.UploadRequest()
+    request.write(initRequest)
+
+    setImmediate(() => {
+      stream
+        .pipe(chunkEncoder(pbPuppet.UploadRequest))
+        .pipe(request)
+    })
+
   })
 
   const uuid = response.getId()
