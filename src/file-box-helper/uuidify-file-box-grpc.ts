@@ -1,6 +1,5 @@
 import type {
   Readable,
-  Writable,
 }                       from 'stream'
 
 import {
