@@ -1937,7 +1937,7 @@ class PuppetService extends PUPPET.Puppet {
     /**
      * Set
      */
-    if (text) {
+    if (typeof text === 'string') {
       const request = new grpcPuppet.RoomAnnounceRequest()
       request.setId(roomId)
       request.setText(text)
