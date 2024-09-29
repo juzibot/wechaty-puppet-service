@@ -2066,6 +2066,7 @@ class PuppetService extends PUPPET.Puppet {
       request.setAdminOnlyAtAll(OptionalBooleanWrapper(permission.adminOnlyAtAll))
       request.setMuteAll(OptionalBooleanWrapper(permission.muteAll))
       request.setForbidRoomTopicEdit(OptionalBooleanWrapper(permission.forbidRoomTopicEdit))
+      request.setDisableMemberMutualAdd(OptionalBooleanWrapper(permission.disableMemberMutualAdd))
     }
 
     const response = await util.promisify(
@@ -2079,6 +2080,7 @@ class PuppetService extends PUPPET.Puppet {
       adminOnlyAtAll: OptionalBooleanUnwrapper(response.getAdminOnlyAtAll()),
       muteAll: OptionalBooleanUnwrapper(response.getMuteAll()),
       forbidRoomTopicEdit: OptionalBooleanUnwrapper(response.getForbidRoomTopicEdit()),
+      disableMemberMutualAdd: OptionalBooleanUnwrapper(response.getDisableMemberMutualAdd()),
     }
 
     return set ? undefined : result

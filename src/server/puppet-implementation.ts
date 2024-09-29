@@ -1754,11 +1754,12 @@ function puppetImplementation (
           adminOnlyAtAll: OptionalBooleanUnwrapper(call.request.getAdminOnlyAtAll()),
           muteAll: OptionalBooleanUnwrapper(call.request.getMuteAll()),
           forbidRoomTopicEdit: OptionalBooleanUnwrapper(call.request.getForbidRoomTopicEdit()),
+          disableMemberMutualAdd: OptionalBooleanUnwrapper(call.request.getDisableMemberMutualAdd()),
         }
 
         let set = false
 
-        if (typeof permission.inviteConfirm === 'boolean' || typeof permission.adminOnlyManage === 'boolean' || typeof permission.adminOnlyAtAll === 'boolean' || typeof permission.muteAll === 'boolean' || typeof permission.forbidRoomTopicEdit === 'boolean') {
+        if (typeof permission.inviteConfirm === 'boolean' || typeof permission.adminOnlyManage === 'boolean' || typeof permission.adminOnlyAtAll === 'boolean' || typeof permission.muteAll === 'boolean' || typeof permission.forbidRoomTopicEdit === 'boolean' || typeof permission.disableMemberMutualAdd === 'boolean') {
           set = true
         }
 
@@ -1773,6 +1774,7 @@ function puppetImplementation (
           response.setAdminOnlyAtAll(OptionalBooleanWrapper(permissionResult.adminOnlyAtAll))
           response.setMuteAll(OptionalBooleanWrapper(permissionResult.muteAll))
           response.setForbidRoomTopicEdit(OptionalBooleanWrapper(permissionResult.forbidRoomTopicEdit))
+          response.setDisableMemberMutualAdd(OptionalBooleanWrapper(permissionResult.disableMemberMutualAdd))
         }
         return callback(null, response)
       } catch (e) {
