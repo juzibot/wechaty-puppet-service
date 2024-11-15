@@ -1863,6 +1863,24 @@ class PuppetService extends PUPPET.Puppet {
     return response.getQrcode()
   }
 
+  override async roomParseDynamicQRCode (url: string): Promise<PUPPET.types.RoomParseDynamicQRCode> {
+    log.verbose('PuppetService', 'roomParseDynamicQRCode(%s)', url)
+
+    const request = new grpcPuppet.RoomParseDynamicQRCodeRequest()
+    request.setUrl(url)
+
+    const response = await util.promisify(
+      this.grpcManager.client.roomParseDynamicQRCode
+        .bind(this.grpcManager.client),
+    )(request)
+
+    return {
+      qrcode: response.getQrcode(),
+      qrcodeImgUrl: response.getQrcodeImageUrl(),
+      roomName: response.getRoomName(),
+    }
+  }
+
   override async roomMemberList (roomId: string) : Promise<string[]> {
     log.verbose('PuppetService', 'roomMemberList(%s)', roomId)
 
@@ -1996,6 +2014,25 @@ class PuppetService extends PUPPET.Puppet {
       this.grpcManager.client.roomInvitationAccept
         .bind(this.grpcManager.client),
     )(request)
+  }
+
+  override async roomInvitationAcceptByQRCode (
+    qrcode: string,
+  ): Promise<PUPPET.types.RoomInvitationAcceptByQRCode> {
+    log.verbose('PuppetService', 'roomInvitationAcceptByQRCode(%s)', qrcode)
+
+    const request = new grpcPuppet.RoomInvitationAcceptByQRCodeRequest()
+    request.setQrcode(qrcode)
+
+    const response = await util.promisify(
+      this.grpcManager.client.roomInvitationAcceptByQRCode
+        .bind(this.grpcManager.client),
+    )(request)
+
+    return {
+      roomId: response.getRoomId(),
+      chatId: response.getChatId(),
+    }
   }
 
   override async roomInvitationRawPayload (
