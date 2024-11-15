@@ -1503,6 +1503,25 @@ function puppetImplementation (
       }
     },
 
+    roomInvitationAcceptByQRCode: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'roomInvitationAcceptByQRCode()')
+
+      try {
+        const qrcode = call.request.getQrcode()
+
+        const result = await puppet.roomInvitationAcceptByQRCode(qrcode)
+
+        const response = new grpcPuppet.RoomInvitationAcceptByQRCodeResponse()
+        response.setRoomId(result.roomId)
+        response.setChatId(result.chatId)
+
+        return callback(null, response)
+
+      } catch (e) {
+        return grpcError('roomInvitationAccept', e, callback)
+      }
+    },
+
     roomInvitationPayload: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'roomInvitationPayload()')
 
@@ -1678,6 +1697,26 @@ function puppetImplementation (
 
       } catch (e) {
         return grpcError('roomQRCode', e, callback)
+      }
+    },
+
+    roomParseDynamicQRCode: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'roomParseDynamicQRCode()')
+
+      try {
+        const url = call.request.getUrl()
+
+        const qrcodeInfo = await puppet.roomParseDynamicQRCode(url)
+
+        const response = new grpcPuppet.RoomParseDynamicQRCodeResponse()
+        response.setQrcode(qrcodeInfo.qrcode)
+        response.setQrcodeImgUrl(qrcodeInfo.qrcodeImgUrl)
+        response.setRoomName(qrcodeInfo.roomName)
+
+        return callback(null, response)
+
+      } catch (e) {
+        return grpcError('roomParseDynamicQRCode', e, callback)
       }
     },
 
