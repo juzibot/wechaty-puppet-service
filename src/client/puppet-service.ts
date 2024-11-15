@@ -1876,7 +1876,7 @@ class PuppetService extends PUPPET.Puppet {
 
     return {
       qrcode: response.getQrcode(),
-      qrcodeImgUrl: response.getQrcodeImageUrl(),
+      qrcodeImageUrl: response.getQrcodeImageUrl(),
       roomName: response.getRoomName(),
     }
   }
