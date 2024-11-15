@@ -1710,7 +1710,7 @@ function puppetImplementation (
 
         const response = new grpcPuppet.RoomParseDynamicQRCodeResponse()
         response.setQrcode(qrcodeInfo.qrcode)
-        response.setQrcodeImageUrl(qrcodeInfo.qrcodeImgUrl)
+        response.setQrcodeImageUrl(qrcodeInfo.qrcodeImageUrl)
         response.setRoomName(qrcodeInfo.roomName)
 
         return callback(null, response)
