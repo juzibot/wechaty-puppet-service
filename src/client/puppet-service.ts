@@ -1734,6 +1734,7 @@ class PuppetService extends PUPPET.Puppet {
     roomId     : string,
     contactId  : string,
     inviteOnly : boolean,
+    quoteIds   : string[],
   ): Promise<void> {
     log.verbose('PuppetService', 'roomAdd(%s, %s)', roomId, contactId)
 
@@ -1741,7 +1742,7 @@ class PuppetService extends PUPPET.Puppet {
     request.setId(roomId)
     request.setContactId(contactId)
     request.setInviteOnly(inviteOnly)
-
+    request.setQuoteIdsList(quoteIds)
     await util.promisify(
       this.grpcManager.client.roomAdd
         .bind(this.grpcManager.client),

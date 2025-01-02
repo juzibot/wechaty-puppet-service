@@ -1390,8 +1390,9 @@ function puppetImplementation (
         const roomId = call.request.getId()
         const contactId = call.request.getContactId()
         const inviteOnly = call.request.getInviteOnly()
+        const quoteIds = call.request.getQuoteIdsList()
 
-        await puppet.roomAdd(roomId, contactId, inviteOnly)
+        await puppet.roomAdd(roomId, contactId, inviteOnly, quoteIds)
 
         return callback(null, new grpcPuppet.RoomAddResponse())
 
