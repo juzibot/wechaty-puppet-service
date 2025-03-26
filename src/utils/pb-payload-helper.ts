@@ -374,3 +374,18 @@ export const chatHistoryPayloadToPb = async (grpcPuppet: grpcPuppet, chatHistory
 
   return list
 }
+
+export const roomMemberPbToPayload = (pb: puppet.RoomMemberPayloadResponse) => {
+  const payload: PUPPET.payloads.RoomMember = {
+    avatar        : pb.getAvatar(),
+    id            : pb.getId(),
+    inviterId     : pb.getInviterId(),
+    name          : pb.getName(),
+    roomAlias     : pb.getRoomAlias(),
+    additionalInfo: pb.getAdditionalInfo(),
+    joinScene     : pb.getJoinScene(),
+    joinTime      : pb.getJoinTime(),
+  }
+
+  return payload
+}

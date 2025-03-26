@@ -50,7 +50,7 @@ import { packageJson }  from '../package-json.js'
 
 import { GrpcManager }  from './grpc-manager.js'
 import { PayloadStore } from './payload-store.js'
-import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPbToPayload, channelPayloadToPb, channelPbToPayload, chatHistoryPbToPayload, postPayloadToPb, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
+import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPbToPayload, channelPayloadToPb, channelPbToPayload, chatHistoryPbToPayload, postPayloadToPb, roomMemberPbToPayload, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
 import type { MessageBroadcastTargets } from '@juzi/wechaty-puppet/dist/esm/src/schemas/message.js'
 import { timeoutPromise } from 'gerror'
 import { BooleanIndicator } from 'state-switch'
@@ -1940,6 +1940,54 @@ class PuppetService extends PUPPET.Puppet {
     // log.silly('PuppetService', 'roomMemberRawPayloadParser({id:%s})', payload.id)
     // passthrough
     return payload
+  }
+
+  override async batchRoomMemberRawPayload (roomId: string, contactIdList: string[]): Promise<Map<string, PUPPET.payloads.RoomMember>> {
+    log.verbose('PuppetService', 'batchRoomMemberRawPayload(%s, %s)', roomId, contactIdList)
+
+    const result = new Map<string, PUPPET.payloads.RoomMember>()
+    const contactIdSet = new Set<string>(contactIdList)
+    let needGetSet = new Set<string>()
+    const cachedPayload = await this._payloadStore.roomMember?.get(roomId) || {}
+    if (Object.keys(cachedPayload).length > 0) {
+      for (const contactId of contactIdSet) {
+        const cachedRoomMemberPayload = cachedPayload[contactId]
+        if (cachedRoomMemberPayload) {
+          result.set(contactId, cachedRoomMemberPayload)
+        } else {
+          needGetSet.add(contactId)
+        }
+      }
+    } else {
+      needGetSet = contactIdSet
+    }
+
+    if (needGetSet.size > 0) {
+      try {
+        const request = new grpcPuppet.BatchRoomMemberPayloadRequest()
+        request.setId(roomId)
+        request.setMemberIdsList(Array.from(needGetSet))
+
+        const response = await util.promisify(
+          this.grpcManager.client.batchRoomMemberPayload
+            .bind(this.grpcManager.client),
+        )(request)
+
+        const map = response.getMembersMap()
+        for (const [ contactId, payload ] of Object.entries(map)) {
+          result.set(contactId, roomMemberPbToPayload(payload))
+          cachedPayload[contactId] = payload
+        }
+        await this._payloadStore.roomMember?.set(roomId, cachedPayload)
+      } catch (e) {
+        log.error('PuppetService', 'batchRoomMemberRawPayload(%s, %s) error: %s, use one by one method', roomId, needGetSet, e)
+        for (const contactId of needGetSet) {
+          const payload = await this.roomMemberRawPayload(roomId, contactId)
+          result.set(contactId, payload)
+        }
+      }
+    }
+    return result
   }
 
   override async roomAnnounce (roomId: string)                : Promise<string>
