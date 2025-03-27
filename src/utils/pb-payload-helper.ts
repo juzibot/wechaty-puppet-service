@@ -389,3 +389,40 @@ export const roomMemberPbToPayload = (pb: puppet.RoomMemberPayloadResponse) => {
 
   return payload
 }
+
+export const contactPbToPayload = (pb: puppet.ContactPayloadResponse) => {
+  const payload: PUPPET.payloads.Contact = {
+    address     : pb.getAddress(),
+    alias       : pb.getAlias(),
+    avatar      : pb.getAvatar(),
+    city        : pb.getCity(),
+    corporation : pb.getCorporation(),
+    coworker    : pb.getCoworker(),
+    description : pb.getDescription(),
+    friend      : pb.getFriend(),
+    gender      : pb.getGender() as number,
+    /**
+     * Huan(202203): rename `getWeixin()` to `getHandle()` in v2.0.0
+     *  @link https://github.com/wechaty/grpc/issues/174
+     */
+    handle      : pb.getWeixin(),
+    id          : pb.getId(),
+    name        : pb.getName(),
+    phone       : pb.getPhonesList(),
+    province    : pb.getProvince(),
+    signature   : pb.getSignature(),
+    star        : pb.getStar(),
+    title       : pb.getTitle(),
+    type        : pb.getType() as number,
+    /**
+     * `weixin` is deprecated, will be removed after Dec 31, 2022
+     * use `handle` instead.
+     */
+    weixin        : pb.getWeixin(),
+    additionalInfo: pb.getAdditionalInfo(),
+    tags          : pb.getTagIdsList(),
+    realName      : pb.getRealName(),
+    aka           : pb.getAka(),
+  }
+  return payload
+}

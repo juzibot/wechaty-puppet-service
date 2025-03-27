@@ -50,7 +50,7 @@ import { packageJson }  from '../package-json.js'
 
 import { GrpcManager }  from './grpc-manager.js'
 import { PayloadStore } from './payload-store.js'
-import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPbToPayload, channelPayloadToPb, channelPbToPayload, chatHistoryPbToPayload, postPayloadToPb, roomMemberPbToPayload, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
+import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPbToPayload, channelPayloadToPb, channelPbToPayload, chatHistoryPbToPayload, contactPbToPayload, postPayloadToPb, roomMemberPbToPayload, urlLinkPbToPayload } from '../utils/pb-payload-helper.js'
 import type { MessageBroadcastTargets } from '@juzi/wechaty-puppet/dist/esm/src/schemas/message.js'
 import { timeoutPromise } from 'gerror'
 import { BooleanIndicator } from 'state-switch'
@@ -761,6 +761,49 @@ class PuppetService extends PUPPET.Puppet {
     // log.silly('PuppetService', 'contactRawPayloadParser({id:%s})', payload.id)
     // passthrough
     return payload
+  }
+
+  override async batchContactRawPayload (contactIdList: string[]): Promise<Map<string, PUPPET.payloads.Contact>> {
+    log.verbose('PuppetService', 'batchContactRawPayload(%s)', contactIdList)
+
+    const result = new Map<string, PUPPET.payloads.Contact>()
+    const contactIdSet = new Set<string>(contactIdList)
+    const needGetSet = new Set<string>()
+    for (const contactId of contactIdSet) {
+      const cachedContactPayload = await this._payloadStore.contact?.get(contactId)
+      if (cachedContactPayload) {
+        result.set(contactId, cachedContactPayload)
+      } else {
+        needGetSet.add(contactId)
+      }
+    }
+
+    if (needGetSet.size > 0) {
+      try {
+        const request = new grpcPuppet.BatchContactPayloadRequest()
+        request.setIdsList(Array.from(needGetSet))
+
+        const response = await util.promisify(
+          this.grpcManager.client.batchContactPayload
+            .bind(this.grpcManager.client),
+        )(request)
+
+        const payloads = response.getContactPayloadsList()
+        for (const payload of payloads) {
+          const contactId = payload.getId()
+          const puppetPayload = contactPbToPayload(payload)
+          result.set(contactId, puppetPayload)
+          await this._payloadStore.contact?.set(contactId, puppetPayload)
+        }
+      } catch (e) {
+        log.error('PuppetService', 'batchContactRawPayload(%s, %s) error: %s, use one by one method', contactIdList, needGetSet, e)
+        for (const contactId of needGetSet) {
+          const payload = await this.contactRawPayload(contactId)
+          result.set(contactId, payload)
+        }
+      }
+    }
+    return result
   }
 
   override async contactPayloadModify (contactId: string, payload: Partial<PUPPET.payloads.Contact>): Promise<void> {
@@ -1973,10 +2016,12 @@ class PuppetService extends PUPPET.Puppet {
             .bind(this.grpcManager.client),
         )(request)
 
-        const map = response.getMembersMap()
-        for (const [ contactId, payload ] of Object.entries(map)) {
-          result.set(contactId, roomMemberPbToPayload(payload))
-          cachedPayload[contactId] = payload
+        const payloads = response.getMemberPayloadsList()
+        for (const payload of payloads) {
+          const contactId = payload.getId()
+          const puppetPayload = roomMemberPbToPayload(payload)
+          result.set(contactId, puppetPayload)
+          cachedPayload[contactId] = puppetPayload
         }
         await this._payloadStore.roomMember?.set(roomId, cachedPayload)
       } catch (e) {
