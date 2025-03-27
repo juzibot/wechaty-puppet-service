@@ -1653,6 +1653,37 @@ function puppetImplementation (
       }
     },
 
+    batchRoomMemberPayload: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'batchRoomMemberPayload()')
+
+      try {
+        const roomId = call.request.getId()
+        const contactIdList = call.request.getMemberIdsList()
+
+        const payloadMap = await puppet.batchRoomMemberPayload(roomId, contactIdList)
+
+        const response = new grpcPuppet.BatchRoomMemberPayloadResponse()
+        const responseMap = response.getMembersMap()
+        for (const [ contactId, payload ] of payloadMap.entries()) {
+          const pb = new grpcPuppet.RoomMemberPayloadResponse()
+          pb.setAvatar(payload.avatar)
+          pb.setId(payload.id)
+          pb.setInviterId(payload.inviterId || '')
+          pb.setName(payload.name)
+          pb.setRoomAlias(payload.roomAlias || '')
+          pb.setAdditionalInfo(payload.additionalInfo || '')
+          pb.setJoinScene(payload.joinScene || PUPPET.types.RoomMemberJoinScene.Unknown)
+          pb.setJoinTime(payload.joinTime || 0)
+          responseMap.set(contactId, pb)
+        }
+
+        return callback(null, response)
+
+      } catch (e) {
+        return grpcError('batchRoomMemberPayload', e, callback)
+      }
+    },
+
     roomPayload: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'roomPayload()')
 
