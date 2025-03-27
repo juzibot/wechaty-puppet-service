@@ -24,8 +24,8 @@ const envVars = {
  */
 const GRPC_OPTIONS = {
   // https://github.com/wechaty/wechaty-puppet-service/issues/86
-  'grpc.max_receive_message_length': 1024 * 1024 * 20,
-  'grpc.max_send_message_length': 1024 * 1024 * 20,
+  'grpc.max_receive_message_length': 1024 * 1024 * 80,
+  'grpc.max_send_message_length': 1024 * 1024 * 80,
 }
 
 export const NO_LOG_EVENTS: grpcPuppet.EventTypeMap[keyof grpcPuppet.EventTypeMap][] = [
