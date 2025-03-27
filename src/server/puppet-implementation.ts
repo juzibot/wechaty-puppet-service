@@ -1437,7 +1437,7 @@ function puppetImplementation (
         const roomId = call.request.getId()
 
         const fileBox           = await puppet.roomAvatar(roomId)
-        const serializedFileBox = await serializeFileBox(fileBox)
+        const serializedFileBox = await serializeFileBox(fileBox!)
 
         const response = new grpcPuppet.RoomAvatarResponse()
         response.setFileBox(serializedFileBox)
