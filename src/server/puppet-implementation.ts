@@ -293,6 +293,57 @@ function puppetImplementation (
       }
     },
 
+    batchContactPayload: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'batchContactPayload()')
+
+      try {
+        const contactIdList = call.request.getIdsList()
+
+        const payloadMap = await puppet.batchContactPayload(contactIdList)
+
+        const response = new grpcPuppet.BatchContactPayloadResponse()
+
+        const payloads: grpcPuppet.ContactPayloadResponse[] = []
+        for (const [ _, payload ] of payloadMap.entries()) {
+          const pb = new grpcPuppet.ContactPayloadResponse()
+          pb.setAddress(payload.address || '')
+          pb.setAlias(payload.alias || '')
+          pb.setAvatar(payload.avatar)
+          pb.setCity(payload.city || '')
+          pb.setFriend(payload.friend || false)
+          pb.setGender(payload.gender)
+          pb.setId(payload.id)
+          pb.setName(payload.name)
+          pb.setProvince(payload.province || '')
+          pb.setSignature(payload.signature || '')
+          pb.setStar(payload.star || false)
+          pb.setType(payload.type)
+          /**
+           * @deprecated `payload.weixin` will be removed in v2.0
+           *  @link https://github.com/wechaty/grpc/issues/174
+           */
+          pb.setWeixin(payload.handle || payload.weixin || '')
+          pb.setPhonesList(payload.phone)
+          pb.setCoworker(payload.coworker || false)
+          pb.setCorporation(payload.corporation || '')
+          pb.setTitle(payload.title || '')
+          pb.setDescription(payload.description || '')
+          pb.setAdditionalInfo(payload.additionalInfo || '')
+          pb.setTagIdsList(payload.tags || [])
+          pb.setRealName(payload.realName || '')
+          pb.setAka(payload.aka || '')
+          payloads.push(pb)
+        }
+
+        response.setContactPayloadsList(payloads)
+
+        return callback(null, response)
+
+      } catch (e) {
+        return grpcError('batchContactPayload', e, callback)
+      }
+    },
+
     contactPayloadModify: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'contactPayloadModify()')
 
@@ -1663,8 +1714,9 @@ function puppetImplementation (
         const payloadMap = await puppet.batchRoomMemberPayload(roomId, contactIdList)
 
         const response = new grpcPuppet.BatchRoomMemberPayloadResponse()
-        const responseMap = response.getMembersMap()
-        for (const [ contactId, payload ] of payloadMap.entries()) {
+
+        const payloads: grpcPuppet.RoomMemberPayloadResponse[] = []
+        for (const [ _, payload ] of payloadMap.entries()) {
           const pb = new grpcPuppet.RoomMemberPayloadResponse()
           pb.setAvatar(payload.avatar)
           pb.setId(payload.id)
@@ -1674,8 +1726,10 @@ function puppetImplementation (
           pb.setAdditionalInfo(payload.additionalInfo || '')
           pb.setJoinScene(payload.joinScene || PUPPET.types.RoomMemberJoinScene.Unknown)
           pb.setJoinTime(payload.joinTime || 0)
-          responseMap.set(contactId, pb)
+          payloads.push(pb)
         }
+
+        response.setMemberPayloadsList(payloads)
 
         return callback(null, response)
 
