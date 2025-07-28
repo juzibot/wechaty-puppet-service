@@ -79,6 +79,8 @@ export const channelPayloadToPb = (grpcPuppet: grpcPuppet, channelPayload: PUPPE
   if (channelPayload.url) { pbChannelPayload.setUrl(channelPayload.url) }
   if (channelPayload.objectId) { pbChannelPayload.setObjectId(channelPayload.objectId) }
   if (channelPayload.objectNonceId) { pbChannelPayload.setObjectNonceId(channelPayload.objectNonceId) }
+  if (channelPayload.authIconUrl) { pbChannelPayload.setAuthIconUrl(channelPayload.authIconUrl) }
+  if (channelPayload.authJob) { pbChannelPayload.setAuthJob(channelPayload.authJob) }
   return pbChannelPayload
 }
 
