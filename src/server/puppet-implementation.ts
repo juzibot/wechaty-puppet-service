@@ -43,7 +43,7 @@ import {
 import { log } from '../config.js'
 import { grpcError }          from './grpc-error.js'
 import { EventStreamManager } from './event-stream-manager.js'
-import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPayloadToPb, channelPayloadToPb, chatHistoryPayloadToPb, postPbToPayload, urlLinkPayloadToPb } from '../utils/pb-payload-helper.js'
+import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPayloadToPb, channelPayloadToPb, chatHistoryPayloadToPb, postPbToPayload, urlLinkPayloadToPb, channelCardPayloadToPb } from '../utils/pb-payload-helper.js'
 import { TextContentType } from '@juzi/wechaty-puppet/types'
 
 function puppetImplementation (
@@ -913,6 +913,27 @@ function puppetImplementation (
       }
     },
 
+    messageChannelCard: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'messageChannelCard()')
+
+      try {
+        const id = call.request.getId()
+
+        const payload = await puppet.messageChannelCard(id)
+
+        const response = new grpcPuppet.MessageChannelCardResponse()
+
+        const pbChannelCardPayload = channelCardPayloadToPb(grpcPuppet, payload)
+
+        response.setChannelCard(pbChannelCardPayload)
+
+        return callback(null, response)
+
+      } catch (e) {
+        return grpcError('messageChannelCard', e, callback)
+      }
+    },
+
     messageCallRecord: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'messageCallRecord()')
 
@@ -1298,6 +1319,35 @@ function puppetImplementation (
 
       } catch (e) {
         return grpcError('messageSendChannel', e, callback)
+      }
+    },
+
+    messageSendChannelCard: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'messageSendChannelCard()')
+
+      try {
+        const conversationId = call.request.getConversationId()
+        const pbChannelCardPayload = call.request.getChannelCard()?.toObject()
+
+        if (!pbChannelCardPayload) {
+          return grpcError('messageSendChannelCard', new Error().stack, callback)
+        }
+        const payload: PUPPET.payloads.ChannelCard = {
+          ...pbChannelCardPayload,
+        }
+
+        const messageId = await puppet.messageSendChannelCard(conversationId, payload)
+
+        const response = new grpcPuppet.MessageSendChannelCardResponse()
+
+        if (messageId) {
+          response.setId(messageId)
+        }
+
+        return callback(null, response)
+
+      } catch (e) {
+        return grpcError('messageSendChannelCard', e, callback)
       }
     },
 
