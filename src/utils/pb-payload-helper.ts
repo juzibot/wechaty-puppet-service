@@ -79,8 +79,6 @@ export const channelPayloadToPb = (grpcPuppet: grpcPuppet, channelPayload: PUPPE
   if (channelPayload.url) { pbChannelPayload.setUrl(channelPayload.url) }
   if (channelPayload.objectId) { pbChannelPayload.setObjectId(channelPayload.objectId) }
   if (channelPayload.objectNonceId) { pbChannelPayload.setObjectNonceId(channelPayload.objectNonceId) }
-  if (channelPayload.authIconUrl) { pbChannelPayload.setAuthIconUrl(channelPayload.authIconUrl) }
-  if (channelPayload.authJob) { pbChannelPayload.setAuthJob(channelPayload.authJob) }
   return pbChannelPayload
 }
 
@@ -90,6 +88,25 @@ export const channelPbToPayload = (channelPayloadPb: puppet.ChannelPayload) => {
     ..._channelPayloadPb,
   }
   return channelPayload
+}
+
+export const channelCardPayloadToPb = (grpcPuppet: grpcPuppet, channelCardPayload: PUPPET.payloads.ChannelCard) => {
+  const pbChannelCardPayload = new grpcPuppet.ChannelCardPayload()
+  if (channelCardPayload.avatar) { pbChannelCardPayload.setAvatar(channelCardPayload.avatar) }
+  if (channelCardPayload.extras) { pbChannelCardPayload.setExtras(channelCardPayload.extras) }
+  if (channelCardPayload.nickname) { pbChannelCardPayload.setNickname(channelCardPayload.nickname) }
+  if (channelCardPayload.url) { pbChannelCardPayload.setUrl(channelCardPayload.url) }
+  if (channelCardPayload.authIconUrl) { pbChannelCardPayload.setAuthIconUrl(channelCardPayload.authIconUrl) }
+  if (channelCardPayload.authJob) { pbChannelCardPayload.setAuthJob(channelCardPayload.authJob) }
+  return pbChannelCardPayload
+}
+
+export const channelCardPbToPayload = (channelCardPayloadPb: puppet.ChannelCardPayload) => {
+  const _channelCardPayloadPb = channelCardPayloadPb.toObject()
+  const channelCardPayload: PUPPET.payloads.ChannelCard = {
+    ..._channelCardPayloadPb,
+  }
+  return channelCardPayload
 }
 
 export const postPayloadToPb = async (grpcPuppet: grpcPuppet, payload: PUPPET.payloads.PostClient, serializeFileBox: (filebox: FileBoxInterface) => Promise<string>) => {
@@ -295,6 +312,9 @@ export const chatHistoryPbToPayload = (FileBoxUuid: typeof FileBox, chatHistoryP
       case puppet.ChatHistoryContentType.CHAT_HISTORY:
         message = chatHistoryPbToPayload(FileBoxUuid, chatHistoryContent.getChatHistoryList()!)
         break
+      case puppet.ChatHistoryContentType.CHANNEL_CARD:
+        message = channelCardPbToPayload(chatHistoryContent.getChannelCard()!)
+        break
       default:
         throw new Error(`Invalid chat history content type: ${chatHistoryContent.getType()}`)
     }
@@ -365,6 +385,11 @@ export const chatHistoryPayloadToPb = async (grpcPuppet: grpcPuppet, chatHistory
         pbChatHistoryContent.setType(grpcPuppet.ChatHistoryContentType.CHAT_HISTORY)
         const pbChatHistoryPayload = await chatHistoryPayloadToPb(grpcPuppet, chatHistoryPayload.message, serializeFileBox)
         pbChatHistoryContent.setChatHistoryList(pbChatHistoryPayload)
+        break
+      case PUPPET.types.Message.ChannelCard:
+        pbChatHistoryContent.setType(grpcPuppet.ChatHistoryContentType.CHANNEL_CARD)
+        const pbChannelCardPayload = channelCardPayloadToPb(grpcPuppet, chatHistoryPayload.message)
+        pbChatHistoryContent.setChannelCard(pbChannelCardPayload)
         break
       default:
         throw new Error(`ChatHistoryContent unsupported type ${chatHistoryPayload.type}`)
