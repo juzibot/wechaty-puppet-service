@@ -1803,6 +1803,25 @@ class PuppetService extends PUPPET.Puppet {
     )(request)
   }
 
+  override async roomDelV2 (roomId: string, contactIds: string[]): Promise<{ successList: string[]; failList: string[]; failReasonList: string[] }> {
+    log.verbose('PuppetService', 'roomDelV2(%s, %s)', roomId, contactIds)
+
+    const request = new grpcPuppet.RoomDelV2Request()
+    request.setId(roomId)
+    request.setContactIdsList(contactIds)
+
+    const response = await util.promisify(
+      this.grpcManager.client.roomDelV2
+        .bind(this.grpcManager.client),
+    )(request)
+
+    return {
+      successList: response.getSuccessIdsList(),
+      failList: response.getFailedIdsList(),
+      failReasonList: response.getFailedReasonsList(),
+    }
+  }
+
   override async roomAvatar (roomId: string): Promise<FileBoxInterface> {
     log.verbose('PuppetService', 'roomAvatar(%s)', roomId)
 
@@ -1839,6 +1858,32 @@ class PuppetService extends PUPPET.Puppet {
       this.grpcManager.client.roomAdd
         .bind(this.grpcManager.client),
     )(request)
+  }
+
+  override async roomAddV2 (
+    roomId: string,
+    contactIds: string[],
+    inviteOnly: boolean,
+    quoteIds: string[],
+  ): Promise<{ successList: string[]; failList: string[]; failReasonList: string[]; }> {
+    log.verbose('PuppetService', 'roomAddV2(%s, %s)', roomId, contactIds)
+
+    const request = new grpcPuppet.RoomAddV2Request()
+    request.setId(roomId)
+    request.setContactIdsList(contactIds)
+    request.setInviteOnly(inviteOnly)
+    request.setQuoteIdsList(quoteIds)
+
+    const response = await util.promisify(
+      this.grpcManager.client.roomAddV2
+        .bind(this.grpcManager.client),
+    )(request)
+
+    return {
+      successList: response.getSuccessIdsList(),
+      failList: response.getFailedIdsList(),
+      failReasonList: response.getFailedReasonsList(),
+    }
   }
 
   override async roomTopic (roomId: string)                : Promise<string>

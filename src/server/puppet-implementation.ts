@@ -1505,6 +1505,28 @@ function puppetImplementation (
       }
     },
 
+    roomAddV2: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'roomAddV2()')
+
+      try {
+        const roomId = call.request.getId()
+        const contactIds = call.request.getContactIdsList()
+        const inviteOnly = call.request.getInviteOnly()
+        const quoteIds = call.request.getQuoteIdsList()
+
+        const result = await puppet.roomAddV2(roomId, contactIds, inviteOnly, quoteIds)
+
+        const response = new grpcPuppet.RoomAddV2Response()
+        response.setSuccessIdsList(result.successList)
+        response.setFailedIdsList(result.failList)
+        response.setFailedReasonsList(result.failReasonList)
+
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('roomAddV2', e, callback)
+      }
+    },
+
     roomAnnounce: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'roomAnnounce()')
 
@@ -1590,6 +1612,27 @@ function puppetImplementation (
 
       } catch (e) {
         return grpcError('roomDel', e, callback)
+      }
+    },
+
+    roomDelV2: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'roomDelV2()')
+
+      try {
+        const roomId = call.request.getId()
+        const contactIds = call.request.getContactIdsList()
+
+        const result = await puppet.roomDelV2(roomId, contactIds)
+
+        const response = new grpcPuppet.RoomDelV2Response()
+        response.setSuccessIdsList(result.successList)
+        response.setFailedIdsList(result.failList)
+        response.setFailedReasonsList(result.failReasonList)
+
+        return callback(null, response)
+
+      } catch (e) {
+        return grpcError('roomDelV2', e, callback)
       }
     },
 
@@ -2015,7 +2058,7 @@ function puppetImplementation (
 
         return callback(null, new grpcPuppet.RoomDismissResponse())
       } catch (e) {
-        return grpcError('roomDelAdmins', e, callback)
+        return grpcError('roomDismiss', e, callback)
       }
     },
 
