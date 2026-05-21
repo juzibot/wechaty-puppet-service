@@ -1,8 +1,12 @@
 #!/usr/bin/env -S node --no-warnings --loader ts-node/esm
 
-import { test }  from 'tstest'
+import {
+  test,
+  sinon,
+}  from 'tstest'
 import getPort from 'get-port'
 
+import * as PUPPET from '@juzi/wechaty-puppet'
 import { PuppetMock } from '@juzi/wechaty-puppet-mock'
 
 import { PuppetService } from './puppet-service.js'
@@ -56,4 +60,55 @@ test('PuppetService restart without problem', async t => {
   }
 
   await puppetServer.stop()
+})
+
+test('createMessageBroadcastWithBatch() forwards sendBatchId', async t => {
+  const TOKEN = 'insecure_token'
+  const PORT = await getPort()
+  const ENDPOINT = '0.0.0.0:' + PORT
+  const EXPECTED_POST_ID = 'post-id-1'
+  const EXPECTED_BATCH_ID = 'batch-id-1'
+
+  const sandbox = sinon.createSandbox()
+  const puppet = new PuppetMock() as any
+  puppet.createMessageBroadcastWithBatch = async () => undefined
+
+  const createStub = sandbox.stub(puppet, 'createMessageBroadcastWithBatch').resolves(EXPECTED_POST_ID)
+
+  const puppetServer = new PuppetServer({
+    endpoint: ENDPOINT,
+    puppet,
+    token: TOKEN,
+  })
+  await puppetServer.start()
+
+  const puppetService = new PuppetService({
+    endpoint: ENDPOINT,
+    token: TOKEN,
+  })
+
+  const postPayload = {
+    type: PUPPET.types.Post.Broadcast,
+    sayableList: [
+      PUPPET.payloads.sayable.text('hello stable broadcast'),
+    ],
+  } as PUPPET.payloads.Post
+
+  const result = await puppetService.createMessageBroadcastWithBatch(
+    ['contact-id-1', 'room-id-1'],
+    postPayload,
+    EXPECTED_BATCH_ID,
+  )
+
+  t.equal(result, EXPECTED_POST_ID, 'should return the puppet post id')
+  t.equal(createStub.callCount, 1, 'should call puppet batch-aware broadcast once')
+  t.same(createStub.firstCall?.args, [
+    ['contact-id-1', 'room-id-1'],
+    postPayload,
+    EXPECTED_BATCH_ID,
+  ], 'should pass targets, post payload, and send batch id through grpc')
+
+  await puppetService.stop()
+  await puppetServer.stop()
+  sandbox.restore()
 })

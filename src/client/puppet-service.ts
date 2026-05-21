@@ -1682,6 +1682,28 @@ class PuppetService extends PUPPET.Puppet {
     return response.getId()
   }
 
+  async createMessageBroadcastWithBatch (targets: string[], content: PUPPET.payloads.Post, sendBatchId: string): Promise<string | void> {
+    log.verbose('PuppetService', 'createMessageBroadcastWithBatch()')
+
+    if (!PUPPET.payloads.isPostClient(content)) {
+      throw new Error('can only create broadcast with client post')
+    }
+
+    const grpcPuppetAny = grpcPuppet as any
+    const request = new grpcPuppetAny.CreateMessageBroadcastWithBatchRequest()
+    const post = await postPayloadToPb(grpcPuppet, content, this.serializeFileBox.bind(this))
+    request.setContent(post)
+    request.setTargetIdsList(targets)
+    request.setSendBatchId(sendBatchId)
+
+    const createMessageBroadcastWithBatch = util.promisify(
+      (this.grpcManager.client as any).createMessageBroadcastWithBatch.bind(this.grpcManager.client),
+    ) as any
+    const response = await createMessageBroadcastWithBatch(request)
+
+    return response.getId()
+  }
+
   override async getMessageBroadcastStatus (id: string): Promise<{ status: PUPPET.types.BroadcastStatus; detail: { contactId?: string | undefined; roomId?: string | undefined; status: PUPPET.types.BroadcastTargetStatus }[] }> {
     log.verbose('PuppetService', 'getMessageBroadcastStatus()')
 
