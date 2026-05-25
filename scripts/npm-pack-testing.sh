@@ -26,6 +26,7 @@ npm init -y
 npm install --production ./*-*.*.*.tgz \
   @chatie/tsconfig@$NPM_TAG \
   pkg-jq \
+  typescript@4.7.4 \
   "wechaty-puppet@$NPM_TAG" \
   "wechaty@$NPM_TAG" \
 
