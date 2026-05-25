@@ -381,6 +381,9 @@ class PuppetService extends PUPPET.Puppet {
       case grpcPuppet.EventType.EVENT_TYPE_UNSPECIFIED:
         log.error('PuppetService', 'onGrpcStreamEvent() got an EventType.EVENT_TYPE_UNSPECIFIED ?')
         break
+      case grpcPuppet.EventType.EVENT_TYPE_VERIFY_SLIDE:
+        this.emit('verify-slide', JSON.parse(payload) as PUPPET.payloads.EventVerifySlide)
+        break
 
       default:
         // Huan(202003): in default, the `type` type should be `never`, please check.
