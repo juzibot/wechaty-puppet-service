@@ -1458,38 +1458,6 @@ function puppetImplementation (
       }
     },
 
-    createMessageBroadcastWithBatch: async (call: any, callback: any) => {
-      log.verbose('PuppetServiceImpl', 'createMessageBroadcastWithBatch()')
-
-      try {
-        const targets = call.request.getTargetIdsList()
-        const sendBatchId = call.request.getSendBatchId()
-        const post = call.request.getContent()
-
-        if (!post) {
-          throw new Error('no post found')
-        }
-        if (post.getType() !== grpcPuppet.PostType.POST_TYPE_BROADCAST) {
-          throw new Error('cannot create broadcast with non-broadcast post')
-        }
-
-        const payload = postPbToPayload(post, FileBoxUuid)
-
-        const id = await (puppet as any).createMessageBroadcastWithBatch(targets, payload, sendBatchId)
-
-        const grpcPuppetAny = grpcPuppet as any
-        const response = new grpcPuppetAny.CreateMessageBroadcastWithBatchResponse()
-        if (id) {
-          response.setId(id)
-        }
-
-        return callback(null, response)
-
-      } catch (e) {
-        return grpcError('createMessageBroadcastWithBatch', e, callback)
-      }
-    },
-
     getMessageBroadcastStatus: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'getMessageBroadcastStatus()')
 
