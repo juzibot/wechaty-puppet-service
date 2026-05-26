@@ -72,21 +72,33 @@ export type PuppetServiceOptions = PUPPET.PuppetOptions & {
 const ResetLoginTimeout = 30 * 1000
 const ResetReadyTimeout = 20 * 1000 // normally ready comes 15 seconds after login
 
-type MessageBatchSendResponse = {
-  results: Array<{
-    conversationId: string,
-    error?: string,
-    id?: string,
-  }>,
+type MessageBatchSendResponse = Awaited<ReturnType<PUPPET.impls.PuppetInterface['messageBatchSendText']>>
+
+type GrpcUnaryMethod<Request, Response> = {
+  (request: Request, callback: (error: Error | null, response: Response) => void): unknown,
 }
 
-const grpcBatchResultsToPayload = (response: any): MessageBatchSendResponse => ({
-  results: response.getResultsList().map((result: any) => ({
-    conversationId : result.getConversationId(),
-    error          : result.getError() || undefined,
-    id             : result.getId() || undefined,
-  })),
-})
+type GrpcBatchResult = {
+  getConversationId(): string,
+  getError(): string,
+  getId(): string,
+}
+
+type GrpcBatchResponse<Result extends GrpcBatchResult> = {
+  getResultsList(): Result[],
+}
+
+function grpcBatchResultsToPayload<Result extends GrpcBatchResult> (
+  response: GrpcBatchResponse<Result>,
+): MessageBatchSendResponse {
+  return {
+    results: response.getResultsList().map(result => ({
+      conversationId : result.getConversationId(),
+      error          : result.getError() || undefined,
+      id             : result.getId() || undefined,
+    })),
+  }
+}
 
 class PuppetService extends PUPPET.Puppet {
 
@@ -141,9 +153,15 @@ class PuppetService extends PUPPET.Puppet {
     return JSON.stringify(normalizedFileBox)
   }
 
-  private async grpcUnary (methodName: string, request: any): Promise<any> {
-    const method = (this.grpcManager.client as any)[methodName]
-    return (util.promisify(method.bind(this.grpcManager.client)) as any)(request)
+  private async grpcUnary<Request, Response> (
+    method  : GrpcUnaryMethod<Request, Response>,
+    request : Request,
+  ): Promise<Response> {
+    const promisified = util.promisify(
+      method.bind(this.grpcManager.client),
+    ) as (request: Request) => Promise<Response>
+
+    return promisified(request)
   }
 
   override name () {
@@ -1515,15 +1533,17 @@ class PuppetService extends PUPPET.Puppet {
   ): Promise<MessageBatchSendResponse> {
     log.verbose('PuppetService', 'messageBatchSendText(%s)', conversationIds.join(','))
 
-    const grpcPuppetAny = grpcPuppet as any
-    const request = new grpcPuppetAny.MessageBatchSendTextRequest()
+    const request = new grpcPuppet.MessageBatchSendTextRequest()
     request.setConversationIdsList(conversationIds)
     request.setText(text)
     if (batchTaskId) {
       request.setBatchTaskId(batchTaskId)
     }
 
-    const response = await this.grpcUnary('messageBatchSendText', request)
+    const response = await this.grpcUnary<grpcPuppet.MessageBatchSendTextRequest, grpcPuppet.MessageBatchSendTextResponse>(
+      this.grpcManager.client.messageBatchSendText,
+      request,
+    )
 
     return grpcBatchResultsToPayload(response)
   }
@@ -1535,15 +1555,17 @@ class PuppetService extends PUPPET.Puppet {
   ): Promise<MessageBatchSendResponse> {
     log.verbose('PuppetService', 'messageBatchSendFile(%s)', conversationIds.join(','))
 
-    const grpcPuppetAny = grpcPuppet as any
-    const request = new grpcPuppetAny.MessageBatchSendFileRequest()
+    const request = new grpcPuppet.MessageBatchSendFileRequest()
     request.setConversationIdsList(conversationIds)
     request.setFileBox(await this.serializeFileBox(fileBox))
     if (batchTaskId) {
       request.setBatchTaskId(batchTaskId)
     }
 
-    const response = await this.grpcUnary('messageBatchSendFile', request)
+    const response = await this.grpcUnary<grpcPuppet.MessageBatchSendFileRequest, grpcPuppet.MessageBatchSendFileResponse>(
+      this.grpcManager.client.messageBatchSendFile,
+      request,
+    )
 
     return grpcBatchResultsToPayload(response)
   }
@@ -1555,8 +1577,7 @@ class PuppetService extends PUPPET.Puppet {
   ): Promise<MessageBatchSendResponse> {
     log.verbose('PuppetService', 'messageBatchForward(%s, %s)', conversationIds.join(','), messageIds)
 
-    const grpcPuppetAny = grpcPuppet as any
-    const request = new grpcPuppetAny.MessageBatchForwardRequest()
+    const request = new grpcPuppet.MessageBatchForwardRequest()
     request.setConversationIdsList(conversationIds)
     if (Array.isArray(messageIds)) {
       request.setMessageIdsList(messageIds)
@@ -1570,7 +1591,10 @@ class PuppetService extends PUPPET.Puppet {
       request.setBatchTaskId(batchTaskId)
     }
 
-    const response = await this.grpcUnary('messageBatchForward', request)
+    const response = await this.grpcUnary<grpcPuppet.MessageBatchForwardRequest, grpcPuppet.MessageBatchForwardResponse>(
+      this.grpcManager.client.messageBatchForward,
+      request,
+    )
 
     return grpcBatchResultsToPayload(response)
   }
@@ -1582,15 +1606,17 @@ class PuppetService extends PUPPET.Puppet {
   ): Promise<MessageBatchSendResponse> {
     log.verbose('PuppetService', 'messageBatchSendContact(%s, %s)', conversationIds.join(','), contactId)
 
-    const grpcPuppetAny = grpcPuppet as any
-    const request = new grpcPuppetAny.MessageBatchSendContactRequest()
+    const request = new grpcPuppet.MessageBatchSendContactRequest()
     request.setConversationIdsList(conversationIds)
     request.setContactId(contactId)
     if (batchTaskId) {
       request.setBatchTaskId(batchTaskId)
     }
 
-    const response = await this.grpcUnary('messageBatchSendContact', request)
+    const response = await this.grpcUnary<grpcPuppet.MessageBatchSendContactRequest, grpcPuppet.MessageBatchSendContactResponse>(
+      this.grpcManager.client.messageBatchSendContact,
+      request,
+    )
 
     return grpcBatchResultsToPayload(response)
   }
@@ -1602,15 +1628,17 @@ class PuppetService extends PUPPET.Puppet {
   ): Promise<MessageBatchSendResponse> {
     log.verbose('PuppetService', 'messageBatchSendUrl(%s)', conversationIds.join(','))
 
-    const grpcPuppetAny = grpcPuppet as any
-    const request = new grpcPuppetAny.MessageBatchSendUrlRequest()
+    const request = new grpcPuppet.MessageBatchSendUrlRequest()
     request.setConversationIdsList(conversationIds)
     request.setUrlLink(urlLinkPayloadToPb(grpcPuppet, urlLinkPayload))
     if (batchTaskId) {
       request.setBatchTaskId(batchTaskId)
     }
 
-    const response = await this.grpcUnary('messageBatchSendUrl', request)
+    const response = await this.grpcUnary<grpcPuppet.MessageBatchSendUrlRequest, grpcPuppet.MessageBatchSendUrlResponse>(
+      this.grpcManager.client.messageBatchSendUrl,
+      request,
+    )
 
     return grpcBatchResultsToPayload(response)
   }
@@ -1622,15 +1650,17 @@ class PuppetService extends PUPPET.Puppet {
   ): Promise<MessageBatchSendResponse> {
     log.verbose('PuppetService', 'messageBatchSendMiniProgram(%s)', conversationIds.join(','))
 
-    const grpcPuppetAny = grpcPuppet as any
-    const request = new grpcPuppetAny.MessageBatchSendMiniProgramRequest()
+    const request = new grpcPuppet.MessageBatchSendMiniProgramRequest()
     request.setConversationIdsList(conversationIds)
     request.setMiniProgram(miniProgramPayloadToPb(grpcPuppet, miniProgramPayload))
     if (batchTaskId) {
       request.setBatchTaskId(batchTaskId)
     }
 
-    const response = await this.grpcUnary('messageBatchSendMiniProgram', request)
+    const response = await this.grpcUnary<grpcPuppet.MessageBatchSendMiniProgramRequest, grpcPuppet.MessageBatchSendMiniProgramResponse>(
+      this.grpcManager.client.messageBatchSendMiniProgram,
+      request,
+    )
 
     return grpcBatchResultsToPayload(response)
   }
@@ -1642,15 +1672,17 @@ class PuppetService extends PUPPET.Puppet {
   ): Promise<MessageBatchSendResponse> {
     log.verbose('PuppetService', 'messageBatchSendLocation(%s)', conversationIds.join(','))
 
-    const grpcPuppetAny = grpcPuppet as any
-    const request = new grpcPuppetAny.MessageBatchSendLocationRequest()
+    const request = new grpcPuppet.MessageBatchSendLocationRequest()
     request.setConversationIdsList(conversationIds)
     request.setLocation(locationPayloadToPb(grpcPuppet, locationPayload))
     if (batchTaskId) {
       request.setBatchTaskId(batchTaskId)
     }
 
-    const response = await this.grpcUnary('messageBatchSendLocation', request)
+    const response = await this.grpcUnary<grpcPuppet.MessageBatchSendLocationRequest, grpcPuppet.MessageBatchSendLocationResponse>(
+      this.grpcManager.client.messageBatchSendLocation,
+      request,
+    )
 
     return grpcBatchResultsToPayload(response)
   }
@@ -1662,15 +1694,17 @@ class PuppetService extends PUPPET.Puppet {
   ): Promise<MessageBatchSendResponse> {
     log.verbose('PuppetService', 'messageBatchSendChannel(%s)', conversationIds.join(','))
 
-    const grpcPuppetAny = grpcPuppet as any
-    const request = new grpcPuppetAny.MessageBatchSendChannelRequest()
+    const request = new grpcPuppet.MessageBatchSendChannelRequest()
     request.setConversationIdsList(conversationIds)
     request.setChannel(channelPayloadToPb(grpcPuppet, channelPayload))
     if (batchTaskId) {
       request.setBatchTaskId(batchTaskId)
     }
 
-    const response = await this.grpcUnary('messageBatchSendChannel', request)
+    const response = await this.grpcUnary<grpcPuppet.MessageBatchSendChannelRequest, grpcPuppet.MessageBatchSendChannelResponse>(
+      this.grpcManager.client.messageBatchSendChannel,
+      request,
+    )
 
     return grpcBatchResultsToPayload(response)
   }
@@ -1682,15 +1716,17 @@ class PuppetService extends PUPPET.Puppet {
   ): Promise<MessageBatchSendResponse> {
     log.verbose('PuppetService', 'messageBatchSendChannelCard(%s)', conversationIds.join(','))
 
-    const grpcPuppetAny = grpcPuppet as any
-    const request = new grpcPuppetAny.MessageBatchSendChannelCardRequest()
+    const request = new grpcPuppet.MessageBatchSendChannelCardRequest()
     request.setConversationIdsList(conversationIds)
     request.setChannelCard(channelCardPayloadToPb(grpcPuppet, channelCardPayload))
     if (batchTaskId) {
       request.setBatchTaskId(batchTaskId)
     }
 
-    const response = await this.grpcUnary('messageBatchSendChannelCard', request)
+    const response = await this.grpcUnary<grpcPuppet.MessageBatchSendChannelCardRequest, grpcPuppet.MessageBatchSendChannelCardResponse>(
+      this.grpcManager.client.messageBatchSendChannelCard,
+      request,
+    )
 
     return grpcBatchResultsToPayload(response)
   }
