@@ -46,6 +46,36 @@ import { EventStreamManager } from './event-stream-manager.js'
 import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPayloadToPb, channelPayloadToPb, chatHistoryPayloadToPb, postPbToPayload, urlLinkPayloadToPb, channelCardPayloadToPb } from '../utils/pb-payload-helper.js'
 import { TextContentType } from '@juzi/wechaty-puppet/types'
 
+type MessageBatchSendResponse = Awaited<ReturnType<PUPPET.impls.PuppetInterface['messageBatchSendText']>>
+
+type GrpcBatchResult = {
+  setConversationId(value: string): void,
+  setError(value: string): void,
+  setId(value: string): void,
+}
+
+type GrpcBatchResponse<Result extends GrpcBatchResult> = {
+  setResultsList(value: Result[]): void,
+}
+
+const setGrpcBatchResults = <Result extends GrpcBatchResult> (
+  response      : GrpcBatchResponse<Result>,
+  ResultClass   : new () => Result,
+  payload       : MessageBatchSendResponse,
+): void => {
+  response.setResultsList(payload.results.map(result => {
+    const pbResult = new ResultClass()
+    pbResult.setConversationId(result.conversationId)
+    if (result.id) {
+      pbResult.setId(result.id)
+    }
+    if (result.error) {
+      pbResult.setError(result.error)
+    }
+    return pbResult
+  }))
+}
+
 function puppetImplementation (
   puppet      : PUPPET.impls.PuppetInterface,
   FileBoxUuid : typeof FileBox,
@@ -1251,6 +1281,180 @@ function puppetImplementation (
       }
     },
 
+    messageBatchSendText: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'messageBatchSendText()')
+
+      try {
+        const results = await puppet.messageBatchSendText(
+          call.request.getConversationIdsList(),
+          call.request.getText(),
+          call.request.getBatchTaskId(),
+        )
+        const response = new grpcPuppet.MessageBatchSendTextResponse()
+        setGrpcBatchResults(response, grpcPuppet.MessageBatchSendTextResponse.Result, results)
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('messageBatchSendText', e, callback)
+      }
+    },
+
+    messageBatchSendFile: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'messageBatchSendFile()')
+
+      try {
+        const results = await puppet.messageBatchSendFile(
+          call.request.getConversationIdsList(),
+          FileBoxUuid.fromJSON(call.request.getFileBox()),
+          call.request.getBatchTaskId(),
+        )
+        const response = new grpcPuppet.MessageBatchSendFileResponse()
+        setGrpcBatchResults(response, grpcPuppet.MessageBatchSendFileResponse.Result, results)
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('messageBatchSendFile', e, callback)
+      }
+    },
+
+    messageBatchForward: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'messageBatchForward()')
+
+      try {
+        const messageIds = call.request.getMessageIdsList()
+        const results = await puppet.messageBatchForward(
+          call.request.getConversationIdsList(),
+          messageIds.length > 0 ? messageIds : call.request.getMessageId(),
+          call.request.getBatchTaskId(),
+        )
+        const response = new grpcPuppet.MessageBatchForwardResponse()
+        setGrpcBatchResults(response, grpcPuppet.MessageBatchForwardResponse.Result, results)
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('messageBatchForward', e, callback)
+      }
+    },
+
+    messageBatchSendContact: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'messageBatchSendContact()')
+
+      try {
+        const results = await puppet.messageBatchSendContact(
+          call.request.getConversationIdsList(),
+          call.request.getContactId(),
+          call.request.getBatchTaskId(),
+        )
+        const response = new grpcPuppet.MessageBatchSendContactResponse()
+        setGrpcBatchResults(response, grpcPuppet.MessageBatchSendContactResponse.Result, results)
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('messageBatchSendContact', e, callback)
+      }
+    },
+
+    messageBatchSendUrl: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'messageBatchSendUrl()')
+
+      try {
+        const payload = call.request.getUrlLink()?.toObject()
+        if (!payload) {
+          throw new Error('no url link payload found')
+        }
+        const results = await puppet.messageBatchSendUrl(
+          call.request.getConversationIdsList(),
+          payload,
+          call.request.getBatchTaskId(),
+        )
+        const response = new grpcPuppet.MessageBatchSendUrlResponse()
+        setGrpcBatchResults(response, grpcPuppet.MessageBatchSendUrlResponse.Result, results)
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('messageBatchSendUrl', e, callback)
+      }
+    },
+
+    messageBatchSendMiniProgram: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'messageBatchSendMiniProgram()')
+
+      try {
+        const payload = call.request.getMiniProgram()?.toObject()
+        if (!payload) {
+          throw new Error('no mini program payload found')
+        }
+        const results = await puppet.messageBatchSendMiniProgram(
+          call.request.getConversationIdsList(),
+          payload,
+          call.request.getBatchTaskId(),
+        )
+        const response = new grpcPuppet.MessageBatchSendMiniProgramResponse()
+        setGrpcBatchResults(response, grpcPuppet.MessageBatchSendMiniProgramResponse.Result, results)
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('messageBatchSendMiniProgram', e, callback)
+      }
+    },
+
+    messageBatchSendLocation: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'messageBatchSendLocation()')
+
+      try {
+        const payload = call.request.getLocation()?.toObject()
+        if (!payload) {
+          throw new Error('no location payload found')
+        }
+        const results = await puppet.messageBatchSendLocation(
+          call.request.getConversationIdsList(),
+          payload,
+          call.request.getBatchTaskId(),
+        )
+        const response = new grpcPuppet.MessageBatchSendLocationResponse()
+        setGrpcBatchResults(response, grpcPuppet.MessageBatchSendLocationResponse.Result, results)
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('messageBatchSendLocation', e, callback)
+      }
+    },
+
+    messageBatchSendChannel: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'messageBatchSendChannel()')
+
+      try {
+        const payload = call.request.getChannel()?.toObject()
+        if (!payload) {
+          throw new Error('no channel payload found')
+        }
+        const results = await puppet.messageBatchSendChannel(
+          call.request.getConversationIdsList(),
+          payload,
+          call.request.getBatchTaskId(),
+        )
+        const response = new grpcPuppet.MessageBatchSendChannelResponse()
+        setGrpcBatchResults(response, grpcPuppet.MessageBatchSendChannelResponse.Result, results)
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('messageBatchSendChannel', e, callback)
+      }
+    },
+
+    messageBatchSendChannelCard: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'messageBatchSendChannelCard()')
+
+      try {
+        const payload = call.request.getChannelCard()?.toObject()
+        if (!payload) {
+          throw new Error('no channel card payload found')
+        }
+        const results = await puppet.messageBatchSendChannelCard(
+          call.request.getConversationIdsList(),
+          payload,
+          call.request.getBatchTaskId(),
+        )
+        const response = new grpcPuppet.MessageBatchSendChannelCardResponse()
+        setGrpcBatchResults(response, grpcPuppet.MessageBatchSendChannelCardResponse.Result, results)
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('messageBatchSendChannelCard', e, callback)
+      }
+    },
+
     messageSendUrl: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'messageSendUrl()')
 
@@ -1494,9 +1698,11 @@ function puppetImplementation (
         const inviteOnly = call.request.getInviteOnly()
         const quoteIds = call.request.getQuoteIdsList()
 
-        const target = contactIds.length > 0 ? contactIds : contactId
-
-        await puppet.roomAdd(roomId, target, inviteOnly, quoteIds)
+        if (contactIds.length > 1) {
+          await puppet.roomAddV2(roomId, contactIds, inviteOnly, quoteIds)
+        } else {
+          await puppet.roomAdd(roomId, contactId || contactIds[0] || '', inviteOnly, quoteIds)
+        }
 
         return callback(null, new grpcPuppet.RoomAddResponse())
 
