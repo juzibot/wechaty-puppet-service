@@ -1703,11 +1703,9 @@ function puppetImplementation (
         const inviteOnly = call.request.getInviteOnly()
         const quoteIds = call.request.getQuoteIdsList()
 
-        if (contactIds.length > 1) {
-          await puppet.roomAddV2(roomId, contactIds, inviteOnly, quoteIds)
-        } else {
-          await puppet.roomAdd(roomId, contactId || contactIds[0] || '', inviteOnly, quoteIds)
-        }
+        const target = contactIds.length > 0 ? contactIds : contactId
+
+        await puppet.roomAdd(roomId, target, inviteOnly, quoteIds)
 
         return callback(null, new grpcPuppet.RoomAddResponse())
 

@@ -164,8 +164,8 @@ class PayloadStore {
      * Huan(202108): `fs.rm` was introduced from Node.js v14.14
      *  https://nodejs.org/api/fs.html#fs_fspromises_rm_path_options
      */
-    await fs.promises.rm(this.storeDir, {
-      force: true,
+    await fs.promises.rmdir(this.storeDir, {
+      // force: true,
       recursive: true,
     })
   }
