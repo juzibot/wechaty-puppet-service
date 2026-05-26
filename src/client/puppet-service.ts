@@ -482,7 +482,7 @@ class PuppetService extends PUPPET.Puppet {
   ): Promise<void> {
     log.verbose('PuppetService', 'fastDirty(%s<%s>, %s)', PUPPET.types.Dirty[payloadType], payloadType, payloadId)
 
-    const dirtyMap = {
+    const dirtyMap: Partial<Record<PUPPET.types.Dirty, (id: string) => Promise<unknown>>> = {
       [PUPPET.types.Dirty.Contact]:      async (id: string) => this._payloadStore.contact?.delete(id),
       [PUPPET.types.Dirty.Friendship]:   async (_: string) => {},
       [PUPPET.types.Dirty.Message]:      async (_: string) => {},
@@ -495,7 +495,7 @@ class PuppetService extends PUPPET.Puppet {
     }
 
     try {
-      await dirtyMap[payloadType](payloadId)
+      await dirtyMap[payloadType]?.(payloadId)
     } catch (error) {
       this.emit('error', error)
     }
