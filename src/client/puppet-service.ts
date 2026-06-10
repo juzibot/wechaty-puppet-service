@@ -51,6 +51,7 @@ import { packageJson }  from '../package-json.js'
 import { GrpcManager }  from './grpc-manager.js'
 import { PayloadStore } from './payload-store.js'
 import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPbToPayload, channelPayloadToPb, channelPbToPayload, chatHistoryPbToPayload, contactPbToPayload, postPayloadToPb, roomMemberPbToPayload, urlLinkPbToPayload, channelCardPayloadToPb, channelCardPbToPayload, miniProgramPayloadToPb, urlLinkPayloadToPb, locationPayloadToPb } from '../utils/pb-payload-helper.js'
+import { puppetCallSignalToGrpc, puppetCallMediaTypeToGrpc } from '../utils/call-signal-mapping.js'
 import type { MessageBroadcastTargets } from '@juzi/wechaty-puppet/dist/esm/src/schemas/message.js'
 import { timeoutPromise } from 'gerror'
 import { BooleanIndicator } from 'state-switch'
@@ -422,6 +423,9 @@ class PuppetService extends PUPPET.Puppet {
         break
       case grpcPuppet.EventType.EVENT_TYPE_VERIFY_SLIDE:
         this.emit('verify-slide', JSON.parse(payload) as PUPPET.payloads.EventVerifySlide)
+        break
+      case (grpcPuppet as any).EventType.EVENT_TYPE_CALL:
+        this.emit('call', JSON.parse(payload) as PUPPET.payloads.EventCall)
         break
 
       default:
@@ -1151,6 +1155,28 @@ class PuppetService extends PUPPET.Puppet {
     const payload = callRecordPbToPayload(response.getCallRecord()!)
 
     return payload
+  }
+
+  override async callControl (
+    payload: PUPPET.types.CallControlPayload,
+  ): Promise<void> {
+    log.verbose('PuppetService', 'callControl(%s)', JSON.stringify(payload))
+
+    const request = new (grpcPuppet as any).CallControlRequest()
+    request.setCallId(payload.callId)
+    request.setSignal(puppetCallSignalToGrpc(payload.signal))
+    request.setPeerId(payload.peerId)
+    if (payload.media !== undefined) {
+      request.setMedia(puppetCallMediaTypeToGrpc(payload.media))
+    }
+    if (payload.reason !== undefined && payload.reason !== '') {
+      request.setReason(payload.reason)
+    }
+
+    await this.grpcUnary(
+      (this.grpcManager.client as any).callControl,
+      request,
+    )
   }
 
   override async messageChatHistory (

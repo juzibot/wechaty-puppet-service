@@ -44,6 +44,7 @@ import { log } from '../config.js'
 import { grpcError }          from './grpc-error.js'
 import { EventStreamManager } from './event-stream-manager.js'
 import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPayloadToPb, channelPayloadToPb, chatHistoryPayloadToPb, postPbToPayload, urlLinkPayloadToPb, channelCardPayloadToPb } from '../utils/pb-payload-helper.js'
+import { grpcCallSignalToPuppet, grpcCallTypeToPuppetMedia } from '../utils/call-signal-mapping.js'
 import { TextContentType } from '@juzi/wechaty-puppet/types'
 
 type MessageBatchSendResponse = Awaited<ReturnType<PUPPET.impls.PuppetInterface['messageBatchSendText']>>
@@ -2956,6 +2957,32 @@ function puppetImplementation (
         call.destroy(e as Error)
       }
 
+    },
+
+    callControl: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'callControl()')
+
+      try {
+        const callId = call.request.getCallId()
+        const signal = grpcCallSignalToPuppet(call.request.getSignal())
+        const peerId = call.request.getPeerId()
+        const media  = grpcCallTypeToPuppetMedia(call.request.getMedia())
+        const reason = call.request.getReason() || undefined
+
+        const payload: PUPPET.types.CallControlPayload = {
+          callId,
+          signal,
+          peerId,
+          ...(media !== undefined && { media }),
+          ...(reason !== undefined && { reason }),
+        }
+
+        await puppet.callControl(payload)
+
+        return callback(null, new (grpcPuppet as any).CallControlResponse())
+      } catch (e) {
+        return grpcError('callControl', e, callback)
+      }
     },
 
     upload: async (call, callback) => {
