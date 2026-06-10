@@ -2967,13 +2967,16 @@ function puppetImplementation (
         const signal = grpcCallSignalToPuppet(call.request.getSignal())
         const peerId = call.request.getPeerId()
         const media  = grpcCallTypeToPuppetMedia(call.request.getMedia())
+        if (media === undefined) {
+          throw new Error('callControl: media is required (got CALL_TYPE_UNKNOWN on the wire)')
+        }
         const reason = call.request.getReason() || undefined
 
         const payload: PUPPET.payloads.CallControl = {
           callId,
           signal,
           peerId,
-          ...(media !== undefined && { media }),
+          media,
           ...(reason !== undefined && { reason }),
         }
 

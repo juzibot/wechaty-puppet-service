@@ -1166,9 +1166,7 @@ class PuppetService extends PUPPET.Puppet {
     request.setCallId(payload.callId)
     request.setSignal(puppetCallSignalToGrpc(payload.signal))
     request.setPeerId(payload.peerId)
-    if (payload.media !== undefined) {
-      request.setMedia(puppetCallMediaTypeToGrpc(payload.media))
-    }
+    request.setMedia(puppetCallMediaTypeToGrpc(payload.media))
     if (payload.reason !== undefined && payload.reason !== '') {
       request.setReason(payload.reason)
     }

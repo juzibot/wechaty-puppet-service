@@ -39,17 +39,16 @@ export function grpcCallSignalToPuppet (grpcSignal: number): PUPPET.types.CallSi
 
 /**
  * PUPPET CallMediaType (string enum) -> gRPC CallType (number enum).
- * media is optional on the wire: undefined maps to CALL_TYPE_UNKNOWN.
+ * media is required per upstream contract: every outbound signal must carry a media type.
  */
-export function puppetCallMediaTypeToGrpc (media?: PUPPET.types.CallMediaType): GrpcCallType {
-  if (media === undefined) {
-    return grpcPuppet.CallType.CALL_TYPE_UNKNOWN
-  }
+export function puppetCallMediaTypeToGrpc (media: PUPPET.types.CallMediaType): GrpcCallType {
   switch (media) {
     case PUPPET.types.CallMediaType.Audio: return grpcPuppet.CallType.CALL_TYPE_VOICE
     case PUPPET.types.CallMediaType.Video: return grpcPuppet.CallType.CALL_TYPE_VIDEO
-    default:
-      throw new Error(`puppetCallMediaTypeToGrpc: unknown CallMediaType "${String(media)}"`)
+    default: {
+      const exhaustive: never = media
+      throw new Error(`puppetCallMediaTypeToGrpc: unknown CallMediaType "${String(exhaustive)}"`)
+    }
   }
 }
 
