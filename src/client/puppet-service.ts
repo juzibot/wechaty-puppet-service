@@ -424,7 +424,7 @@ class PuppetService extends PUPPET.Puppet {
       case grpcPuppet.EventType.EVENT_TYPE_VERIFY_SLIDE:
         this.emit('verify-slide', JSON.parse(payload) as PUPPET.payloads.EventVerifySlide)
         break
-      case (grpcPuppet as any).EventType.EVENT_TYPE_CALL:
+      case grpcPuppet.EventType.EVENT_TYPE_CALL:
         this.emit('call', JSON.parse(payload) as PUPPET.payloads.EventCall)
         break
 
@@ -1158,11 +1158,11 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   override async callControl (
-    payload: PUPPET.types.CallControlPayload,
+    payload: PUPPET.payloads.CallControl,
   ): Promise<void> {
     log.verbose('PuppetService', 'callControl(%s)', JSON.stringify(payload))
 
-    const request = new (grpcPuppet as any).CallControlRequest()
+    const request = new grpcPuppet.CallControlRequest()
     request.setCallId(payload.callId)
     request.setSignal(puppetCallSignalToGrpc(payload.signal))
     request.setPeerId(payload.peerId)
@@ -1174,7 +1174,7 @@ class PuppetService extends PUPPET.Puppet {
     }
 
     await this.grpcUnary(
-      (this.grpcManager.client as any).callControl,
+      this.grpcManager.client.callControl,
       request,
     )
   }

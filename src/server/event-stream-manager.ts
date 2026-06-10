@@ -323,7 +323,7 @@ class EventStreamManager {
           break
         }
         case 'call': {
-          const listener = (payload: PUPPET.payloads.EventCall) => this.grpcEmit((grpcPuppet as any).EventType.EVENT_TYPE_CALL, payload)
+          const listener = (payload: PUPPET.payloads.EventCall) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_CALL, payload)
           this.puppet.on('call', listener)
           const off = () => this.puppet.off('call', listener)
           this.offCallbackList.push(off)

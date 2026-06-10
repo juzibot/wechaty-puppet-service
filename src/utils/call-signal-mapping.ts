@@ -1,80 +1,64 @@
-import * as PUPPET             from '@juzi/wechaty-puppet'
+import * as PUPPET              from '@juzi/wechaty-puppet'
 import { puppet as grpcPuppet } from '@juzi/wechaty-grpc'
 
-// Both CallSignal and CallMediaType are added in @juzi/wechaty-puppet 1.0.138.
-// The (x as any) casts below are intentional bridges for the transition period:
-// they let lint:es pass today and will be replaced with proper types once the
-// upstream package is published.
+type GrpcCallSignal = grpcPuppet.CallSignalMap[keyof grpcPuppet.CallSignalMap]
+type GrpcCallType   = grpcPuppet.CallTypeMap[keyof grpcPuppet.CallTypeMap]
 
 /**
- * Maps a PUPPET CallSignal string value to its gRPC proto number.
- *
- * PUPPET values: 'invite' | 'ringing' | 'accept' | 'reject' | 'cancel' | 'hangup'
- * gRPC values:   CALL_SIGNAL_INVITE=1 … CALL_SIGNAL_HANGUP=6
+ * PUPPET CallSignal (string enum) -> gRPC CallSignal (number enum).
+ * The `never` check in default guarantees exhaustiveness at compile time,
+ * while the throw still guards against untyped callers at runtime.
  */
-const grpcSignalByPuppetValue: Record<string, number> = {
-  invite:  1, // CALL_SIGNAL_INVITE
-  ringing: 2, // CALL_SIGNAL_RINGING
-  accept:  3, // CALL_SIGNAL_ACCEPT
-  reject:  4, // CALL_SIGNAL_REJECT
-  cancel:  5, // CALL_SIGNAL_CANCEL
-  hangup:  6, // CALL_SIGNAL_HANGUP
-}
-
-const puppetSignalByGrpcValue: Record<number, string> = {
-  1: 'invite',
-  2: 'ringing',
-  3: 'accept',
-  4: 'reject',
-  5: 'cancel',
-  6: 'hangup',
-}
-
-export function puppetCallSignalToGrpc (signal: unknown): number {
-  const grpcVal = grpcSignalByPuppetValue[signal as string]
-  if (grpcVal === undefined) {
-    throw new Error(`puppetCallSignalToGrpc: unknown CallSignal "${signal}"`)
+export function puppetCallSignalToGrpc (signal: PUPPET.types.CallSignal): GrpcCallSignal {
+  switch (signal) {
+    case PUPPET.types.CallSignal.Invite:  return grpcPuppet.CallSignal.CALL_SIGNAL_INVITE
+    case PUPPET.types.CallSignal.Ringing: return grpcPuppet.CallSignal.CALL_SIGNAL_RINGING
+    case PUPPET.types.CallSignal.Accept:  return grpcPuppet.CallSignal.CALL_SIGNAL_ACCEPT
+    case PUPPET.types.CallSignal.Reject:  return grpcPuppet.CallSignal.CALL_SIGNAL_REJECT
+    case PUPPET.types.CallSignal.Cancel:  return grpcPuppet.CallSignal.CALL_SIGNAL_CANCEL
+    case PUPPET.types.CallSignal.Hangup:  return grpcPuppet.CallSignal.CALL_SIGNAL_HANGUP
+    default: {
+      const exhaustive: never = signal
+      throw new Error(`puppetCallSignalToGrpc: unknown CallSignal "${String(exhaustive)}"`)
+    }
   }
-  return grpcVal
 }
 
 export function grpcCallSignalToPuppet (grpcSignal: number): PUPPET.types.CallSignal {
-  const tsVal = puppetSignalByGrpcValue[grpcSignal]
-  if (tsVal === undefined) {
-    throw new Error(`grpcCallSignalToPuppet: unknown gRPC CallSignal value ${grpcSignal}`)
+  switch (grpcSignal) {
+    case grpcPuppet.CallSignal.CALL_SIGNAL_INVITE:  return PUPPET.types.CallSignal.Invite
+    case grpcPuppet.CallSignal.CALL_SIGNAL_RINGING: return PUPPET.types.CallSignal.Ringing
+    case grpcPuppet.CallSignal.CALL_SIGNAL_ACCEPT:  return PUPPET.types.CallSignal.Accept
+    case grpcPuppet.CallSignal.CALL_SIGNAL_REJECT:  return PUPPET.types.CallSignal.Reject
+    case grpcPuppet.CallSignal.CALL_SIGNAL_CANCEL:  return PUPPET.types.CallSignal.Cancel
+    case grpcPuppet.CallSignal.CALL_SIGNAL_HANGUP:  return PUPPET.types.CallSignal.Hangup
+    default:
+      throw new Error(`grpcCallSignalToPuppet: unknown gRPC CallSignal value ${grpcSignal}`)
   }
-  // Cast required until wechaty-puppet 1.0.138 is installed locally
-  return tsVal as unknown as PUPPET.types.CallSignal
 }
 
 /**
- * Maps a PUPPET CallMediaType string value to its gRPC CallType number.
- *
- * PUPPET values: 'audio' | 'video' | undefined
- * gRPC values:   CALL_TYPE_UNKNOWN=0, CALL_TYPE_VOICE=1, CALL_TYPE_VIDEO=2
+ * PUPPET CallMediaType (string enum) -> gRPC CallType (number enum).
+ * media is optional on the wire: undefined maps to CALL_TYPE_UNKNOWN.
  */
-export function puppetCallMediaTypeToGrpc (media: unknown): number {
-  if (media === undefined || media === null) {
-    return 0 // CALL_TYPE_UNKNOWN
+export function puppetCallMediaTypeToGrpc (media?: PUPPET.types.CallMediaType): GrpcCallType {
+  if (media === undefined) {
+    return grpcPuppet.CallType.CALL_TYPE_UNKNOWN
   }
-  switch (media as string) {
-    case 'audio': return 1 // CALL_TYPE_VOICE
-    case 'video': return 2 // CALL_TYPE_VIDEO
+  switch (media) {
+    case PUPPET.types.CallMediaType.Audio: return grpcPuppet.CallType.CALL_TYPE_VOICE
+    case PUPPET.types.CallMediaType.Video: return grpcPuppet.CallType.CALL_TYPE_VIDEO
     default:
-      throw new Error(`puppetCallMediaTypeToGrpc: unknown CallMediaType "${media}"`)
+      throw new Error(`puppetCallMediaTypeToGrpc: unknown CallMediaType "${String(media)}"`)
   }
 }
 
 export function grpcCallTypeToPuppetMedia (grpcType: number): PUPPET.types.CallMediaType | undefined {
   switch (grpcType) {
-    case 0: return undefined
-    case 1: return 'audio' as unknown as PUPPET.types.CallMediaType
-    case 2: return 'video' as unknown as PUPPET.types.CallMediaType
+    case grpcPuppet.CallType.CALL_TYPE_UNKNOWN: return undefined
+    case grpcPuppet.CallType.CALL_TYPE_VOICE:   return PUPPET.types.CallMediaType.Audio
+    case grpcPuppet.CallType.CALL_TYPE_VIDEO:   return PUPPET.types.CallMediaType.Video
     default:
       throw new Error(`grpcCallTypeToPuppetMedia: unknown gRPC CallType value ${grpcType}`)
   }
 }
-
-// Suppress unused-import warning — grpcPuppet is referenced for type documentation
-// and will be used directly once @juzi/wechaty-grpc 1.0.102 is available.
-void (grpcPuppet)

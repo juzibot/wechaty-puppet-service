@@ -2969,7 +2969,7 @@ function puppetImplementation (
         const media  = grpcCallTypeToPuppetMedia(call.request.getMedia())
         const reason = call.request.getReason() || undefined
 
-        const payload: PUPPET.types.CallControlPayload = {
+        const payload: PUPPET.payloads.CallControl = {
           callId,
           signal,
           peerId,
@@ -2979,7 +2979,7 @@ function puppetImplementation (
 
         await puppet.callControl(payload)
 
-        return callback(null, new (grpcPuppet as any).CallControlResponse())
+        return callback(null, new grpcPuppet.CallControlResponse())
       } catch (e) {
         return grpcError('callControl', e, callback)
       }
