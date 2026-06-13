@@ -31,7 +31,10 @@ import {
 
 // import type { Subscription }  from 'rxjs'
 
-import { millisecondsFromTimestamp }  from '../pure-functions/timestamp.js'
+import {
+  millisecondsFromTimestamp,
+  millisecondsFromTimestampObject,
+}                                     from '../pure-functions/timestamp.js'
 
 import {
   uuidifyFileBoxGrpc,
@@ -51,6 +54,7 @@ import { packageJson }  from '../package-json.js'
 import { GrpcManager }  from './grpc-manager.js'
 import { PayloadStore } from './payload-store.js'
 import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPbToPayload, channelPayloadToPb, channelPbToPayload, chatHistoryPbToPayload, contactPbToPayload, postPayloadToPb, roomMemberPbToPayload, urlLinkPbToPayload, channelCardPayloadToPb, channelCardPbToPayload, miniProgramPayloadToPb, urlLinkPayloadToPb, locationPayloadToPb } from '../utils/pb-payload-helper.js'
+import { puppetCallMediaTypeToGrpc, grpcCallTypeToPuppetMedia } from '../utils/call-media-mapping.js'
 import type { MessageBroadcastTargets } from '@juzi/wechaty-puppet/dist/esm/src/schemas/message.js'
 import { timeoutPromise } from 'gerror'
 import { BooleanIndicator } from 'state-switch'
@@ -422,6 +426,9 @@ class PuppetService extends PUPPET.Puppet {
         break
       case grpcPuppet.EventType.EVENT_TYPE_VERIFY_SLIDE:
         this.emit('verify-slide', JSON.parse(payload) as PUPPET.payloads.EventVerifySlide)
+        break
+      case grpcPuppet.EventType.EVENT_TYPE_CALL:
+        this.emit('call', JSON.parse(payload) as PUPPET.payloads.EventCall)
         break
 
       default:
@@ -1149,6 +1156,189 @@ class PuppetService extends PUPPET.Puppet {
     )(request)
 
     const payload = callRecordPbToPayload(response.getCallRecord()!)
+
+    return payload
+  }
+
+  override async callInvite (
+    contactIds: string[],
+    media: PUPPET.types.CallMediaType,
+  ): Promise<string> {
+    log.verbose('PuppetService', 'callInvite(%s, %s)', contactIds, media)
+
+    const request = new grpcPuppet.CallInviteRequest()
+    request.setContactIdsList(contactIds)
+    request.setMedia(puppetCallMediaTypeToGrpc(media))
+
+    const response = await util.promisify(
+      this.grpcManager.client.callInvite
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const callId = response.getCallId()
+    if (!callId) {
+      throw new Error('callInvite: puppet server returned empty call_id')
+    }
+
+    return callId
+  }
+
+  override async callAdd (
+    callId: string,
+    contactIds: string[],
+  ): Promise<void> {
+    log.verbose('PuppetService', 'callAdd(%s, %s)', callId, contactIds)
+
+    const request = new grpcPuppet.CallAddRequest()
+    request.setCallId(callId)
+    request.setContactIdsList(contactIds)
+
+    await this.grpcUnary(
+      this.grpcManager.client.callAdd,
+      request,
+    )
+  }
+
+  override async callAccept (
+    callId: string,
+  ): Promise<void> {
+    log.verbose('PuppetService', 'callAccept(%s)', callId)
+
+    const request = new grpcPuppet.CallAcceptRequest()
+    request.setCallId(callId)
+
+    await this.grpcUnary(
+      this.grpcManager.client.callAccept,
+      request,
+    )
+  }
+
+  override async callReject (
+    callId: string,
+    reason?: string,
+  ): Promise<void> {
+    log.verbose('PuppetService', 'callReject(%s, %s)', callId, reason)
+
+    const request = new grpcPuppet.CallRejectRequest()
+    request.setCallId(callId)
+    if (reason !== undefined && reason !== '') {
+      request.setReason(reason)
+    }
+
+    await this.grpcUnary(
+      this.grpcManager.client.callReject,
+      request,
+    )
+  }
+
+  override async callCancel (
+    callId: string,
+  ): Promise<void> {
+    log.verbose('PuppetService', 'callCancel(%s)', callId)
+
+    const request = new grpcPuppet.CallCancelRequest()
+    request.setCallId(callId)
+
+    await this.grpcUnary(
+      this.grpcManager.client.callCancel,
+      request,
+    )
+  }
+
+  override async callHangup (
+    callId: string,
+    reason?: string,
+  ): Promise<void> {
+    log.verbose('PuppetService', 'callHangup(%s, %s)', callId, reason)
+
+    const request = new grpcPuppet.CallHangupRequest()
+    request.setCallId(callId)
+    if (reason !== undefined && reason !== '') {
+      request.setReason(reason)
+    }
+
+    await this.grpcUnary(
+      this.grpcManager.client.callHangup,
+      request,
+    )
+  }
+
+  override async callMediaEndpoint (
+    callId: string,
+  ): Promise<PUPPET.payloads.CallMediaEndpoint> {
+    log.verbose('PuppetService', 'callMediaEndpoint(%s)', callId)
+
+    const request = new grpcPuppet.CallMediaEndpointRequest()
+    request.setCallId(callId)
+
+    const response = await util.promisify(
+      this.grpcManager.client.callMediaEndpoint
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const url   = response.getUrl()
+    const token = response.getToken()
+    if (!url || !token) {
+      throw new Error('callMediaEndpoint: puppet server returned empty url or token')
+    }
+
+    const payload: PUPPET.payloads.CallMediaEndpoint = {
+      url,
+      token,
+    }
+
+    if (response.hasExpiresAt()) {
+      payload.expiresAt = millisecondsFromTimestamp(response.getExpiresAt()!)
+    }
+
+    const protocol = response.getProtocol()
+    if (protocol) {
+      payload.protocol = protocol
+    }
+
+    return payload
+  }
+
+  override async callRawPayload (callId: string): Promise<grpcPuppet.CallPayloadResponse.AsObject> {
+    log.verbose('PuppetService', 'callRawPayload(%s)', callId)
+
+    const request = new grpcPuppet.CallPayloadRequest()
+    request.setId(callId)
+
+    const response = await util.promisify(
+      this.grpcManager.client.callPayload
+        .bind(this.grpcManager.client),
+    )(request)
+
+    return response.toObject()
+  }
+
+  override async callRawPayloadParser (rawPayload: grpcPuppet.CallPayloadResponse.AsObject): Promise<PUPPET.payloads.Call> {
+    log.verbose('PuppetService', 'callRawPayloadParser({id:%s})', rawPayload.id)
+
+    const media = grpcCallTypeToPuppetMedia(rawPayload.media)
+    if (media === undefined) {
+      throw new Error('callRawPayloadParser: media is required (got CALL_TYPE_UNKNOWN on the wire)')
+    }
+
+    if (rawPayload.startTime === undefined) {
+      throw new Error('callRawPayloadParser: startTime is required')
+    }
+
+    const payload: PUPPET.payloads.Call = {
+      id           : rawPayload.id,
+      participants : rawPayload.participantsList,
+      media,
+      startTime    : millisecondsFromTimestampObject(rawPayload.startTime),
+    }
+
+    if (rawPayload.starter) {
+      payload.starter = rawPayload.starter
+    }
+
+    if (rawPayload.endTime !== undefined) {
+      payload.endTime = millisecondsFromTimestampObject(rawPayload.endTime)
+    }
 
     return payload
   }

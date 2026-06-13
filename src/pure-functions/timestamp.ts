@@ -22,7 +22,26 @@ function millisecondsFromTimestamp (timestamp: ReturnType<typeof timestampFromMi
   return seconds * 1000 + nanos / 1000000
 }
 
+/**
+ * Plain `{ seconds, nanos }` shape produced by a protobuf `Message.toObject()`
+ * for a `google.protobuf.Timestamp` field.
+ */
+type TimestampObject = {
+  seconds: number,
+  nanos: number,
+}
+
+/**
+ * Same conversion as `millisecondsFromTimestamp`, but for the plain
+ * `{ seconds, nanos }` shape produced by `Message.toObject()` rather than a
+ * Timestamp class instance. Nanos are rounded to the nearest millisecond.
+ */
+function millisecondsFromTimestampObject (timestamp: TimestampObject): number {
+  return timestamp.seconds * 1000 + Math.round(timestamp.nanos / 1000000)
+}
+
 export {
   millisecondsFromTimestamp,
+  millisecondsFromTimestampObject,
   timestampFromMilliseconds,
 }
