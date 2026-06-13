@@ -44,7 +44,7 @@ import { log } from '../config.js'
 import { grpcError }          from './grpc-error.js'
 import { EventStreamManager } from './event-stream-manager.js'
 import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPayloadToPb, channelPayloadToPb, chatHistoryPayloadToPb, postPbToPayload, urlLinkPayloadToPb, channelCardPayloadToPb } from '../utils/pb-payload-helper.js'
-import { grpcCallSignalToPuppet, grpcCallTypeToPuppetMedia } from '../utils/call-signal-mapping.js'
+import { grpcCallTypeToPuppetMedia, puppetCallMediaTypeToGrpc } from '../utils/call-media-mapping.js'
 import { TextContentType } from '@juzi/wechaty-puppet/types'
 
 type MessageBatchSendResponse = Awaited<ReturnType<PUPPET.impls.PuppetInterface['messageBatchSendText']>>
@@ -2959,32 +2959,177 @@ function puppetImplementation (
 
     },
 
-    callControl: async (call, callback) => {
-      log.verbose('PuppetServiceImpl', 'callControl()')
+    callInvite: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'callInvite()')
+
+      try {
+        const contactIds = call.request.getContactIdsList()
+        if (contactIds.length === 0) {
+          throw new Error('callInvite: contact_ids is required')
+        }
+        const media = grpcCallTypeToPuppetMedia(call.request.getMedia())
+        if (media === undefined) {
+          throw new Error('callInvite: media is required (got CALL_TYPE_UNKNOWN on the wire)')
+        }
+
+        const callId = await puppet.callInvite(contactIds, media)
+        if (!callId) {
+          throw new Error('callInvite: puppet returned empty callId')
+        }
+
+        const response = new grpcPuppet.CallInviteResponse()
+        response.setCallId(callId)
+
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('callInvite', e, callback)
+      }
+    },
+
+    callAdd: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'callAdd()')
 
       try {
         const callId = call.request.getCallId()
-        const signal = grpcCallSignalToPuppet(call.request.getSignal())
-        const peerId = call.request.getPeerId()
-        const media  = grpcCallTypeToPuppetMedia(call.request.getMedia())
-        if (media === undefined) {
-          throw new Error('callControl: media is required (got CALL_TYPE_UNKNOWN on the wire)')
+        if (!callId) {
+          throw new Error('callAdd: call_id is required')
+        }
+        const contactIds = call.request.getContactIdsList()
+        if (contactIds.length === 0) {
+          throw new Error('callAdd: contact_ids is required')
+        }
+
+        await puppet.callAdd(callId, contactIds)
+
+        return callback(null, new grpcPuppet.CallAddResponse())
+      } catch (e) {
+        return grpcError('callAdd', e, callback)
+      }
+    },
+
+    callAccept: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'callAccept()')
+
+      try {
+        const callId = call.request.getCallId()
+        if (!callId) {
+          throw new Error('callAccept: call_id is required')
+        }
+
+        await puppet.callAccept(callId)
+
+        return callback(null, new grpcPuppet.CallAcceptResponse())
+      } catch (e) {
+        return grpcError('callAccept', e, callback)
+      }
+    },
+
+    callReject: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'callReject()')
+
+      try {
+        const callId = call.request.getCallId()
+        if (!callId) {
+          throw new Error('callReject: call_id is required')
         }
         const reason = call.request.getReason() || undefined
 
-        const payload: PUPPET.payloads.CallControl = {
-          callId,
-          signal,
-          peerId,
-          media,
-          ...(reason !== undefined && { reason }),
+        await puppet.callReject(callId, reason)
+
+        return callback(null, new grpcPuppet.CallRejectResponse())
+      } catch (e) {
+        return grpcError('callReject', e, callback)
+      }
+    },
+
+    callCancel: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'callCancel()')
+
+      try {
+        const callId = call.request.getCallId()
+        if (!callId) {
+          throw new Error('callCancel: call_id is required')
         }
 
-        await puppet.callControl(payload)
+        await puppet.callCancel(callId)
 
-        return callback(null, new grpcPuppet.CallControlResponse())
+        return callback(null, new grpcPuppet.CallCancelResponse())
       } catch (e) {
-        return grpcError('callControl', e, callback)
+        return grpcError('callCancel', e, callback)
+      }
+    },
+
+    callHangup: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'callHangup()')
+
+      try {
+        const callId = call.request.getCallId()
+        if (!callId) {
+          throw new Error('callHangup: call_id is required')
+        }
+        const reason = call.request.getReason() || undefined
+
+        await puppet.callHangup(callId, reason)
+
+        return callback(null, new grpcPuppet.CallHangupResponse())
+      } catch (e) {
+        return grpcError('callHangup', e, callback)
+      }
+    },
+
+    callMediaEndpoint: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'callMediaEndpoint()')
+
+      try {
+        const callId = call.request.getCallId()
+        if (!callId) {
+          throw new Error('callMediaEndpoint: call_id is required')
+        }
+
+        const payload = await puppet.callMediaEndpoint(callId)
+
+        const response = new grpcPuppet.CallMediaEndpointResponse()
+        response.setUrl(payload.url)
+        response.setToken(payload.token)
+        if (payload.expiresAt !== undefined) {
+          response.setExpiresAt(timestampFromMilliseconds(payload.expiresAt))
+        }
+        if (payload.protocol) {
+          response.setProtocol(payload.protocol)
+        }
+
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('callMediaEndpoint', e, callback)
+      }
+    },
+
+    callPayload: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'callPayload()')
+
+      try {
+        const callId = call.request.getId()
+        if (!callId) {
+          throw new Error('callPayload: id is required')
+        }
+
+        const payload = await puppet.callPayload(callId)
+
+        const response = new grpcPuppet.CallPayloadResponse()
+        response.setId(payload.id)
+        if (payload.starter) {
+          response.setStarter(payload.starter)
+        }
+        response.setParticipantsList(payload.participants)
+        response.setMedia(puppetCallMediaTypeToGrpc(payload.media))
+        response.setStartTime(timestampFromMilliseconds(payload.startTime))
+        if (payload.endTime !== undefined) {
+          response.setEndTime(timestampFromMilliseconds(payload.endTime))
+        }
+
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('callPayload', e, callback)
       }
     },
 
