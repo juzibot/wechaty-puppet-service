@@ -43,7 +43,7 @@ import {
 import { log } from '../config.js'
 import { grpcError }          from './grpc-error.js'
 import { EventStreamManager } from './event-stream-manager.js'
-import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPayloadToPb, channelPayloadToPb, chatHistoryPayloadToPb, postPbToPayload, urlLinkPayloadToPb, channelCardPayloadToPb } from '../utils/pb-payload-helper.js'
+import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPayloadToPb, channelPayloadToPb, channelPbToPayload, chatHistoryPayloadToPb, postPbToPayload, urlLinkPayloadToPb, channelCardPayloadToPb } from '../utils/pb-payload-helper.js'
 import { grpcCallTypeToPuppetMedia, puppetCallMediaTypeToGrpc } from '../utils/call-media-mapping.js'
 import { TextContentType } from '@juzi/wechaty-puppet/types'
 
@@ -1503,14 +1503,12 @@ function puppetImplementation (
 
       try {
         const conversationId = call.request.getConversationId()
-        const pbChannelPayload = call.request.getChannel()?.toObject()
+        const pbChannel = call.request.getChannel()
 
-        if (!pbChannelPayload) {
-          return grpcError('messageSendUrl', new Error().stack, callback)
+        if (!pbChannel) {
+          return grpcError('messageSendChannel', new Error().stack, callback)
         }
-        const payload: PUPPET.payloads.Channel = {
-          ...pbChannelPayload,
-        }
+        const payload = channelPbToPayload(pbChannel)
 
         const messageId = await puppet.messageSendChannel(conversationId, payload)
 
