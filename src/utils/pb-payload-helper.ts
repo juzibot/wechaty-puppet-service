@@ -79,13 +79,33 @@ export const channelPayloadToPb = (grpcPuppet: grpcPuppet, channelPayload: PUPPE
   if (channelPayload.url) { pbChannelPayload.setUrl(channelPayload.url) }
   if (channelPayload.objectId) { pbChannelPayload.setObjectId(channelPayload.objectId) }
   if (channelPayload.objectNonceId) { pbChannelPayload.setObjectNonceId(channelPayload.objectNonceId) }
+  // 个微转发视频号所需补充字段
+  if (channelPayload.username) { pbChannelPayload.setUsername(channelPayload.username) }
+  if (channelPayload.authIconType) { pbChannelPayload.setAuthIconType(channelPayload.authIconType) }
+  if (channelPayload.authIconUrl) { pbChannelPayload.setAuthIconUrl(channelPayload.authIconUrl) }
+  if (channelPayload.fromUserName) { pbChannelPayload.setFromUserName(channelPayload.fromUserName) }
+  if (channelPayload.mediaList?.length) {
+    pbChannelPayload.setMediaListList(channelPayload.mediaList.map(media => {
+      const pbMedia = new grpcPuppet.ChannelMedia()
+      if (media.mediaType) { pbMedia.setMediaType(media.mediaType) }
+      if (media.url) { pbMedia.setUrl(media.url) }
+      if (media.thumbUrl) { pbMedia.setThumbUrl(media.thumbUrl) }
+      if (media.fullCoverUrl) { pbMedia.setFullCoverUrl(media.fullCoverUrl) }
+      if (media.coverUrl) { pbMedia.setCoverUrl(media.coverUrl) }
+      if (media.width) { pbMedia.setWidth(media.width) }
+      if (media.height) { pbMedia.setHeight(media.height) }
+      if (media.videoPlayDuration) { pbMedia.setVideoPlayDuration(media.videoPlayDuration) }
+      return pbMedia
+    }))
+  }
   return pbChannelPayload
 }
 
 export const channelPbToPayload = (channelPayloadPb: puppet.ChannelPayload) => {
-  const _channelPayloadPb = channelPayloadPb.toObject()
+  const { mediaListList, ..._channelPayloadPb } = channelPayloadPb.toObject()
   const channelPayload: PUPPET.payloads.Channel = {
     ..._channelPayloadPb,
+    mediaList: mediaListList,
   }
   return channelPayload
 }
