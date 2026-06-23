@@ -811,6 +811,44 @@ function puppetImplementation (
       }
     },
 
+    messageVoice: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'messageVoice()')
+
+      try {
+        const id = call.request.getId()
+
+        const fileBox           = await puppet.messageVoice(id)
+        const serializedFileBox = await serializeFileBox(fileBox)
+
+        const response = new grpcPuppet.MessageVoiceResponse()
+        response.setFileBox(serializedFileBox)
+
+        return callback(null, response)
+
+      } catch (e) {
+        return grpcError('messageVoice', e, callback)
+      }
+    },
+
+    messageVoiceText: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'messageVoiceText()')
+
+      try {
+        const id = call.request.getId()
+
+        const voiceText = await puppet.messageVoiceText(id)
+
+        const response = new grpcPuppet.MessageVoiceTextResponse()
+        response.setText(voiceText.text)
+        response.setNoSpeech(voiceText.noSpeech)
+
+        return callback(null, response)
+
+      } catch (e) {
+        return grpcError('messageVoiceText', e, callback)
+      }
+    },
+
     messageForward: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'messageForward()')
 
