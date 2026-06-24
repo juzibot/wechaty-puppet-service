@@ -56,6 +56,7 @@ import { PayloadStore } from './payload-store.js'
 import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPbToPayload, channelPayloadToPb, channelPbToPayload, chatHistoryPbToPayload, contactPbToPayload, postPayloadToPb, roomMemberPbToPayload, urlLinkPbToPayload, channelCardPayloadToPb, channelCardPbToPayload, miniProgramPayloadToPb, urlLinkPayloadToPb, locationPayloadToPb } from '../utils/pb-payload-helper.js'
 import { puppetCallMediaTypeToGrpc, grpcCallTypeToPuppetMedia } from '../utils/call-media-mapping.js'
 import type { MessageBroadcastTargets } from '@juzi/wechaty-puppet/dist/esm/src/schemas/message.js'
+import type { VoiceTextPayload } from '@juzi/wechaty-puppet/dist/esm/src/schemas/voice.js'
 import { timeoutPromise } from 'gerror'
 import { BooleanIndicator } from 'state-switch'
 import type { Contact } from '@juzi/wechaty-puppet/types'
@@ -1529,6 +1530,40 @@ class PuppetService extends PUPPET.Puppet {
     }
 
     throw new Error(`failed to get filebox for message ${id}`)
+  }
+
+  override async messageVoice (id: string): Promise<FileBoxInterface> {
+    log.verbose('PuppetService', 'messageVoice(%s)', id)
+
+    const request = new grpcPuppet.MessageVoiceRequest()
+    request.setId(id)
+    const response = await util.promisify(
+      this.grpcManager.client.messageVoice
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const jsonText = response.getFileBox()
+    if (jsonText) {
+      return this.FileBoxUuid.fromJSON(jsonText)
+    }
+
+    throw new Error(`failed to get voice filebox for message ${id}`)
+  }
+
+  override async messageVoiceText (id: string): Promise<VoiceTextPayload> {
+    log.verbose('PuppetService', 'messageVoiceText(%s)', id)
+
+    const request = new grpcPuppet.MessageVoiceTextRequest()
+    request.setId(id)
+    const response = await util.promisify(
+      this.grpcManager.client.messageVoiceText
+        .bind(this.grpcManager.client),
+    )(request)
+
+    return {
+      text     : response.getText(),
+      noSpeech : response.getNoSpeech(),
+    }
   }
 
   override async messagePreview (id: string): Promise<FileBoxInterface | undefined> {
