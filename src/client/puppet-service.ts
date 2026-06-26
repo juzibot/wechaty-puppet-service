@@ -56,7 +56,6 @@ import { PayloadStore } from './payload-store.js'
 import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPbToPayload, channelPayloadToPb, channelPbToPayload, chatHistoryPbToPayload, contactPbToPayload, postPayloadToPb, roomMemberPbToPayload, urlLinkPbToPayload, channelCardPayloadToPb, channelCardPbToPayload, miniProgramPayloadToPb, urlLinkPayloadToPb, locationPayloadToPb } from '../utils/pb-payload-helper.js'
 import { puppetCallMediaTypeToGrpc, grpcCallTypeToPuppetMedia } from '../utils/call-media-mapping.js'
 import type { MessageBroadcastTargets } from '@juzi/wechaty-puppet/dist/esm/src/schemas/message.js'
-import type { VoiceTextPayload } from '@juzi/wechaty-puppet/dist/esm/src/schemas/voice.js'
 import { timeoutPromise } from 'gerror'
 import { BooleanIndicator } from 'state-switch'
 import type { Contact } from '@juzi/wechaty-puppet/types'
@@ -1550,7 +1549,7 @@ class PuppetService extends PUPPET.Puppet {
     throw new Error(`failed to get voice filebox for message ${id}`)
   }
 
-  override async messageVoiceText (id: string): Promise<VoiceTextPayload> {
+  override async messageVoiceText (id: string): Promise<PUPPET.payloads.VoiceText> {
     log.verbose('PuppetService', 'messageVoiceText(%s)', id)
 
     const request = new grpcPuppet.MessageVoiceTextRequest()
