@@ -517,7 +517,7 @@ class PuppetService extends PUPPET.Puppet {
       [PUPPET.types.Dirty.Post]:         async (_: string) => {},
       [PUPPET.types.Dirty.Room]:         async (id: string) => this._payloadStore.room?.delete(id),
       [PUPPET.types.Dirty.RoomMember]:   async (id: string) => {
-        const [roomId] = id.split(PUPPET.STRING_SPLITTER)
+        const [ roomId ] = id.split(PUPPET.STRING_SPLITTER)
         if (roomId) {
           await this._payloadStore.roomMember?.delete(roomId)
         }
@@ -547,7 +547,11 @@ class PuppetService extends PUPPET.Puppet {
   ): Promise<void> {
     log.verbose('PuppetService', 'fastDirty(%s<%s>, %s)', PUPPET.types.Dirty[payloadType], payloadType, payloadId)
 
-    const handler = this._dirtyHandlerMap[payloadType]
+    // payloadType is typed as the enum, but at runtime the server may emit a
+    // value outside our enum (forward-compat). Look it up via a
+    // possibly-undefined view so the runtime guard stays meaningful.
+    const lookup = this._dirtyHandlerMap as Partial<Record<PUPPET.types.Dirty, (id: string) => Promise<unknown>>>
+    const handler = lookup[payloadType]
     if (!handler) {
       log.warn('PuppetService', 'fastDirty() no handler for payloadType=%s', payloadType)
       return
