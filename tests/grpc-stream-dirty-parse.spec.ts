@@ -15,6 +15,7 @@
 import { test, sinon } from 'tstest'
 
 import * as PUPPET from '@juzi/wechaty-puppet'
+import { puppet as grpcPuppet } from '@juzi/wechaty-grpc'
 
 import { PuppetService } from '../src/mod.js'
 
@@ -26,28 +27,30 @@ test('onGrpcStreamEvent must parse a DIRTY payload only once', async t => {
   // parsing cost in the dispatch case.
   puppet.fastDirty = async (_: any) => {}
 
-  const dirtyEnumValue = (PUPPET.types.Dirty as any).Contact ?? 2
-  const dirtyPayload = JSON.stringify({ payloadType: dirtyEnumValue, payloadId: 'x' })
+  const dirtyPayload = JSON.stringify({
+    payloadType: PUPPET.types.Dirty.Contact,
+    payloadId  : 'x',
+  })
 
   // Build a minimal grpcPuppet.EventResponse shape -- only the getters
   // touched by `onGrpcStreamEvent` are needed.
   const fakeEvent = {
-    getType   : () => 27 /* grpcPuppet.EventType.EVENT_TYPE_DIRTY */,
+    getType   : () => grpcPuppet.EventType.EVENT_TYPE_DIRTY,
     getPayload: () => dirtyPayload,
     getSeq    : () => 0,
   }
 
   const parseSpy = sinon.spy(JSON, 'parse')
-  const baseline = parseSpy.callCount
-
-  await puppet.onGrpcStreamEvent(fakeEvent)
-
-  const delta = parseSpy.callCount - baseline
-  parseSpy.restore()
-
-  t.equal(
-    delta,
-    1,
-    `EVENT_TYPE_DIRTY should JSON.parse(payload) only once, observed ${delta}`,
-  )
+  try {
+    const baseline = parseSpy.callCount
+    await puppet.onGrpcStreamEvent(fakeEvent)
+    const delta = parseSpy.callCount - baseline
+    t.equal(
+      delta,
+      1,
+      `EVENT_TYPE_DIRTY should JSON.parse(payload) only once, observed ${delta}`,
+    )
+  } finally {
+    parseSpy.restore()
+  }
 })
