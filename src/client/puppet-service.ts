@@ -504,8 +504,12 @@ class PuppetService extends PUPPET.Puppet {
    * TypeScript catches a missing entry at compile time -- so when a
    * new DirtyType is added to wechaty-puppet, callers get a build
    * error instead of a silent runtime no-op.
+   *
+   * Note: `Unspecified` is treated as an upstream contract violation,
+   * not a benign no-op -- it logs an error and emits 'error' so hosts
+   * notice.
    */
-  protected get _dirtyHandlerMap (): Record<PUPPET.types.Dirty, (id: string) => Promise<unknown>> {
+  private get _dirtyHandlerMap (): Record<PUPPET.types.Dirty, (id: string) => Promise<unknown>> {
     return {
       [PUPPET.types.Dirty.Contact]:      async (id: string) => this._payloadStore.contact?.delete(id),
       [PUPPET.types.Dirty.Friendship]:   async (_: string) => {},
@@ -523,8 +527,10 @@ class PuppetService extends PUPPET.Puppet {
       [PUPPET.types.Dirty.WxxdProduct]:  async (_: string) => {},
       [PUPPET.types.Dirty.WxxdOrder]:    async (_: string) => {},
       [PUPPET.types.Dirty.Call]:         async (_: string) => {},
-      [PUPPET.types.Dirty.Unspecified]:  async (_: string) => {
-        log.warn('PuppetService', 'fastDirty() received Unspecified dirty type, ignored')
+      [PUPPET.types.Dirty.Unspecified]:  async (id: string) => {
+        const msg = `fastDirty() received Unspecified dirty type (id=${id}); upstream puppet is leaking protobuf default — this is a server-side contract bug`
+        log.error('PuppetService', msg)
+        this.emit('error', new Error(msg))
       },
     }
   }
