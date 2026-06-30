@@ -2107,6 +2107,44 @@ function puppetImplementation (
       }
     },
 
+    batchRoomPayload: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'batchRoomPayload()')
+
+      try {
+        const roomIdList = call.request.getIdsList()
+
+        const payloadMap = await puppet.batchRoomPayload(roomIdList)
+
+        const response = new grpcPuppet.BatchRoomPayloadResponse()
+
+        const payloads: grpcPuppet.RoomPayloadResponse[] = []
+        for (const [ _, payload ] of payloadMap.entries()) {
+          const pb = new grpcPuppet.RoomPayloadResponse()
+          pb.setAdminIdsList(payload.adminIdList)
+          pb.setAvatar(payload.avatar || '')
+          pb.setHandle(payload.handle || '')
+          pb.setId(payload.id)
+          pb.setMemberIdsList(payload.memberIdList)
+          pb.setOwnerId(payload.ownerId || '')
+          pb.setTopic(payload.topic)
+          pb.setAdditionalInfo(payload.additionalInfo || '')
+          pb.setRoomRemark(payload.remark || '')
+          pb.setExternal(!!payload.external)
+          if (payload.createTime) {
+            pb.setCreateTime(timestampFromMilliseconds(payload.createTime))
+          }
+          payloads.push(pb)
+        }
+
+        response.setRoomPayloadsList(payloads)
+
+        return callback(null, response)
+
+      } catch (e) {
+        return grpcError('batchRoomPayload', e, callback)
+      }
+    },
+
     roomQRCode: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'roomQRCode()')
 

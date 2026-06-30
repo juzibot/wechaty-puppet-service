@@ -2278,6 +2278,64 @@ class PuppetService extends PUPPET.Puppet {
     return payload
   }
 
+  override async batchRoomRawPayload (roomIdList: string[]): Promise<Map<string, PUPPET.payloads.Room>> {
+    log.verbose('PuppetService', 'batchRoomRawPayload(%s)', roomIdList)
+
+    const result = new Map<string, PUPPET.payloads.Room>()
+    const roomIdSet = new Set<string>(roomIdList)
+    const needGetSet = new Set<string>()
+    for (const roomId of roomIdSet) {
+      const cachedRoomPayload = await this._payloadStore.room?.get(roomId)
+      if (cachedRoomPayload) {
+        result.set(roomId, cachedRoomPayload)
+      } else {
+        needGetSet.add(roomId)
+      }
+    }
+
+    if (needGetSet.size > 0) {
+      try {
+        const request = new grpcPuppet.BatchRoomPayloadRequest()
+        request.setIdsList(Array.from(needGetSet))
+
+        const response = await util.promisify(
+          this.grpcManager.client.batchRoomPayload
+            .bind(this.grpcManager.client),
+        )(request)
+
+        const payloads = response.getRoomPayloadsList()
+        for (const payload of payloads) {
+          const roomId = payload.getId()
+          const puppetPayload: PUPPET.payloads.Room = {
+            adminIdList   : payload.getAdminIdsList(),
+            avatar        : payload.getAvatar(),
+            handle        : payload.getHandle(),
+            id            : payload.getId(),
+            memberIdList  : payload.getMemberIdsList(),
+            ownerId       : payload.getOwnerId(),
+            topic         : payload.getTopic(),
+            additionalInfo: payload.getAdditionalInfo(),
+            remark        : payload.getRoomRemark(),
+            external      : payload.getExternal(),
+          }
+          const createTime = payload.getCreateTime()
+          if (createTime) {
+            puppetPayload.createTime = millisecondsFromTimestamp(createTime)
+          }
+          result.set(roomId, puppetPayload)
+          await this._payloadStore.room?.set(roomId, puppetPayload)
+        }
+      } catch (e) {
+        log.error('PuppetService', 'batchRoomRawPayload(%s, %s) error: %s, use one by one method', roomIdList, needGetSet, e)
+        for (const roomId of needGetSet) {
+          const payload = await this.roomRawPayload(roomId)
+          result.set(roomId, payload)
+        }
+      }
+    }
+    return result
+  }
+
   override async roomList (): Promise<string[]> {
     log.verbose('PuppetService', 'roomList()')
 
