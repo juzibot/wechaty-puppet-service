@@ -284,6 +284,8 @@ export const callRecordPbToPayload = (callRecordPb: puppet.CallRecordPayload) =>
     type: callRecordPb.getType(),
     status: callRecordPb.getStatus(),
   }
+  const callId = callRecordPb.getCallId()
+  if (callId) { callRecordPayload.callId = callId }
   return callRecordPayload
 }
 
@@ -294,6 +296,7 @@ export const callRecordPayloadToPb = (grpcPuppet: grpcPuppet, callRecordPayload:
   pbCallRecordPayload.setLength(callRecordPayload.length)
   pbCallRecordPayload.setType(callRecordPayload.type)
   pbCallRecordPayload.setStatus(callRecordPayload.status)
+  if (callRecordPayload.callId) { pbCallRecordPayload.setCallId(callRecordPayload.callId) }
 
   return pbCallRecordPayload
 }
