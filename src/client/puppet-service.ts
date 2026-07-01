@@ -133,7 +133,8 @@ class PuppetService extends PUPPET.Puppet {
   ) {
     super(options)
     this._payloadStore = new PayloadStore({
-      token: envVars.WECHATY_PUPPET_SERVICE_TOKEN(this.options.token),
+      token  : envVars.WECHATY_PUPPET_SERVICE_TOKEN(this.options.token),
+      logger : this.options.logger,
     })
 
     this.hookPayloadStore()

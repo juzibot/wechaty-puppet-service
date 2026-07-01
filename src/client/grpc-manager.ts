@@ -22,6 +22,7 @@ import EventEmitter from 'events'
 import crypto from 'crypto'
 
 import { log } from '@juzi/wechaty-puppet'
+import type { LoggerLike } from '@juzi/wechaty-puppet'
 import {
   grpc,
   puppet,
@@ -78,9 +79,12 @@ class GrpcManager extends EventEmitter {
   serverName : string
   token      : WechatyToken
 
+  private readonly _log: LoggerLike
+
   constructor (private options: PuppetServiceOptions) {
     super()
-    log.verbose('GrpcManager', 'constructor(%s)', JSON.stringify(options))
+    this._log = options.logger ?? log
+    this._log.verbose('GrpcManager', 'constructor(%s)', JSON.stringify(options))
 
     this.caCert = Buffer.from(
       envVars.WECHATY_PUPPET_SERVICE_TLS_CA_CERT(this.options.tls?.caCert) || TLS_CA_CERT,

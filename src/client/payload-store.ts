@@ -24,6 +24,7 @@ import fs from 'fs'
 import semverPkg from 'semver'
 
 import type * as PUPPET from '@juzi/wechaty-puppet'
+import type { LoggerLike } from '@juzi/wechaty-puppet'
 
 import { FlashStore } from 'flash-store'
 
@@ -36,7 +37,8 @@ import { WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE } from '../env-vars.js'
 const { major, minor } = semverPkg
 
 interface PayloadStoreOptions {
-  token: string
+  token   : string
+  logger? : LoggerLike
 }
 
 interface StoreRoomMemberPayload {
@@ -57,8 +59,11 @@ class PayloadStore {
   protected storeDir:   string
   protected accountId?: string
 
+  private readonly _log: LoggerLike
+
   constructor (private options: PayloadStoreOptions) {
-    log.verbose('PayloadStore', 'constructor(%s)', JSON.stringify(options))
+    this._log = options.logger ?? log
+    this._log.verbose('PayloadStore', 'constructor(%s)', JSON.stringify(options))
 
     this.storeDir = path.join(
       os.homedir(),
