@@ -73,6 +73,15 @@ export type PuppetServiceOptions = PUPPET.PuppetOptions & {
   }
 }
 
+/**
+ * Local stand-in for the pluggable logger contract that will be exported by
+ * `@juzi/wechaty-puppet` once its logger-injection refactor lands.
+ *
+ * TODO(pluggable-logger): replace with `import type { LoggerLike } from
+ * '@juzi/wechaty-puppet'` after the base package publishes the type.
+ */
+type LoggerLike = typeof log
+
 const ResetLoginTimeout = 30 * 1000
 const ResetReadyTimeout = 20 * 1000 // normally ready comes 15 seconds after login
 
@@ -108,6 +117,17 @@ class PuppetService extends PUPPET.Puppet {
 
   static override readonly VERSION = VERSION
 
+  /**
+   * Kept until the Puppet base class in `@juzi/wechaty-puppet` ships `log`
+   * as an inherited field. `declare` emits no runtime code, so it neither
+   * shadows a future base declaration nor conflicts with older ones — it only
+   * teaches TypeScript that `this.log` exists when we fall back below.
+   *
+   * TODO(pluggable-logger): drop this declaration once we depend on a
+   * wechaty-puppet version that owns `log` on the Puppet base.
+   */
+  declare log: LoggerLike
+
   protected _payloadStore: PayloadStore
 
   private timeoutMilliseconds: number
@@ -132,6 +152,18 @@ class PuppetService extends PUPPET.Puppet {
     public override options: PuppetServiceOptions = {},
   ) {
     super(options)
+    /**
+     * Compatibility fallback for older `@juzi/wechaty-puppet` versions whose
+     * Puppet base class does not honor `options.logger` and therefore never
+     * initializes `this.log`. Newer versions set `this.log` inside `super()`
+     * (from `options.logger` or the default brolog), leaving this a no-op.
+     *
+     * TypeScript sees `this.log` as always defined via the `declare` field, but
+     * that guarantee only holds against the newer Puppet base — the eslint
+     * warning below is the price of runtime-defensive coding here.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    this.log ??= log
     this._payloadStore = new PayloadStore({
       token: envVars.WECHATY_PUPPET_SERVICE_TOKEN(this.options.token),
     })
