@@ -559,7 +559,7 @@ class PuppetService extends PUPPET.Puppet {
             await previous
           } catch (_) { /* ignore, upstream already reported */ }
           const current = await store.get(roomId)
-          if (!current || !(memberId in current)) {
+          if (!current || !Object.prototype.hasOwnProperty.call(current, memberId)) {
             return
           }
           const { [memberId]: _drop, ...rest } = current

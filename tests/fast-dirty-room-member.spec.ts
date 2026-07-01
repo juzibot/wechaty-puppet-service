@@ -164,3 +164,26 @@ test('fastDirty(RoomMember) concurrent compound dirties on same roomId drop ever
 
   await cleanup(puppet, token)
 })
+
+test('fastDirty(RoomMember) prototype-key member id must not match a real member', async t => {
+  const { puppet, token } = await makePuppet()
+
+  const roomId = 'room-test-id-proto'
+  const before = {
+    'member-A': { id: 'member-A', name: 'A' } as any,
+  }
+  await puppet._payloadStore.roomMember.set(roomId, before)
+
+  // `toString` exists on Object.prototype; a naive `memberId in current`
+  // check would match it and take the mutate branch. The correct guard
+  // uses hasOwnProperty and treats this as an unknown member.
+  await puppet.fastDirty({
+    payloadType: PUPPET.types.Dirty.RoomMember,
+    payloadId  : `${roomId}${PUPPET.STRING_SPLITTER}toString`,
+  })
+
+  const after = await puppet._payloadStore.roomMember.get(roomId)
+  t.same(after, before, 'prototype-key dirty must be a no-op')
+
+  await cleanup(puppet, token)
+})
