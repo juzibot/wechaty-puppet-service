@@ -110,6 +110,21 @@ class PuppetService extends PUPPET.Puppet {
 
   protected _payloadStore: PayloadStore
 
+  /**
+   * Per-roomId serialization chain for RoomMember compound dirty events.
+   *
+   * The compound RoomMember handler is a `get → mutate → set` sequence
+   * across an async FlashStore. Two dirty events for the same roomId
+   * (e.g. member-A and member-B, arriving back-to-back) would otherwise
+   * both read the same snapshot and each write back with only their own
+   * key removed -- losing one of the deletes.
+   *
+   * Keyed by roomId, each entry chains the pending handler run so a
+   * follow-up dirty for the same room waits for the in-flight one to
+   * finish. Entries self-clean after their tail resolves.
+   */
+  private _roomMemberDirtyChain: Map<string, Promise<void>> = new Map()
+
   private timeoutMilliseconds: number
 
   protected _grpcManager?: GrpcManager
@@ -517,9 +532,52 @@ class PuppetService extends PUPPET.Puppet {
       [PUPPET.types.Dirty.Post]:         async (_: string) => {},
       [PUPPET.types.Dirty.Room]:         async (id: string) => this._payloadStore.room?.delete(id),
       [PUPPET.types.Dirty.RoomMember]:   async (id: string) => {
-        const [ roomId ] = id.split(PUPPET.STRING_SPLITTER)
-        if (roomId) {
-          await this._payloadStore.roomMember?.delete(roomId)
+        const [ roomId, memberId ] = id.split(PUPPET.STRING_SPLITTER)
+        if (!roomId) {
+          return
+        }
+        const store = this._payloadStore.roomMember
+        if (!store) {
+          return
+        }
+        // Bare roomId: the whole member set is stale, drop the row.
+        // Row-level delete is idempotent so it does not need serialization.
+        if (memberId === undefined) {
+          await store.delete(roomId)
+          return
+        }
+        // Compound id: `get → mutate → set` is a read-modify-write across
+        // an async store. Serialize per roomId so two concurrent compound
+        // dirties don't each read the same snapshot and each drop only
+        // their own key -- which would lose one of the two deletes.
+        const previous = this._roomMemberDirtyChain.get(roomId) ?? Promise.resolve()
+        const next = (async () => {
+          // Swallow the previous link's rejection so a failure upstream
+          // does not silently skip our own mutation. The prior handler
+          // already reported its error via fastDirty()'s try/catch.
+          try {
+            await previous
+          } catch (_) { /* ignore, upstream already reported */ }
+          const current = await store.get(roomId)
+          if (!current || !Object.prototype.hasOwnProperty.call(current, memberId)) {
+            return
+          }
+          const { [memberId]: _drop, ...rest } = current
+          if (Object.keys(rest).length === 0) {
+            await store.delete(roomId)
+          } else {
+            await store.set(roomId, rest)
+          }
+        })()
+        this._roomMemberDirtyChain.set(roomId, next)
+        try {
+          await next
+        } finally {
+          // Only clear the slot if we are still the tail; otherwise a
+          // later handler has already extended the chain and owns cleanup.
+          if (this._roomMemberDirtyChain.get(roomId) === next) {
+            this._roomMemberDirtyChain.delete(roomId)
+          }
         }
       },
       [PUPPET.types.Dirty.Tag]:          async (id: string) => this._payloadStore.tag?.delete(id),
