@@ -128,3 +128,39 @@ test('fastDirty(RoomMember) on unknown member is a no-op', async t => {
 
   await cleanup(puppet, token)
 })
+
+test('fastDirty(RoomMember) concurrent compound dirties on same roomId drop every named member', async t => {
+  const { puppet, token } = await makePuppet()
+
+  const roomId = 'room-test-id-race'
+  await puppet._payloadStore.roomMember.set(roomId, {
+    'member-A': { id: 'member-A', name: 'A' } as any,
+    'member-B': { id: 'member-B', name: 'B' } as any,
+  })
+
+  // Fire both compound dirties without awaiting between them so their
+  // `get → mutate → set` cycles interleave. Without per-roomId
+  // serialization, both reads would see {A, B}, both writes would keep
+  // one sibling, and one of the two deletes would be lost.
+  await Promise.all([
+    puppet.fastDirty({
+      payloadType: PUPPET.types.Dirty.RoomMember,
+      payloadId  : `${roomId}${PUPPET.STRING_SPLITTER}member-A`,
+    }),
+    puppet.fastDirty({
+      payloadType: PUPPET.types.Dirty.RoomMember,
+      payloadId  : `${roomId}${PUPPET.STRING_SPLITTER}member-B`,
+    }),
+  ])
+
+  const after = await puppet._payloadStore.roomMember.get(roomId)
+  // Either the whole row is gone (last shrink deleted it) or the record
+  // is empty. Both are acceptable "no members left" observations.
+  const noMembersLeft = !after || Object.keys(after).length === 0
+  t.ok(
+    noMembersLeft,
+    `both dirtied members must be evicted, got: ${JSON.stringify(after)}`,
+  )
+
+  await cleanup(puppet, token)
+})
