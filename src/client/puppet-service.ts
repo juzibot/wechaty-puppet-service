@@ -517,9 +517,29 @@ class PuppetService extends PUPPET.Puppet {
       [PUPPET.types.Dirty.Post]:         async (_: string) => {},
       [PUPPET.types.Dirty.Room]:         async (id: string) => this._payloadStore.room?.delete(id),
       [PUPPET.types.Dirty.RoomMember]:   async (id: string) => {
-        const [ roomId ] = id.split(PUPPET.STRING_SPLITTER)
-        if (roomId) {
-          await this._payloadStore.roomMember?.delete(roomId)
+        const [ roomId, memberId ] = id.split(PUPPET.STRING_SPLITTER)
+        if (!roomId) {
+          return
+        }
+        const store = this._payloadStore.roomMember
+        if (!store) {
+          return
+        }
+        // Bare roomId: the whole member set is stale, drop the row.
+        if (memberId === undefined) {
+          await store.delete(roomId)
+          return
+        }
+        // Compound id: drop only the named member and keep siblings hot.
+        const current = await store.get(roomId)
+        if (!current || !(memberId in current)) {
+          return
+        }
+        const { [memberId]: _drop, ...rest } = current
+        if (Object.keys(rest).length === 0) {
+          await store.delete(roomId)
+        } else {
+          await store.set(roomId, rest)
         }
       },
       [PUPPET.types.Dirty.Tag]:          async (id: string) => this._payloadStore.tag?.delete(id),
