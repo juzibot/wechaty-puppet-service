@@ -24,7 +24,6 @@ import fs from 'fs'
 import semverPkg from 'semver'
 
 import type * as PUPPET from '@juzi/wechaty-puppet'
-import type { LoggerLike } from '@juzi/wechaty-puppet'
 
 import { FlashStore } from 'flash-store'
 
@@ -33,6 +32,8 @@ import {
   log,
 }             from '../config.js'
 import { WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE } from '../env-vars.js'
+
+type LoggerLike = PUPPET.LoggerLike
 
 const { major, minor } = semverPkg
 
@@ -72,7 +73,7 @@ class PayloadStore {
       this.options.token,
       `v${major(VERSION)}.${minor(VERSION)}`,
     )
-    log.silly('PayloadStore', 'constructor() storeDir: "%s"', this.storeDir)
+    this._log.silly('PayloadStore', 'constructor() storeDir: "%s"', this.storeDir)
 
     if (!fs.existsSync(this.storeDir)) {
       fs.mkdirSync(this.storeDir, { recursive: true })
@@ -88,7 +89,7 @@ class PayloadStore {
    *  so that we can save the payloads under a specific account folder.
    */
   async start (accountId: string): Promise<void> {
-    log.verbose('PayloadStore', 'start(%s)', accountId)
+    this._log.verbose('PayloadStore', 'start(%s)', accountId)
 
     if (this.accountId) {
       throw new Error('PayloadStore should be stop() before start() again.')
@@ -117,7 +118,7 @@ class PayloadStore {
      */
     // const lruOptions: LRU.Options<string, MessagePayload> = {
     //   dispose (key, val) {
-    //     log.silly('PayloadStore', `constructor() lruOptions.dispose(${key}, ${JSON.stringify(val)})`)
+    //     this._log.silly('PayloadStore', `constructor() lruOptions.dispose(${key}, ${JSON.stringify(val)})`)
     //   },
     //   max    : 1000,  // 1000 messages
     //   maxAge : 60 * 60 * 1000,  // 1 hour
@@ -126,7 +127,7 @@ class PayloadStore {
   }
 
   async stop (): Promise<void> {
-    log.verbose('PayloadStore', 'stop()')
+    this._log.verbose('PayloadStore', 'stop()')
 
     const contactStore    = this.contact
     const roomMemberStore = this.roomMember
@@ -158,7 +159,7 @@ class PayloadStore {
   }
 
   async destroy (): Promise<void> {
-    log.verbose('PayloadStore', 'destroy()')
+    this._log.verbose('PayloadStore', 'destroy()')
     if (this.accountId) {
       throw new Error('Can not destroy() a start()-ed store. Call stop() to stop it first')
     }
