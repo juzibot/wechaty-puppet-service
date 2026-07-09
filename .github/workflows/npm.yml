@@ -82,6 +82,9 @@ jobs:
       - name: Install latest npm
         run: curl -qL https://www.npmjs.com/install.sh | sh
 
+      - name: Allow npm lifecycle scripts (npm >= 12 skips dependency scripts by default; node-jq needs its postinstall to fetch the jq binary for pkg-jq)
+        run: npm config set dangerously-allow-all-scripts true
+
       - name: Install Dependencies
         run: npm install
 
