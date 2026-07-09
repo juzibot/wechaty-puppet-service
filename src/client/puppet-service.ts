@@ -385,6 +385,35 @@ class PuppetService extends PUPPET.Puppet {
         break
       case grpcPuppet.EventType.EVENT_TYPE_DIRTY: {
         const dirtyPayload = JSON.parse(payload) as PUPPET.payloads.EventDirty
+        /**
+         * Bump the generation counter *before* awaiting fastDirty so the
+         * whole fastDirty window is covered: any raw fetch that started
+         * before this dirty and resolves while fastDirty is deleting the
+         * FlashStore row must be judged stale by `isFreshWrite` and skip
+         * its write-back -- otherwise it re-poisons the row we just
+         * cleared and the value only refreshes after a *second* dirty.
+         *
+         * Upstream cache-mixin.onDirty bumps the same (type, id) again
+         * after `emit('dirty')` below; double-bumping is harmless because
+         * the counter only moves forward and `isFreshWrite` compares by
+         * equality.
+         */
+        this.cache.bumpGen(dirtyPayload.payloadType, dirtyPayload.payloadId)
+        /**
+         * A compound RoomMember dirty (`${roomId}${SEP}${memberId}`) must
+         * also bump the bare roomId key: roomMember write-backs are
+         * row-level read-modify-writes keyed by roomId, so a single-member
+         * dirty has to move that key too or an in-flight roomMember fetch
+         * could still write the whole row back stale.
+         */
+        if (dirtyPayload.payloadType === PUPPET.types.Dirty.RoomMember
+            && dirtyPayload.payloadId.includes(PUPPET.STRING_SPLITTER)
+        ) {
+          const [ roomId ] = dirtyPayload.payloadId.split(PUPPET.STRING_SPLITTER)
+          if (roomId) {
+            this.cache.bumpGen(PUPPET.types.Dirty.RoomMember, roomId)
+          }
+        }
         await this.fastDirty(dirtyPayload)
         this.emit('dirty', dirtyPayload)
         break
@@ -855,6 +884,10 @@ class PuppetService extends PUPPET.Puppet {
       return cachedPayload
     }
 
+    // Snapshot the gen before the raw fetch so a dirty that lands while
+    // the gRPC round-trip is in flight makes the write-back below stale.
+    const gen = this.cache.snapshotGen(PUPPET.types.Dirty.Contact, id)
+
     const request = new grpcPuppet.ContactPayloadRequest()
     request.setId(id)
 
@@ -897,8 +930,12 @@ class PuppetService extends PUPPET.Puppet {
       aka           : response.getAka(),
     }
 
-    await this._payloadStore.contact?.set(id, payload)
-    this.log.silly('PuppetService', 'contactRawPayload(%s) cache SET', id)
+    if (this.cache.isFreshWrite(PUPPET.types.Dirty.Contact, id, gen)) {
+      await this._payloadStore.contact?.set(id, payload)
+      this.log.silly('PuppetService', 'contactRawPayload(%s) cache SET', id)
+    } else {
+      this.log.silly('PuppetService', 'contactRawPayload(%s) cache SET skipped: dirty landed during raw fetch', id)
+    }
 
     return payload
   }
@@ -926,6 +963,14 @@ class PuppetService extends PUPPET.Puppet {
 
     if (needGetSet.size > 0) {
       try {
+        // Snapshot each id's gen before the batch fetch; write-backs below
+        // are validated per id so a dirty on one contact mid-flight only
+        // skips that contact's stale write, not the whole batch.
+        const genSnap = new Map<string, number>()
+        for (const contactId of needGetSet) {
+          genSnap.set(contactId, this.cache.snapshotGen(PUPPET.types.Dirty.Contact, contactId))
+        }
+
         const request = new grpcPuppet.BatchContactPayloadRequest()
         request.setIdsList(Array.from(needGetSet))
 
@@ -939,7 +984,11 @@ class PuppetService extends PUPPET.Puppet {
           const contactId = payload.getId()
           const puppetPayload = contactPbToPayload(payload)
           result.set(contactId, puppetPayload)
-          await this._payloadStore.contact?.set(contactId, puppetPayload)
+          if (this.cache.isFreshWrite(PUPPET.types.Dirty.Contact, contactId, genSnap.get(contactId) ?? 0)) {
+            await this._payloadStore.contact?.set(contactId, puppetPayload)
+          } else {
+            this.log.silly('PuppetService', 'batchContactRawPayload(%s) cache SET skipped: dirty landed during raw fetch', contactId)
+          }
         }
       } catch (e) {
         this.log.error('PuppetService', 'batchContactRawPayload(%s, %s) error: %s, use one by one method', contactIdList, needGetSet, e)
@@ -2303,6 +2352,10 @@ class PuppetService extends PUPPET.Puppet {
       return cachedPayload
     }
 
+    // Snapshot the gen before the raw fetch so a dirty that lands while
+    // the gRPC round-trip is in flight makes the write-back below stale.
+    const gen = this.cache.snapshotGen(PUPPET.types.Dirty.Room, id)
+
     const request = new grpcPuppet.RoomPayloadRequest()
     request.setId(id)
 
@@ -2329,8 +2382,12 @@ class PuppetService extends PUPPET.Puppet {
       payload.createTime = millisecondsFromTimestamp(createTime)
     }
 
-    await this._payloadStore.room?.set(id, payload)
-    this.log.silly('PuppetService', 'roomRawPayload(%s) cache SET', id)
+    if (this.cache.isFreshWrite(PUPPET.types.Dirty.Room, id, gen)) {
+      await this._payloadStore.room?.set(id, payload)
+      this.log.silly('PuppetService', 'roomRawPayload(%s) cache SET', id)
+    } else {
+      this.log.silly('PuppetService', 'roomRawPayload(%s) cache SET skipped: dirty landed during raw fetch', id)
+    }
 
     return payload
   }
@@ -2358,6 +2415,14 @@ class PuppetService extends PUPPET.Puppet {
 
     if (needGetSet.size > 0) {
       try {
+        // Snapshot each id's gen before the batch fetch; write-backs below
+        // are validated per id so a dirty on one room mid-flight only skips
+        // that room's stale write, not the whole batch.
+        const genSnap = new Map<string, number>()
+        for (const roomId of needGetSet) {
+          genSnap.set(roomId, this.cache.snapshotGen(PUPPET.types.Dirty.Room, roomId))
+        }
+
         const request = new grpcPuppet.BatchRoomPayloadRequest()
         request.setIdsList(Array.from(needGetSet))
 
@@ -2386,7 +2451,11 @@ class PuppetService extends PUPPET.Puppet {
             puppetPayload.createTime = millisecondsFromTimestamp(createTime)
           }
           result.set(roomId, puppetPayload)
-          await this._payloadStore.room?.set(roomId, puppetPayload)
+          if (this.cache.isFreshWrite(PUPPET.types.Dirty.Room, roomId, genSnap.get(roomId) ?? 0)) {
+            await this._payloadStore.room?.set(roomId, puppetPayload)
+          } else {
+            this.log.silly('PuppetService', 'batchRoomRawPayload(%s) cache SET skipped: dirty landed during raw fetch', roomId)
+          }
         }
       } catch (e) {
         this.log.error('PuppetService', 'batchRoomRawPayload(%s, %s) error: %s, use one by one method', roomIdList, needGetSet, e)
@@ -2666,6 +2735,13 @@ class PuppetService extends PUPPET.Puppet {
   override async roomMemberRawPayload (roomId: string, contactId: string): Promise<PUPPET.payloads.RoomMember>  {
     this.log.verbose('PuppetService', 'roomMemberRawPayload(%s, %s)', roomId, contactId)
 
+    // Row-level read-modify-write: the write-back merges the fetched
+    // member into the existing row, so snapshot the room-level gen before
+    // even reading the row. A room-level dirty (bare roomId, or the
+    // room-level bump a compound RoomMember dirty triggers) that lands
+    // anywhere in this window then skips the merge write-back.
+    const roomGen = this.cache.snapshotGen(PUPPET.types.Dirty.RoomMember, roomId)
+
     const cachedPayload           = await this._payloadStore.roomMember?.get(roomId)
     const cachedRoomMemberPayload = cachedPayload && cachedPayload[contactId]
 
@@ -2694,11 +2770,15 @@ class PuppetService extends PUPPET.Puppet {
       joinTime      : response.getJoinTime(),
     }
 
-    await this._payloadStore.roomMember?.set(roomId, {
-      ...cachedPayload,
-      [contactId]: payload,
-    })
-    this.log.silly('PuppetService', 'roomMemberRawPayload(%s, %s) cache SET', roomId, contactId)
+    if (this.cache.isFreshWrite(PUPPET.types.Dirty.RoomMember, roomId, roomGen)) {
+      await this._payloadStore.roomMember?.set(roomId, {
+        ...cachedPayload,
+        [contactId]: payload,
+      })
+      this.log.silly('PuppetService', 'roomMemberRawPayload(%s, %s) cache SET', roomId, contactId)
+    } else {
+      this.log.silly('PuppetService', 'roomMemberRawPayload(%s, %s) cache SET skipped: dirty landed during raw fetch', roomId, contactId)
+    }
 
     return payload
   }
@@ -2715,6 +2795,10 @@ class PuppetService extends PUPPET.Puppet {
     const result = new Map<string, PUPPET.payloads.RoomMember>()
     const contactIdSet = new Set<string>(contactIdList)
     let needGetSet = new Set<string>()
+    // Row-level read-modify-write keyed by roomId: snapshot the room-level
+    // gen before reading the row so a dirty landing anywhere in the window
+    // skips the merged write-back.
+    const roomGen = this.cache.snapshotGen(PUPPET.types.Dirty.RoomMember, roomId)
     const cachedPayload = await this._payloadStore.roomMember?.get(roomId) || {}
     if (Object.keys(cachedPayload).length > 0) {
       for (const contactId of contactIdSet) {
@@ -2747,7 +2831,11 @@ class PuppetService extends PUPPET.Puppet {
           result.set(contactId, puppetPayload)
           cachedPayload[contactId] = puppetPayload
         }
-        await this._payloadStore.roomMember?.set(roomId, cachedPayload)
+        if (this.cache.isFreshWrite(PUPPET.types.Dirty.RoomMember, roomId, roomGen)) {
+          await this._payloadStore.roomMember?.set(roomId, cachedPayload)
+        } else {
+          this.log.silly('PuppetService', 'batchRoomMemberRawPayload(%s) cache SET skipped: dirty landed during raw fetch', roomId)
+        }
       } catch (e) {
         this.log.error('PuppetService', 'batchRoomMemberRawPayload(%s, %s) error: %s, use one by one method', roomId, needGetSet, e)
         for (const contactId of needGetSet) {
@@ -3393,6 +3481,10 @@ class PuppetService extends PUPPET.Puppet {
       return cachedPayload
     }
 
+    // Snapshot the gen before the raw fetch so a dirty that lands while
+    // the gRPC round-trip is in flight makes the write-back below stale.
+    const gen = this.cache.snapshotGen(PUPPET.types.Dirty.TagGroup, id)
+
     const request = new grpcPuppet.TagGroupPayloadRequest()
     request.setGroupId(id)
 
@@ -3412,8 +3504,12 @@ class PuppetService extends PUPPET.Puppet {
       type: grpcPayload.getType(),
     }
 
-    await this._payloadStore.tagGroup?.set(id, payload)
-    this.log.silly('PuppetService', 'tagGroupPayloadPuppet(%s) cache SET', id)
+    if (this.cache.isFreshWrite(PUPPET.types.Dirty.TagGroup, id, gen)) {
+      await this._payloadStore.tagGroup?.set(id, payload)
+      this.log.silly('PuppetService', 'tagGroupPayloadPuppet(%s) cache SET', id)
+    } else {
+      this.log.silly('PuppetService', 'tagGroupPayloadPuppet(%s) cache SET skipped: dirty landed during raw fetch', id)
+    }
 
     return payload
   }
@@ -3426,6 +3522,10 @@ class PuppetService extends PUPPET.Puppet {
       this.log.silly('PuppetService', 'tagPayloadPuppet(%s) cache HIT', tagId)
       return cachedPayload
     }
+
+    // Snapshot the gen before the raw fetch so a dirty that lands while
+    // the gRPC round-trip is in flight makes the write-back below stale.
+    const gen = this.cache.snapshotGen(PUPPET.types.Dirty.Tag, tagId)
 
     const request = new grpcPuppet.TagPayloadRequest()
     request.setTagId(tagId)
@@ -3447,8 +3547,12 @@ class PuppetService extends PUPPET.Puppet {
       type: grpcPayload.getType(),
     }
 
-    await this._payloadStore.tag?.set(tagId, payload)
-    this.log.silly('PuppetService', 'tagPayloadPuppet(%s) cache SET', tagId)
+    if (this.cache.isFreshWrite(PUPPET.types.Dirty.Tag, tagId, gen)) {
+      await this._payloadStore.tag?.set(tagId, payload)
+      this.log.silly('PuppetService', 'tagPayloadPuppet(%s) cache SET', tagId)
+    } else {
+      this.log.silly('PuppetService', 'tagPayloadPuppet(%s) cache SET skipped: dirty landed during raw fetch', tagId)
+    }
 
     return payload
   }
