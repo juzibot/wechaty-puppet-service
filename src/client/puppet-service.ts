@@ -368,12 +368,10 @@ class PuppetService extends PUPPET.Puppet {
           )
         }
         break
-      case grpcPuppet.EventType.EVENT_TYPE_DIRTY: {
-        const dirtyPayload = JSON.parse(payload) as PUPPET.payloads.EventDirty
-        await this.fastDirty(dirtyPayload)
-        this.emit('dirty', dirtyPayload)
+      case grpcPuppet.EventType.EVENT_TYPE_DIRTY:
+        await this.fastDirty(JSON.parse(payload))
+        this.emit('dirty', JSON.parse(payload) as PUPPET.payloads.EventDirty)
         break
-      }
       case grpcPuppet.EventType.EVENT_TYPE_MESSAGE:
         this.emit('message', JSON.parse(payload) as PUPPET.payloads.EventMessage)
         break
@@ -499,44 +497,6 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   /**
-   * Dirty handler registry, keyed by every `PUPPET.types.Dirty` value.
-   *
-   * Using a full `Record<...>` (rather than `Partial<...>`) means
-   * TypeScript catches a missing entry at compile time -- so when a
-   * new DirtyType is added to wechaty-puppet, callers get a build
-   * error instead of a silent runtime no-op.
-   *
-   * Note: `Unspecified` is treated as an upstream contract violation,
-   * not a benign no-op -- it logs an error and emits 'error' so hosts
-   * notice.
-   */
-  private get _dirtyHandlerMap (): Record<PUPPET.types.Dirty, (id: string) => Promise<unknown>> {
-    return {
-      [PUPPET.types.Dirty.Contact]:      async (id: string) => this._payloadStore.contact?.delete(id),
-      [PUPPET.types.Dirty.Friendship]:   async (_: string) => {},
-      [PUPPET.types.Dirty.Message]:      async (_: string) => {},
-      [PUPPET.types.Dirty.Post]:         async (_: string) => {},
-      [PUPPET.types.Dirty.Room]:         async (id: string) => this._payloadStore.room?.delete(id),
-      [PUPPET.types.Dirty.RoomMember]:   async (id: string) => {
-        const [ roomId ] = id.split(PUPPET.STRING_SPLITTER)
-        if (roomId) {
-          await this._payloadStore.roomMember?.delete(roomId)
-        }
-      },
-      [PUPPET.types.Dirty.Tag]:          async (id: string) => this._payloadStore.tag?.delete(id),
-      [PUPPET.types.Dirty.TagGroup]:     async (id: string) => this._payloadStore.tagGroup?.delete(id),
-      [PUPPET.types.Dirty.WxxdProduct]:  async (_: string) => {},
-      [PUPPET.types.Dirty.WxxdOrder]:    async (_: string) => {},
-      [PUPPET.types.Dirty.Call]:         async (_: string) => {},
-      [PUPPET.types.Dirty.Unspecified]:  async (id: string) => {
-        const msg = `fastDirty() received Unspecified dirty type (id=${id}); upstream puppet is leaking protobuf default — this is a server-side contract bug`
-        this.log.error('PuppetService', msg)
-        this.emit('error', new Error(msg))
-      },
-    }
-  }
-
-  /**
    * `onDirty()` is called when the puppet emit `dirty` event.
    *  the event listener will be registered in `start()` from the `PuppetAbstract` class
    */
@@ -548,18 +508,20 @@ class PuppetService extends PUPPET.Puppet {
   ): Promise<void> {
     this.log.verbose('PuppetService', 'fastDirty(%s<%s>, %s)', PUPPET.types.Dirty[payloadType], payloadType, payloadId)
 
-    // payloadType is typed as the enum, but at runtime the server may emit a
-    // value outside our enum (forward-compat). Look it up via a
-    // possibly-undefined view so the runtime guard stays meaningful.
-    const lookup = this._dirtyHandlerMap as Partial<Record<PUPPET.types.Dirty, (id: string) => Promise<unknown>>>
-    const handler = lookup[payloadType]
-    if (!handler) {
-      this.log.warn('PuppetService', 'fastDirty() no handler for payloadType=%s', payloadType)
-      return
+    const dirtyMap: Partial<Record<PUPPET.types.Dirty, (id: string) => Promise<unknown>>> = {
+      [PUPPET.types.Dirty.Contact]:      async (id: string) => this._payloadStore.contact?.delete(id),
+      [PUPPET.types.Dirty.Friendship]:   async (_: string) => {},
+      [PUPPET.types.Dirty.Message]:      async (_: string) => {},
+      [PUPPET.types.Dirty.Post]:         async (_: string) => {},
+      [PUPPET.types.Dirty.Room]:         async (id: string) => this._payloadStore.room?.delete(id),
+      [PUPPET.types.Dirty.RoomMember]:   async (id: string) => this._payloadStore.roomMember?.delete(id),
+      [PUPPET.types.Dirty.Tag]:          async (id: string) => this._payloadStore.tag?.delete(id),
+      [PUPPET.types.Dirty.TagGroup]:     async (id: string) => this._payloadStore.tagGroup?.delete(id),
+      [PUPPET.types.Dirty.Unspecified]:  async (id: string) => { throw new Error('Unspecified type with id: ' + id) },
     }
 
     try {
-      await handler(payloadId)
+      await dirtyMap[payloadType]?.(payloadId)
     } catch (error) {
       this.emit('error', error)
     }
