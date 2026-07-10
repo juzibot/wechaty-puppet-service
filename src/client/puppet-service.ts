@@ -110,21 +110,6 @@ class PuppetService extends PUPPET.Puppet {
 
   protected _payloadStore: PayloadStore
 
-  /**
-   * Per-roomId serialization chain for RoomMember compound dirty events.
-   *
-   * The compound RoomMember handler is a `get → mutate → set` sequence
-   * across an async FlashStore. Two dirty events for the same roomId
-   * (e.g. member-A and member-B, arriving back-to-back) would otherwise
-   * both read the same snapshot and each write back with only their own
-   * key removed -- losing one of the deletes.
-   *
-   * Keyed by roomId, each entry chains the pending handler run so a
-   * follow-up dirty for the same room waits for the in-flight one to
-   * finish. Entries self-clean after their tail resolves.
-   */
-  private _roomMemberDirtyChain: Map<string, Promise<void>> = new Map()
-
   private timeoutMilliseconds: number
 
   protected _grpcManager?: GrpcManager
@@ -383,41 +368,10 @@ class PuppetService extends PUPPET.Puppet {
           )
         }
         break
-      case grpcPuppet.EventType.EVENT_TYPE_DIRTY: {
-        const dirtyPayload = JSON.parse(payload) as PUPPET.payloads.EventDirty
-        /**
-         * Bump the generation counter *before* awaiting fastDirty so the
-         * whole fastDirty window is covered: any raw fetch that started
-         * before this dirty and resolves while fastDirty is deleting the
-         * FlashStore row must be judged stale by `isFreshWrite` and skip
-         * its write-back -- otherwise it re-poisons the row we just
-         * cleared and the value only refreshes after a *second* dirty.
-         *
-         * Upstream cache-mixin.onDirty bumps the same (type, id) again
-         * after `emit('dirty')` below; double-bumping is harmless because
-         * the counter only moves forward and `isFreshWrite` compares by
-         * equality.
-         */
-        this.cache.bumpGen(dirtyPayload.payloadType, dirtyPayload.payloadId)
-        /**
-         * A compound RoomMember dirty (`${roomId}${SEP}${memberId}`) must
-         * also bump the bare roomId key: roomMember write-backs are
-         * row-level read-modify-writes keyed by roomId, so a single-member
-         * dirty has to move that key too or an in-flight roomMember fetch
-         * could still write the whole row back stale.
-         */
-        if (dirtyPayload.payloadType === PUPPET.types.Dirty.RoomMember
-            && dirtyPayload.payloadId.includes(PUPPET.STRING_SPLITTER)
-        ) {
-          const [ roomId ] = dirtyPayload.payloadId.split(PUPPET.STRING_SPLITTER)
-          if (roomId) {
-            this.cache.bumpGen(PUPPET.types.Dirty.RoomMember, roomId)
-          }
-        }
-        await this.fastDirty(dirtyPayload)
-        this.emit('dirty', dirtyPayload)
+      case grpcPuppet.EventType.EVENT_TYPE_DIRTY:
+        await this.fastDirty(JSON.parse(payload))
+        this.emit('dirty', JSON.parse(payload) as PUPPET.payloads.EventDirty)
         break
-      }
       case grpcPuppet.EventType.EVENT_TYPE_MESSAGE:
         this.emit('message', JSON.parse(payload) as PUPPET.payloads.EventMessage)
         break
@@ -543,87 +497,6 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   /**
-   * Dirty handler registry, keyed by every `PUPPET.types.Dirty` value.
-   *
-   * Using a full `Record<...>` (rather than `Partial<...>`) means
-   * TypeScript catches a missing entry at compile time -- so when a
-   * new DirtyType is added to wechaty-puppet, callers get a build
-   * error instead of a silent runtime no-op.
-   *
-   * Note: `Unspecified` is treated as an upstream contract violation,
-   * not a benign no-op -- it logs an error and emits 'error' so hosts
-   * notice.
-   */
-  private get _dirtyHandlerMap (): Record<PUPPET.types.Dirty, (id: string) => Promise<unknown>> {
-    return {
-      [PUPPET.types.Dirty.Contact]:      async (id: string) => this._payloadStore.contact?.delete(id),
-      [PUPPET.types.Dirty.Friendship]:   async (_: string) => {},
-      [PUPPET.types.Dirty.Message]:      async (_: string) => {},
-      [PUPPET.types.Dirty.Post]:         async (_: string) => {},
-      [PUPPET.types.Dirty.Room]:         async (id: string) => this._payloadStore.room?.delete(id),
-      [PUPPET.types.Dirty.RoomMember]:   async (id: string) => {
-        const [ roomId, memberId ] = id.split(PUPPET.STRING_SPLITTER)
-        if (!roomId) {
-          return
-        }
-        const store = this._payloadStore.roomMember
-        if (!store) {
-          return
-        }
-        // Bare roomId: the whole member set is stale, drop the row.
-        // Row-level delete is idempotent so it does not need serialization.
-        if (memberId === undefined) {
-          await store.delete(roomId)
-          return
-        }
-        // Compound id: `get → mutate → set` is a read-modify-write across
-        // an async store. Serialize per roomId so two concurrent compound
-        // dirties don't each read the same snapshot and each drop only
-        // their own key -- which would lose one of the two deletes.
-        const previous = this._roomMemberDirtyChain.get(roomId) ?? Promise.resolve()
-        const next = (async () => {
-          // Swallow the previous link's rejection so a failure upstream
-          // does not silently skip our own mutation. The prior handler
-          // already reported its error via fastDirty()'s try/catch.
-          try {
-            await previous
-          } catch (_) { /* ignore, upstream already reported */ }
-          const current = await store.get(roomId)
-          if (!current || !Object.prototype.hasOwnProperty.call(current, memberId)) {
-            return
-          }
-          const { [memberId]: _drop, ...rest } = current
-          if (Object.keys(rest).length === 0) {
-            await store.delete(roomId)
-          } else {
-            await store.set(roomId, rest)
-          }
-        })()
-        this._roomMemberDirtyChain.set(roomId, next)
-        try {
-          await next
-        } finally {
-          // Only clear the slot if we are still the tail; otherwise a
-          // later handler has already extended the chain and owns cleanup.
-          if (this._roomMemberDirtyChain.get(roomId) === next) {
-            this._roomMemberDirtyChain.delete(roomId)
-          }
-        }
-      },
-      [PUPPET.types.Dirty.Tag]:          async (id: string) => this._payloadStore.tag?.delete(id),
-      [PUPPET.types.Dirty.TagGroup]:     async (id: string) => this._payloadStore.tagGroup?.delete(id),
-      [PUPPET.types.Dirty.WxxdProduct]:  async (_: string) => {},
-      [PUPPET.types.Dirty.WxxdOrder]:    async (_: string) => {},
-      [PUPPET.types.Dirty.Call]:         async (_: string) => {},
-      [PUPPET.types.Dirty.Unspecified]:  async (id: string) => {
-        const msg = `fastDirty() received Unspecified dirty type (id=${id}); upstream puppet is leaking protobuf default — this is a server-side contract bug`
-        this.log.error('PuppetService', msg)
-        this.emit('error', new Error(msg))
-      },
-    }
-  }
-
-  /**
    * `onDirty()` is called when the puppet emit `dirty` event.
    *  the event listener will be registered in `start()` from the `PuppetAbstract` class
    */
@@ -635,18 +508,20 @@ class PuppetService extends PUPPET.Puppet {
   ): Promise<void> {
     this.log.verbose('PuppetService', 'fastDirty(%s<%s>, %s)', PUPPET.types.Dirty[payloadType], payloadType, payloadId)
 
-    // payloadType is typed as the enum, but at runtime the server may emit a
-    // value outside our enum (forward-compat). Look it up via a
-    // possibly-undefined view so the runtime guard stays meaningful.
-    const lookup = this._dirtyHandlerMap as Partial<Record<PUPPET.types.Dirty, (id: string) => Promise<unknown>>>
-    const handler = lookup[payloadType]
-    if (!handler) {
-      this.log.warn('PuppetService', 'fastDirty() no handler for payloadType=%s', payloadType)
-      return
+    const dirtyMap: Partial<Record<PUPPET.types.Dirty, (id: string) => Promise<unknown>>> = {
+      [PUPPET.types.Dirty.Contact]:      async (id: string) => this._payloadStore.contact?.delete(id),
+      [PUPPET.types.Dirty.Friendship]:   async (_: string) => {},
+      [PUPPET.types.Dirty.Message]:      async (_: string) => {},
+      [PUPPET.types.Dirty.Post]:         async (_: string) => {},
+      [PUPPET.types.Dirty.Room]:         async (id: string) => this._payloadStore.room?.delete(id),
+      [PUPPET.types.Dirty.RoomMember]:   async (id: string) => this._payloadStore.roomMember?.delete(id),
+      [PUPPET.types.Dirty.Tag]:          async (id: string) => this._payloadStore.tag?.delete(id),
+      [PUPPET.types.Dirty.TagGroup]:     async (id: string) => this._payloadStore.tagGroup?.delete(id),
+      [PUPPET.types.Dirty.Unspecified]:  async (id: string) => { throw new Error('Unspecified type with id: ' + id) },
     }
 
     try {
-      await handler(payloadId)
+      await dirtyMap[payloadType]?.(payloadId)
     } catch (error) {
       this.emit('error', error)
     }
@@ -884,10 +759,6 @@ class PuppetService extends PUPPET.Puppet {
       return cachedPayload
     }
 
-    // Snapshot the gen before the raw fetch so a dirty that lands while
-    // the gRPC round-trip is in flight makes the write-back below stale.
-    const gen = this.cache.snapshotGen(PUPPET.types.Dirty.Contact, id)
-
     const request = new grpcPuppet.ContactPayloadRequest()
     request.setId(id)
 
@@ -930,12 +801,8 @@ class PuppetService extends PUPPET.Puppet {
       aka           : response.getAka(),
     }
 
-    if (this.cache.isFreshWrite(PUPPET.types.Dirty.Contact, id, gen)) {
-      await this._payloadStore.contact?.set(id, payload)
-      this.log.silly('PuppetService', 'contactRawPayload(%s) cache SET', id)
-    } else {
-      this.log.silly('PuppetService', 'contactRawPayload(%s) cache SET skipped: dirty landed during raw fetch', id)
-    }
+    await this._payloadStore.contact?.set(id, payload)
+    this.log.silly('PuppetService', 'contactRawPayload(%s) cache SET', id)
 
     return payload
   }
@@ -963,14 +830,6 @@ class PuppetService extends PUPPET.Puppet {
 
     if (needGetSet.size > 0) {
       try {
-        // Snapshot each id's gen before the batch fetch; write-backs below
-        // are validated per id so a dirty on one contact mid-flight only
-        // skips that contact's stale write, not the whole batch.
-        const genSnap = new Map<string, number>()
-        for (const contactId of needGetSet) {
-          genSnap.set(contactId, this.cache.snapshotGen(PUPPET.types.Dirty.Contact, contactId))
-        }
-
         const request = new grpcPuppet.BatchContactPayloadRequest()
         request.setIdsList(Array.from(needGetSet))
 
@@ -984,11 +843,7 @@ class PuppetService extends PUPPET.Puppet {
           const contactId = payload.getId()
           const puppetPayload = contactPbToPayload(payload)
           result.set(contactId, puppetPayload)
-          if (this.cache.isFreshWrite(PUPPET.types.Dirty.Contact, contactId, genSnap.get(contactId) ?? 0)) {
-            await this._payloadStore.contact?.set(contactId, puppetPayload)
-          } else {
-            this.log.silly('PuppetService', 'batchContactRawPayload(%s) cache SET skipped: dirty landed during raw fetch', contactId)
-          }
+          await this._payloadStore.contact?.set(contactId, puppetPayload)
         }
       } catch (e) {
         this.log.error('PuppetService', 'batchContactRawPayload(%s, %s) error: %s, use one by one method', contactIdList, needGetSet, e)
@@ -2352,10 +2207,6 @@ class PuppetService extends PUPPET.Puppet {
       return cachedPayload
     }
 
-    // Snapshot the gen before the raw fetch so a dirty that lands while
-    // the gRPC round-trip is in flight makes the write-back below stale.
-    const gen = this.cache.snapshotGen(PUPPET.types.Dirty.Room, id)
-
     const request = new grpcPuppet.RoomPayloadRequest()
     request.setId(id)
 
@@ -2382,12 +2233,8 @@ class PuppetService extends PUPPET.Puppet {
       payload.createTime = millisecondsFromTimestamp(createTime)
     }
 
-    if (this.cache.isFreshWrite(PUPPET.types.Dirty.Room, id, gen)) {
-      await this._payloadStore.room?.set(id, payload)
-      this.log.silly('PuppetService', 'roomRawPayload(%s) cache SET', id)
-    } else {
-      this.log.silly('PuppetService', 'roomRawPayload(%s) cache SET skipped: dirty landed during raw fetch', id)
-    }
+    await this._payloadStore.room?.set(id, payload)
+    this.log.silly('PuppetService', 'roomRawPayload(%s) cache SET', id)
 
     return payload
   }
@@ -2415,14 +2262,6 @@ class PuppetService extends PUPPET.Puppet {
 
     if (needGetSet.size > 0) {
       try {
-        // Snapshot each id's gen before the batch fetch; write-backs below
-        // are validated per id so a dirty on one room mid-flight only skips
-        // that room's stale write, not the whole batch.
-        const genSnap = new Map<string, number>()
-        for (const roomId of needGetSet) {
-          genSnap.set(roomId, this.cache.snapshotGen(PUPPET.types.Dirty.Room, roomId))
-        }
-
         const request = new grpcPuppet.BatchRoomPayloadRequest()
         request.setIdsList(Array.from(needGetSet))
 
@@ -2451,11 +2290,7 @@ class PuppetService extends PUPPET.Puppet {
             puppetPayload.createTime = millisecondsFromTimestamp(createTime)
           }
           result.set(roomId, puppetPayload)
-          if (this.cache.isFreshWrite(PUPPET.types.Dirty.Room, roomId, genSnap.get(roomId) ?? 0)) {
-            await this._payloadStore.room?.set(roomId, puppetPayload)
-          } else {
-            this.log.silly('PuppetService', 'batchRoomRawPayload(%s) cache SET skipped: dirty landed during raw fetch', roomId)
-          }
+          await this._payloadStore.room?.set(roomId, puppetPayload)
         }
       } catch (e) {
         this.log.error('PuppetService', 'batchRoomRawPayload(%s, %s) error: %s, use one by one method', roomIdList, needGetSet, e)
@@ -2735,13 +2570,6 @@ class PuppetService extends PUPPET.Puppet {
   override async roomMemberRawPayload (roomId: string, contactId: string): Promise<PUPPET.payloads.RoomMember>  {
     this.log.verbose('PuppetService', 'roomMemberRawPayload(%s, %s)', roomId, contactId)
 
-    // Row-level read-modify-write: the write-back merges the fetched
-    // member into the existing row, so snapshot the room-level gen before
-    // even reading the row. A room-level dirty (bare roomId, or the
-    // room-level bump a compound RoomMember dirty triggers) that lands
-    // anywhere in this window then skips the merge write-back.
-    const roomGen = this.cache.snapshotGen(PUPPET.types.Dirty.RoomMember, roomId)
-
     const cachedPayload           = await this._payloadStore.roomMember?.get(roomId)
     const cachedRoomMemberPayload = cachedPayload && cachedPayload[contactId]
 
@@ -2770,15 +2598,11 @@ class PuppetService extends PUPPET.Puppet {
       joinTime      : response.getJoinTime(),
     }
 
-    if (this.cache.isFreshWrite(PUPPET.types.Dirty.RoomMember, roomId, roomGen)) {
-      await this._payloadStore.roomMember?.set(roomId, {
-        ...cachedPayload,
-        [contactId]: payload,
-      })
-      this.log.silly('PuppetService', 'roomMemberRawPayload(%s, %s) cache SET', roomId, contactId)
-    } else {
-      this.log.silly('PuppetService', 'roomMemberRawPayload(%s, %s) cache SET skipped: dirty landed during raw fetch', roomId, contactId)
-    }
+    await this._payloadStore.roomMember?.set(roomId, {
+      ...cachedPayload,
+      [contactId]: payload,
+    })
+    this.log.silly('PuppetService', 'roomMemberRawPayload(%s, %s) cache SET', roomId, contactId)
 
     return payload
   }
@@ -2795,10 +2619,6 @@ class PuppetService extends PUPPET.Puppet {
     const result = new Map<string, PUPPET.payloads.RoomMember>()
     const contactIdSet = new Set<string>(contactIdList)
     let needGetSet = new Set<string>()
-    // Row-level read-modify-write keyed by roomId: snapshot the room-level
-    // gen before reading the row so a dirty landing anywhere in the window
-    // skips the merged write-back.
-    const roomGen = this.cache.snapshotGen(PUPPET.types.Dirty.RoomMember, roomId)
     const cachedPayload = await this._payloadStore.roomMember?.get(roomId) || {}
     if (Object.keys(cachedPayload).length > 0) {
       for (const contactId of contactIdSet) {
@@ -2831,11 +2651,7 @@ class PuppetService extends PUPPET.Puppet {
           result.set(contactId, puppetPayload)
           cachedPayload[contactId] = puppetPayload
         }
-        if (this.cache.isFreshWrite(PUPPET.types.Dirty.RoomMember, roomId, roomGen)) {
-          await this._payloadStore.roomMember?.set(roomId, cachedPayload)
-        } else {
-          this.log.silly('PuppetService', 'batchRoomMemberRawPayload(%s) cache SET skipped: dirty landed during raw fetch', roomId)
-        }
+        await this._payloadStore.roomMember?.set(roomId, cachedPayload)
       } catch (e) {
         this.log.error('PuppetService', 'batchRoomMemberRawPayload(%s, %s) error: %s, use one by one method', roomId, needGetSet, e)
         for (const contactId of needGetSet) {
@@ -3481,10 +3297,6 @@ class PuppetService extends PUPPET.Puppet {
       return cachedPayload
     }
 
-    // Snapshot the gen before the raw fetch so a dirty that lands while
-    // the gRPC round-trip is in flight makes the write-back below stale.
-    const gen = this.cache.snapshotGen(PUPPET.types.Dirty.TagGroup, id)
-
     const request = new grpcPuppet.TagGroupPayloadRequest()
     request.setGroupId(id)
 
@@ -3504,12 +3316,8 @@ class PuppetService extends PUPPET.Puppet {
       type: grpcPayload.getType(),
     }
 
-    if (this.cache.isFreshWrite(PUPPET.types.Dirty.TagGroup, id, gen)) {
-      await this._payloadStore.tagGroup?.set(id, payload)
-      this.log.silly('PuppetService', 'tagGroupPayloadPuppet(%s) cache SET', id)
-    } else {
-      this.log.silly('PuppetService', 'tagGroupPayloadPuppet(%s) cache SET skipped: dirty landed during raw fetch', id)
-    }
+    await this._payloadStore.tagGroup?.set(id, payload)
+    this.log.silly('PuppetService', 'tagGroupPayloadPuppet(%s) cache SET', id)
 
     return payload
   }
@@ -3522,10 +3330,6 @@ class PuppetService extends PUPPET.Puppet {
       this.log.silly('PuppetService', 'tagPayloadPuppet(%s) cache HIT', tagId)
       return cachedPayload
     }
-
-    // Snapshot the gen before the raw fetch so a dirty that lands while
-    // the gRPC round-trip is in flight makes the write-back below stale.
-    const gen = this.cache.snapshotGen(PUPPET.types.Dirty.Tag, tagId)
 
     const request = new grpcPuppet.TagPayloadRequest()
     request.setTagId(tagId)
@@ -3547,12 +3351,8 @@ class PuppetService extends PUPPET.Puppet {
       type: grpcPayload.getType(),
     }
 
-    if (this.cache.isFreshWrite(PUPPET.types.Dirty.Tag, tagId, gen)) {
-      await this._payloadStore.tag?.set(tagId, payload)
-      this.log.silly('PuppetService', 'tagPayloadPuppet(%s) cache SET', tagId)
-    } else {
-      this.log.silly('PuppetService', 'tagPayloadPuppet(%s) cache SET skipped: dirty landed during raw fetch', tagId)
-    }
+    await this._payloadStore.tag?.set(tagId, payload)
+    this.log.silly('PuppetService', 'tagPayloadPuppet(%s) cache SET', tagId)
 
     return payload
   }
