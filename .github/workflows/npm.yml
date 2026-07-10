@@ -79,13 +79,8 @@ jobs:
           cache: npm
           cache-dependency-path: package.json
 
-      # Pin npm 11: npm 12 skips dependency lifecycle scripts by default
-      # (node-jq never fetches its jq binary, breaking pkg-jq) and its
-      # in-place upgrade over the bundled npm corrupts `npm publish`
-      # (Cannot find module 'sigstore'). npm 11 behaves like the runs
-      # that published successfully before 2026-07.
-      - name: Install npm 11
-        run: npm install -g npm@11
+      - name: Install latest npm
+        run: curl -qL https://www.npmjs.com/install.sh | sh
 
       - name: Install Dependencies
         run: npm install
