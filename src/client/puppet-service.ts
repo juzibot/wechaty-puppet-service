@@ -2294,9 +2294,18 @@ class PuppetService extends PUPPET.Puppet {
         }
       } catch (e) {
         this.log.error('PuppetService', 'batchRoomRawPayload(%s, %s) error: %s, use one by one method', roomIdList, needGetSet, e)
+        let fallbackSuccessCount = 0
         for (const roomId of needGetSet) {
-          const payload = await this.roomRawPayload(roomId)
-          result.set(roomId, payload)
+          try {
+            const payload = await this.roomRawPayload(roomId)
+            result.set(roomId, payload)
+            fallbackSuccessCount++
+          } catch (fallbackError) {
+            this.log.warn('PuppetService', 'roomRawPayload(%s) failed during batch fallback, skip this room: %s', roomId, fallbackError)
+          }
+        }
+        if (fallbackSuccessCount === 0) {
+          throw e
         }
       }
     }
