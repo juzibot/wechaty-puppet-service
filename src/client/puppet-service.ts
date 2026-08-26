@@ -56,6 +56,7 @@ import { PayloadStore } from './payload-store.js'
 import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPbToPayload, channelPayloadToPb, channelPbToPayload, chatHistoryPbToPayload, contactPbToPayload, postPayloadToPb, roomMemberPbToPayload, urlLinkPbToPayload, channelCardPayloadToPb, channelCardPbToPayload, miniProgramPayloadToPb, urlLinkPayloadToPb, locationPayloadToPb } from '../utils/pb-payload-helper.js'
 import { puppetCallMediaTypeToGrpc, grpcCallTypeToPuppetMedia } from '../utils/call-media-mapping.js'
 import type { MessageBroadcastTargets } from '@juzi/wechaty-puppet/dist/esm/src/schemas/message.js'
+import type { CallInviteWithMediaOptions } from '@juzi/wechaty-puppet/dist/esm/src/schemas/call.js'
 import { timeoutPromise } from 'gerror'
 import { BooleanIndicator } from 'state-switch'
 import type { Contact } from '@juzi/wechaty-puppet/types'
@@ -1179,6 +1180,38 @@ class PuppetService extends PUPPET.Puppet {
     const callId = response.getCallId()
     if (!callId) {
       throw new Error('callInvite: puppet server returned empty call_id')
+    }
+
+    return callId
+  }
+
+  override async callInviteWithMedia (
+    contactIds : string[],
+    file?      : FileBoxInterface,
+    options?   : CallInviteWithMediaOptions,
+  ): Promise<string> {
+    this.log.verbose('PuppetService', 'callInviteWithMedia(%s, %s, %s)',
+      contactIds,
+      file?.name,
+      JSON.stringify(options),
+    )
+
+    const request = new grpcPuppet.CallInviteWithMediaRequest()
+    request.setContactIdsList(contactIds)
+    if (file) {
+      request.setFileBox(await this.serializeFileBox(file))
+    }
+    request.setHangupOnFinish(options?.hangupOnFinish ?? false)
+    request.setHangupDelayMs(options?.hangupDelayMs ?? 0)
+
+    const response = await util.promisify(
+      this.grpcManager.client.callInviteWithMedia
+        .bind(this.grpcManager.client),
+    )(request)
+
+    const callId = response.getCallId()
+    if (!callId) {
+      throw new Error('callInviteWithMedia: puppet server returned empty call_id')
     }
 
     return callId
