@@ -3060,6 +3060,41 @@ function puppetImplementation (
       }
     },
 
+    callInviteWithMedia: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'callInviteWithMedia()')
+
+      try {
+        const contactIds = call.request.getContactIdsList()
+        if (contactIds.length === 0) {
+          throw new Error('callInviteWithMedia: contact_ids is required')
+        }
+
+        const jsonText       = call.request.getFileBox()
+        const file           = jsonText ? FileBoxUuid.fromJSON(jsonText) : undefined
+        const hangupOnFinish = call.request.getHangupOnFinish()
+        const hangupDelayMs  = call.request.getHangupDelayMs()
+
+        if (!file && !hangupOnFinish) {
+          throw new Error('callInviteWithMedia: hangup_on_finish must be true when file_box is empty, otherwise it is equivalent to CallInvite — use CallInvite directly')
+        }
+
+        const callId = await puppet.callInviteWithMedia(contactIds, file, {
+          hangupDelayMs,
+          hangupOnFinish,
+        })
+        if (!callId) {
+          throw new Error('callInviteWithMedia: puppet returned empty callId')
+        }
+
+        const response = new grpcPuppet.CallInviteWithMediaResponse()
+        response.setCallId(callId)
+
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('callInviteWithMedia', e, callback)
+      }
+    },
+
     callAdd: async (call, callback) => {
       log.verbose('PuppetServiceImpl', 'callAdd()')
 

@@ -6,6 +6,9 @@ import {
 }  from 'tstest'
 import getPort from 'get-port'
 
+import { FileBox } from 'file-box'
+import { puppet as grpcPuppet } from '@juzi/wechaty-grpc'
+
 import { PuppetMock } from '@juzi/wechaty-puppet-mock'
 
 import { PuppetService } from './puppet-service.js'
@@ -71,6 +74,83 @@ test('batchRoomRawPayload still rejects when every per-room fallback fails', asy
     puppet.batchRoomRawPayload([ '10006', '10007' ]),
     /batch room payload unavailable/,
     'does not turn a total upstream failure into an empty successful result',
+  )
+})
+
+let callInviteWithMediaTestId = 0
+
+function createCallInviteWithMediaPuppet (
+  callId: string,
+): { puppet: PuppetService, requestList: grpcPuppet.CallInviteWithMediaRequest[] } {
+  const puppet = new PuppetService({
+    token: `call-invite-with-media-test-${callInviteWithMediaTestId++}`,
+  })
+
+  const requestList: grpcPuppet.CallInviteWithMediaRequest[] = []
+
+  ;(puppet as any)._grpcManager = {
+    client: {
+      callInviteWithMedia: (
+        request  : grpcPuppet.CallInviteWithMediaRequest,
+        callback : (error: null | Error, response: grpcPuppet.CallInviteWithMediaResponse) => void,
+      ) => {
+        requestList.push(request)
+
+        const response = new grpcPuppet.CallInviteWithMediaResponse()
+        response.setCallId(callId)
+        callback(null, response)
+      },
+    },
+  }
+
+  return { puppet, requestList }
+}
+
+test('callInviteWithMedia maps the file and the orchestration options onto the request', async t => {
+  const { puppet, requestList } = createCallInviteWithMediaPuppet('call-id-with-file')
+
+  const file = FileBox.fromUrl('https://example.com/notice.mp3', { name: 'notice.mp3' })
+
+  const callId = await puppet.callInviteWithMedia(
+    [ 'contact-1', 'contact-2' ],
+    file,
+    { hangupDelayMs: 800, hangupOnFinish: true },
+  )
+
+  t.equal(callId, 'call-id-with-file', 'returns the call_id from the server response')
+  t.equal(requestList.length, 1, 'sends exactly one request')
+
+  const request = requestList[0]!
+  t.same(request.getContactIdsList(), [ 'contact-1', 'contact-2' ], 'maps contactIds onto contact_ids')
+  t.equal(request.getHangupOnFinish(), true, 'maps hangupOnFinish onto hangup_on_finish')
+  t.equal(request.getHangupDelayMs(), 800, 'maps hangupDelayMs onto hangup_delay_ms')
+  t.equal(
+    JSON.parse(request.getFileBox()).name,
+    'notice.mp3',
+    'serializes the FileBox onto file_box',
+  )
+})
+
+test('callInviteWithMedia leaves file_box empty and defaults the options when they are omitted', async t => {
+  const { puppet, requestList } = createCallInviteWithMediaPuppet('call-id-no-file')
+
+  const callId = await puppet.callInviteWithMedia([ 'contact-1' ])
+
+  t.equal(callId, 'call-id-no-file', 'returns the call_id from the server response')
+
+  const request = requestList[0]!
+  t.equal(request.getFileBox(), '', 'leaves file_box empty when no file is given')
+  t.equal(request.getHangupOnFinish(), false, 'defaults hangup_on_finish to false')
+  t.equal(request.getHangupDelayMs(), 0, 'defaults hangup_delay_ms to 0')
+})
+
+test('callInviteWithMedia rejects when the server returns an empty call_id', async t => {
+  const { puppet } = createCallInviteWithMediaPuppet('')
+
+  await t.rejects(
+    puppet.callInviteWithMedia([ 'contact-1' ], undefined, { hangupOnFinish: true }),
+    /empty call_id/,
+    'does not hand back an unusable empty call_id',
   )
 })
 
