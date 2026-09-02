@@ -322,6 +322,13 @@ class EventStreamManager {
           this.offCallbackList.push(off)
           break
         }
+        case 'same-net-verify': {
+          const listener = (payload: PUPPET.payloads.EventSameNetVerify) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_SAME_NET_VERIFY, payload)
+          this.puppet.on('same-net-verify', listener)
+          const off = () => this.puppet.off('same-net-verify', listener)
+          this.offCallbackList.push(off)
+          break
+        }
         case 'call': {
           const listener = (payload: PUPPET.payloads.EventCall) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_CALL, payload)
           this.puppet.on('call', listener)

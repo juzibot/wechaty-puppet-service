@@ -429,6 +429,9 @@ class PuppetService extends PUPPET.Puppet {
       case grpcPuppet.EventType.EVENT_TYPE_VERIFY_SLIDE:
         this.emit('verify-slide', JSON.parse(payload) as PUPPET.payloads.EventVerifySlide)
         break
+      case grpcPuppet.EventType.EVENT_TYPE_SAME_NET_VERIFY:
+        this.emit('same-net-verify', JSON.parse(payload) as PUPPET.payloads.EventSameNetVerify)
+        break
       case grpcPuppet.EventType.EVENT_TYPE_CALL:
         this.emit('call', JSON.parse(payload) as PUPPET.payloads.EventCall)
         break
