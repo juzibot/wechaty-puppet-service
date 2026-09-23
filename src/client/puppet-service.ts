@@ -435,6 +435,12 @@ class PuppetService extends PUPPET.Puppet {
       case grpcPuppet.EventType.EVENT_TYPE_CALL:
         this.emit('call', JSON.parse(payload) as PUPPET.payloads.EventCall)
         break
+      case grpcPuppet.EventType.EVENT_TYPE_ORG_BROADCAST_CREATED:
+        this.emit('org-broadcast-created', JSON.parse(payload) as PUPPET.payloads.EventOrgBroadcastCreated)
+        break
+      case grpcPuppet.EventType.EVENT_TYPE_ORG_BROADCAST_SENT:
+        this.emit('org-broadcast-sent', JSON.parse(payload) as PUPPET.payloads.EventOrgBroadcastSent)
+        break
 
       default:
         // Huan(202003): in default, the `type` type should be `never`, please check.
@@ -3726,6 +3732,54 @@ class PuppetService extends PUPPET.Puppet {
     }
 
     return result
+  }
+
+  override async orgBroadcastPayload (orgBroadcastId: string): Promise<PUPPET.payloads.OrgBroadcast> {
+    this.log.verbose('PuppetService', 'orgBroadcastPayload(%s)', orgBroadcastId)
+
+    const request = new grpcPuppet.OrgBroadcastPayloadRequest()
+    request.setId(orgBroadcastId)
+
+    const response = await util.promisify(
+      this.grpcManager.client.orgBroadcastPayload.bind(this.grpcManager.client),
+    )(request)
+
+    return {
+      id               : response.getId(),
+      sendType         : response.getSendType(),
+      conversationType : response.getConversationType() as PUPPET.types.OrgBroadcastConversationType,
+      creatorId        : response.getCreatorId() || undefined,
+      execTime         : response.getExecTime(),
+      status           : response.getStatus(),
+      canCancel        : response.getCanCancel(),
+      allowSelect      : response.getAllowSelect(),
+      sent             : response.getSent(),
+      totalCount       : response.getTotalCount(),
+      sentCount        : response.getSentCount(),
+      contentListJson  : response.getContentListJson(),
+      targets          : response.getTargetsList().map(targetPb => ({
+        contactId : targetPb.getContactId() || undefined,
+        roomId    : targetPb.getRoomId() || undefined,
+        status    : targetPb.getStatus() as number as PUPPET.types.OrgBroadcastTargetStatus,
+      })),
+    }
+  }
+
+  override async orgBroadcastExecute (orgBroadcastId: string, targetIds?: string[]): Promise<void> {
+    this.log.verbose('PuppetService', 'orgBroadcastExecute(%s, %s)', orgBroadcastId, targetIds?.length)
+
+    // on the wire an empty target_ids means all targets, so an explicit empty list must not pass through
+    if (targetIds && targetIds.length === 0) {
+      throw new Error('targetIds is empty, omit it to send to all targets of the org broadcast')
+    }
+
+    const request = new grpcPuppet.OrgBroadcastExecuteRequest()
+    request.setId(orgBroadcastId)
+    request.setTargetIdsList(targetIds ?? [])
+
+    await util.promisify(
+      this.grpcManager.client.orgBroadcastExecute.bind(this.grpcManager.client),
+    )(request)
   }
 
   healthCheckInterval?: NodeJS.Timeout

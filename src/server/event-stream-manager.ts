@@ -336,6 +336,20 @@ class EventStreamManager {
           this.offCallbackList.push(off)
           break
         }
+        case 'org-broadcast-created': {
+          const listener = (payload: PUPPET.payloads.EventOrgBroadcastCreated) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_ORG_BROADCAST_CREATED, payload)
+          this.puppet.on('org-broadcast-created', listener)
+          const off = () => this.puppet.off('org-broadcast-created', listener)
+          this.offCallbackList.push(off)
+          break
+        }
+        case 'org-broadcast-sent': {
+          const listener = (payload: PUPPET.payloads.EventOrgBroadcastSent) => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_ORG_BROADCAST_SENT, payload)
+          this.puppet.on('org-broadcast-sent', listener)
+          const off = () => this.puppet.off('org-broadcast-sent', listener)
+          this.offCallbackList.push(off)
+          break
+        }
         case 'reset':
           // the `reset` event should be dealed internally, should not send out
           break

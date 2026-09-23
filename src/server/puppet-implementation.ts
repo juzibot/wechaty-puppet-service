@@ -3017,6 +3017,56 @@ function puppetImplementation (
       }
     },
 
+    orgBroadcastPayload: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'orgBroadcastPayload()')
+
+      try {
+        const orgBroadcastId = call.request.getId()
+        const payload = await puppet.orgBroadcastPayload(orgBroadcastId)
+
+        const response = new grpcPuppet.OrgBroadcastPayloadResponse()
+        response.setId(payload.id)
+        response.setSendType(payload.sendType)
+        response.setConversationType(payload.conversationType)
+        response.setCreatorId(payload.creatorId ?? '')
+        response.setExecTime(payload.execTime)
+        response.setStatus(payload.status)
+        response.setCanCancel(payload.canCancel)
+        response.setAllowSelect(payload.allowSelect)
+        response.setSent(payload.sent)
+        response.setTotalCount(payload.totalCount)
+        response.setSentCount(payload.sentCount)
+        response.setContentListJson(payload.contentListJson)
+        response.setTargetsList(payload.targets.map(target => {
+          const targetPb = new grpcPuppet.OrgBroadcastTarget()
+          targetPb.setContactId(target.contactId ?? '')
+          targetPb.setRoomId(target.roomId ?? '')
+          targetPb.setStatus(target.status as number as grpcPuppet.OrgBroadcastTargetStatusMap[keyof grpcPuppet.OrgBroadcastTargetStatusMap])
+          return targetPb
+        }))
+
+        return callback(null, response)
+      } catch (e) {
+        return grpcError('orgBroadcastPayload', e, callback)
+      }
+    },
+
+    orgBroadcastExecute: async (call, callback) => {
+      log.verbose('PuppetServiceImpl', 'orgBroadcastExecute()')
+
+      try {
+        const orgBroadcastId = call.request.getId()
+        const targetIds = call.request.getTargetIdsList()
+
+        // an empty target_ids on the wire means all targets of the org broadcast
+        await puppet.orgBroadcastExecute(orgBroadcastId, targetIds.length ? targetIds : undefined)
+
+        return callback(null, new grpcPuppet.OrgBroadcastExecuteResponse())
+      } catch (e) {
+        return grpcError('orgBroadcastExecute', e, callback)
+      }
+    },
+
     download: async (call) => {
       log.verbose('PuppetServiceImpl', 'download()')
 
