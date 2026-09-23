@@ -154,6 +154,153 @@ test('callInviteWithMedia rejects when the server returns an empty call_id', asy
   )
 })
 
+let orgBroadcastTestId = 0
+
+function createOrgBroadcastPuppet (
+  payloadResponse?: grpcPuppet.OrgBroadcastPayloadResponse,
+): { puppet: PuppetService, executeRequestList: grpcPuppet.OrgBroadcastExecuteRequest[] } {
+  const puppet = new PuppetService({
+    token: `org-broadcast-test-${orgBroadcastTestId++}`,
+  })
+
+  const executeRequestList: grpcPuppet.OrgBroadcastExecuteRequest[] = []
+
+  ;(puppet as any)._grpcManager = {
+    client: {
+      orgBroadcastExecute: (
+        request  : grpcPuppet.OrgBroadcastExecuteRequest,
+        callback : (error: null | Error, response: grpcPuppet.OrgBroadcastExecuteResponse) => void,
+      ) => {
+        executeRequestList.push(request)
+        callback(null, new grpcPuppet.OrgBroadcastExecuteResponse())
+      },
+      orgBroadcastPayload: (
+        request  : grpcPuppet.OrgBroadcastPayloadRequest,
+        callback : (error: null | Error, response?: grpcPuppet.OrgBroadcastPayloadResponse) => void,
+      ) => {
+        void request
+        callback(null, payloadResponse)
+      },
+    },
+  }
+
+  return { puppet, executeRequestList }
+}
+
+test('orgBroadcastPayload maps every response field onto OrgBroadcastPayload', async t => {
+  const roomTarget = new grpcPuppet.OrgBroadcastTarget()
+  roomTarget.setRoomId('R:room-1')
+  roomTarget.setStatus(grpcPuppet.OrgBroadcastTargetStatus.ORG_BROADCAST_TARGET_STATUS_UNCONFIRMED)
+
+  const sentRoomTarget = new grpcPuppet.OrgBroadcastTarget()
+  sentRoomTarget.setRoomId('R:room-2')
+  sentRoomTarget.setStatus(grpcPuppet.OrgBroadcastTargetStatus.ORG_BROADCAST_TARGET_STATUS_SENT)
+
+  const response = new grpcPuppet.OrgBroadcastPayloadResponse()
+  response.setId('4728994241730369413')
+  response.setSendType(2)
+  response.setConversationType(1)
+  response.setCreatorId('creator-1')
+  response.setExecTime(1758600000000)
+  response.setStatus(3)
+  response.setCanCancel(true)
+  response.setAllowSelect(true)
+  response.setSent(false)
+  response.setTotalCount(7)
+  response.setSentCount(5)
+  response.setContentListJson('[{"contentType":2}]')
+  response.setTargetsList([ roomTarget, sentRoomTarget ])
+
+  const { puppet } = createOrgBroadcastPuppet(response)
+  const payload = await puppet.orgBroadcastPayload('4728994241730369413')
+
+  t.same(payload, {
+    id               : '4728994241730369413',
+    sendType         : 2,
+    conversationType : 1,
+    creatorId        : 'creator-1',
+    execTime         : 1758600000000,
+    status           : 3,
+    canCancel        : true,
+    allowSelect      : true,
+    sent             : false,
+    totalCount       : 7,
+    sentCount        : 5,
+    contentListJson  : '[{"contentType":2}]',
+    targets          : [
+      { contactId: undefined, roomId: 'R:room-1', status: 4 },
+      { contactId: undefined, roomId: 'R:room-2', status: 1 },
+    ],
+  }, 'maps every field and drops the empty contact_id of room targets')
+})
+
+test('orgBroadcastPayload maps empty creator_id and contact targets', async t => {
+  const contactTarget = new grpcPuppet.OrgBroadcastTarget()
+  contactTarget.setContactId('contact-1')
+
+  const response = new grpcPuppet.OrgBroadcastPayloadResponse()
+  response.setId('org-broadcast-2')
+  response.setTargetsList([ contactTarget ])
+
+  const { puppet } = createOrgBroadcastPuppet(response)
+  const payload = await puppet.orgBroadcastPayload('org-broadcast-2')
+
+  t.equal(payload.creatorId, undefined, 'maps an empty creator_id to undefined')
+  t.same(payload.targets, [ { contactId: 'contact-1', roomId: undefined, status: 0 } ], 'drops the empty room_id of contact targets')
+})
+
+test('orgBroadcastExecute sends all targets as an empty target_ids when targetIds is omitted', async t => {
+  const { puppet, executeRequestList } = createOrgBroadcastPuppet()
+
+  await puppet.orgBroadcastExecute('org-broadcast-1')
+
+  t.equal(executeRequestList.length, 1, 'sends exactly one request')
+  t.equal(executeRequestList[0]!.getId(), 'org-broadcast-1', 'maps orgBroadcastId onto id')
+  t.same(executeRequestList[0]!.getTargetIdsList(), [], 'leaves target_ids empty')
+})
+
+test('orgBroadcastExecute forwards the selected targets', async t => {
+  const { puppet, executeRequestList } = createOrgBroadcastPuppet()
+
+  await puppet.orgBroadcastExecute('org-broadcast-1', [ 'contact-1', 'contact-2' ])
+
+  t.same(executeRequestList[0]!.getTargetIdsList(), [ 'contact-1', 'contact-2' ], 'maps targetIds onto target_ids')
+})
+
+test('orgBroadcastExecute rejects an explicit empty targetIds instead of sending to all targets', async t => {
+  const { puppet, executeRequestList } = createOrgBroadcastPuppet()
+
+  await t.rejects(
+    puppet.orgBroadcastExecute('org-broadcast-1', []),
+    /targetIds is empty/,
+    'does not turn an empty selection into sending to all targets',
+  )
+  t.equal(executeRequestList.length, 0, 'never reaches the server')
+})
+
+test('org broadcast grpc events are emitted as puppet events', async t => {
+  const { puppet } = createOrgBroadcastPuppet()
+
+  const createdSpy = sinon.spy()
+  const sentSpy    = sinon.spy()
+  puppet.on('org-broadcast-created', createdSpy)
+  puppet.on('org-broadcast-sent', sentSpy)
+
+  const createdEvent = new grpcPuppet.EventResponse()
+  createdEvent.setType(grpcPuppet.EventType.EVENT_TYPE_ORG_BROADCAST_CREATED)
+  createdEvent.setPayload(JSON.stringify({ orgBroadcastId: 'org-broadcast-1', messageId: 'message-1' }))
+
+  const sentEvent = new grpcPuppet.EventResponse()
+  sentEvent.setType(grpcPuppet.EventType.EVENT_TYPE_ORG_BROADCAST_SENT)
+  sentEvent.setPayload(JSON.stringify({ orgBroadcastId: 'org-broadcast-1' }))
+
+  await (puppet as any).onGrpcStreamEvent(createdEvent)
+  await (puppet as any).onGrpcStreamEvent(sentEvent)
+
+  t.same(createdSpy.args[0], [ { orgBroadcastId: 'org-broadcast-1', messageId: 'message-1' } ], 'emits org-broadcast-created')
+  t.same(sentSpy.args[0], [ { orgBroadcastId: 'org-broadcast-1' } ], 'emits org-broadcast-sent')
+})
+
 test('version()', async t => {
   const puppet = new PuppetService({
     token: 'test',
