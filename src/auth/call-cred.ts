@@ -14,7 +14,7 @@ const metaGeneratorToken: (token: string) => CallMetadataGenerator = token => (_
   callback(null, meta)
 }
 
-const callCredToken = (token: string) => credentials.createFromMetadataGenerator(metaGeneratorToken(token))
+const callCredToken = (token: string): ReturnType<typeof credentials.createFromMetadataGenerator> => credentials.createFromMetadataGenerator(metaGeneratorToken(token))
 
 export {
   callCredToken,
