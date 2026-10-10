@@ -258,11 +258,18 @@ test('all three RPCs preserve adapter error codes', async t => {
   await t.rejects(service.roomMemberSnapshot('room', '1'), { code: grpc.status.RESOURCE_EXHAUSTED })
 })
 
-test('unmodified legacy mock lacking new methods returns UNIMPLEMENTED', async t => {
+test('legacy adapter without member loading methods returns UNIMPLEMENTED', async t => {
   const legacy = new PuppetMock() as unknown as PUPPET.impls.PuppetInterface
+  Object.defineProperties(legacy, {
+    roomMemberSync: { value: undefined },
+    roomMemberLoadState: { value: undefined },
+    roomMemberSnapshot: { value: undefined },
+  })
   const { service, close } = await createRpcFixture(legacy)
   t.teardown(close)
   t.equal(typeof legacy.roomMemberSync, 'undefined')
+  t.equal(typeof legacy.roomMemberLoadState, 'undefined')
+  t.equal(typeof legacy.roomMemberSnapshot, 'undefined')
   await t.rejects(service.roomMemberSync('room'), { code: grpc.status.UNIMPLEMENTED })
   await t.rejects(service.roomMemberLoadState('room'), { code: grpc.status.UNIMPLEMENTED })
   await t.rejects(service.roomMemberSnapshot('room', '1'), { code: grpc.status.UNIMPLEMENTED })
