@@ -53,7 +53,8 @@ import { packageJson }  from '../package-json.js'
 
 import { GrpcManager }  from './grpc-manager.js'
 import { PayloadStore } from './payload-store.js'
-import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPbToPayload, channelPayloadToPb, channelPbToPayload, chatHistoryPbToPayload, contactPbToPayload, postPayloadToPb, roomMemberPbToPayload, urlLinkPbToPayload, channelCardPayloadToPb, channelCardPbToPayload, miniProgramPayloadToPb, urlLinkPayloadToPb, locationPayloadToPb } from '../utils/pb-payload-helper.js'
+import { RoomCacheCoordinator, RoomCacheOperationError } from './room-cache-coordinator.js'
+import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPbToPayload, channelPayloadToPb, channelPbToPayload, chatHistoryPbToPayload, contactPbToPayload, postPayloadToPb, roomMemberPbToPayload, urlLinkPbToPayload, channelCardPayloadToPb, channelCardPbToPayload, miniProgramPayloadToPb, urlLinkPayloadToPb, locationPayloadToPb, roomPbToPayload, roomMemberLoadStatePbToPayload, roomMemberSnapshotPbToPayload, validateRoomMemberRevision, validateRoomMemberLoadState } from '../utils/pb-payload-helper.js'
 import { puppetCallMediaTypeToGrpc, grpcCallTypeToPuppetMedia } from '../utils/call-media-mapping.js'
 import type { MessageBroadcastTargets } from '@juzi/wechaty-puppet/dist/esm/src/schemas/message.js'
 import type { CallInviteWithMediaOptions } from '@juzi/wechaty-puppet/dist/esm/src/schemas/call.js'
@@ -110,6 +111,15 @@ class PuppetService extends PUPPET.Puppet {
   static override readonly VERSION = VERSION
 
   protected _payloadStore: PayloadStore
+  private readonly roomCache = new RoomCacheCoordinator()
+  private eventQueue: Promise<void> = Promise.resolve()
+  private eventEpoch = 0
+  private eventsBlocked = false
+  private failedEventSeq?: number
+  private activeEventSeq?: number
+  private pendingEventSeq?: number
+  private checkpointQueue: Promise<void> = Promise.resolve()
+  private pendingCheckpointRollback?: ReadonlyMap<string, string | undefined>
 
   private timeoutMilliseconds: number
 
@@ -183,6 +193,8 @@ class PuppetService extends PUPPET.Puppet {
 
     this.waitingForLogin = false
     this.waitingForReady = false
+    this.suspendEventProcessing()
+    this.eventsBlocked = false
 
     if (this._grpcManager) {
       this.log.warn('PuppetService', 'onStart() found this.grpc is already existed. dropped.')
@@ -204,7 +216,7 @@ class PuppetService extends PUPPET.Puppet {
     this.log.info('PuppetService', 'start() setting up bridge grpc event stream ... done')
 
     this.log.info('PuppetService', 'start() starting grpc manager...')
-    const { lastEventSeq, accountId } = await this.getMiscellaneousStoreData()
+    const { lastEventSeq, accountId } = await this.eventResumePosition()
     await grpcManager.start(lastEventSeq, accountId)
     this.log.info('PuppetService', 'start() starting grpc manager... done')
 
@@ -216,6 +228,8 @@ class PuppetService extends PUPPET.Puppet {
 
   override async onStop (): Promise<void> {
     this.log.info('PuppetService', 'onStop()')
+    this.suspendEventProcessing()
+    await this.checkpointQueue
 
     if (this._grpcManager) {
       this.log.info('PuppetService', 'onStop() stopping grpc manager ...')
@@ -256,7 +270,32 @@ class PuppetService extends PUPPET.Puppet {
     this.log.verbose('PuppetService', 'bridgeGrpcEventStream(client)')
 
     client
-      .on('data', this.onGrpcStreamEvent.bind(this) as any)
+      .on('data', (event: grpcPuppet.EventResponse): void => {
+        if (client !== this._grpcManager || this.eventsBlocked) { return }
+        const epoch = this.eventEpoch
+        this.eventQueue = this.eventQueue.then(async (): Promise<void> => {
+          if (!this.ownsEventWorker(client, epoch)) { return undefined }
+          this.activeEventSeq = event.getSeq()
+          try {
+            if (this.failedEventSeq !== undefined && event.getSeq() > this.failedEventSeq) {
+              throw new Error(`Replay skipped failed event ${this.failedEventSeq}; stream halted until reset`)
+            }
+            await this.onGrpcStreamEvent(event, epoch)
+            if (!this.ownsEventWorker(client, epoch)) { return undefined }
+            if (event.getSeq() === this.failedEventSeq) {
+              this.failedEventSeq = undefined
+            }
+          } catch (error) {
+            if (!this.ownsEventWorker(client, epoch)) {
+              this.log.error('PuppetService', 'superseded event worker failed: %s', error)
+              return undefined
+            }
+            this.haltEventStream(client, event, error)
+          }
+          if (epoch === this.eventEpoch) { this.activeEventSeq = undefined }
+          return undefined
+        }).catch((error: unknown): void => { this.reportStreamError(error) })
+      })
       .on('end', () => {
         this.log.verbose('PuppetService', 'bridgeGrpcEventStream() eventStream.on(end)')
       })
@@ -277,12 +316,108 @@ class PuppetService extends PUPPET.Puppet {
         //   this.emit('reset', { data: reason })
         // }
       })
-      .on('cancel', (...args: any[]) => {
+      .on('cancel', (...args: unknown[]) => {
         this.log.verbose('PuppetService', 'bridgeGrpcEventStream() eventStream.on(cancel), %s', JSON.stringify(args))
       })
   }
 
-  private async onGrpcStreamEvent (event: grpcPuppet.EventResponse): Promise<void> {
+  private suspendEventProcessing (): void {
+    if (this.activeEventSeq) { this.pendingEventSeq ??= this.activeEventSeq }
+    this.eventEpoch++
+    this.eventsBlocked = true
+    this.activeEventSeq = undefined
+    this.eventQueue = Promise.resolve()
+  }
+
+  private ownsEventWorker (manager: GrpcManager, epoch: number): boolean {
+    return manager === this._grpcManager && this.isEventEpochCurrent(epoch)
+  }
+
+  private isEventEpochCurrent (epoch: number): boolean {
+    return epoch === this.eventEpoch && !this.eventsBlocked
+  }
+
+  private async eventResumePosition (epoch = this.eventEpoch): Promise<{ lastEventSeq?: string, accountId?: string }> {
+    return this.withEventCheckpoint(async () => {
+      if (this.pendingCheckpointRollback) {
+        await this.restoreEventMetadata(this.pendingCheckpointRollback)
+        this.pendingCheckpointRollback = undefined
+      }
+      const lastEventSeq = await this._payloadStore.miscellaneous?.get('lastEventSeq')
+      if (epoch !== this.eventEpoch) { return { lastEventSeq } }
+      if (this.pendingEventSeq !== undefined && this.pendingEventSeq > Number(lastEventSeq ?? 0)) {
+        this.failedEventSeq ??= this.pendingEventSeq
+      }
+      this.pendingEventSeq = undefined
+      return { lastEventSeq, accountId: await this._payloadStore.miscellaneous?.get('accountId') }
+    })
+  }
+
+  private async withEventCheckpoint<Result> (operation: () => Promise<Result>): Promise<Result> {
+    const result = this.checkpointQueue.then(operation)
+    this.checkpointQueue = result.then((): undefined => undefined, (): undefined => undefined)
+    return result
+  }
+
+  private async restoreEventMetadata (previous: ReadonlyMap<string, string | undefined>): Promise<void> {
+    for (const [ key, value ] of previous) {
+      if (value === undefined) { await this._payloadStore.miscellaneous?.delete(key) } else { await this._payloadStore.miscellaneous?.set(key, value) }
+    }
+  }
+
+  private async writeEventMetadata (changes: ReadonlyMap<string, string | undefined>, epoch?: number): Promise<void> {
+    const isCurrent = (): boolean => epoch === undefined || this.isEventEpochCurrent(epoch)
+    if (!isCurrent()) { return }
+    const previous = new Map<string, string | undefined>()
+    for (const key of changes.keys()) { previous.set(key, await this._payloadStore.miscellaneous?.get(key)) }
+    if (!isCurrent()) { return }
+    try {
+      for (const [ key, value ] of changes) {
+        if (value === undefined) { await this._payloadStore.miscellaneous?.delete(key) } else { await this._payloadStore.miscellaneous?.set(key, value) }
+        if (!isCurrent()) { await this.restoreEventMetadata(previous); return }
+      }
+    } catch (error) {
+      try { await this.restoreEventMetadata(previous) } catch (rollbackError) {
+        this.pendingCheckpointRollback = previous
+        this.log.error('PuppetService', 'checkpoint rollback failed: %s', rollbackError)
+      }
+      throw error
+    }
+  }
+
+  private async commitEventCheckpoint (seq: number, timestamp: string, epoch: number): Promise<void> {
+    await this.withEventCheckpoint(async (): Promise<void> => {
+      if (!this.isEventEpochCurrent(epoch)) { return }
+      const lastEventSeq = await this._payloadStore.miscellaneous?.get('lastEventSeq')
+      if (lastEventSeq && seq <= Number(lastEventSeq) && seq !== 1) { return }
+      await this.writeEventMetadata(new Map([
+        [ 'lastEventTimestamp', timestamp ], [ 'lastEventSeq', String(seq) ],
+      ]), epoch)
+    })
+  }
+
+  private reportStreamError (error: unknown): void {
+    this.log.error('PuppetService', 'event processing failed: %s', error)
+    try {
+      this.emit('error', error)
+    } catch (listenerError) {
+      this.log.error('PuppetService', 'error listener failed: %s', listenerError)
+    }
+  }
+
+  private haltEventStream (manager: GrpcManager, event: grpcPuppet.EventResponse, error: unknown): void {
+    this.failedEventSeq ??= event.getSeq()
+    this.suspendEventProcessing()
+    try {
+      manager.stopStream()
+    } catch (stopError) {
+      this.log.error('PuppetService', 'stopping failed event stream failed: %s', stopError)
+    }
+    this.reportStreamError(error)
+  }
+
+  private async onGrpcStreamEvent (event: grpcPuppet.EventResponse, epoch = this.eventEpoch): Promise<void> {
+    if (!this.isEventEpochCurrent(epoch)) { return }
 
     const type    = event.getType()
     const payload = event.getPayload()
@@ -304,16 +439,6 @@ class PuppetService extends PUPPET.Puppet {
       this.emit('heartbeat', {
         data: `onGrpcStreamEvent(${EventTypeRev[type]})`,
       })
-    }
-
-    if (seq && !envVars.WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()) {
-      const { lastEventSeq } = await this.getMiscellaneousStoreData()
-      if (!lastEventSeq || (seq > Number(lastEventSeq) || seq === 1)) {
-        await this.setMiscellaneousStoreData({
-          lastEventSeq: seq.toString(),
-          lastEventTimestamp: timestamp,
-        })
-      }
     }
 
     switch (type) {
@@ -338,11 +463,12 @@ class PuppetService extends PUPPET.Puppet {
           const loginPayload = JSON.parse(payload) as PUPPET.payloads.EventLogin
           if (!envVars.WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()) {
             const { accountId } = await this.getMiscellaneousStoreData()
+            if (!this.isEventEpochCurrent(epoch)) { return }
             if (accountId !== loginPayload.contactId) {
-              await this.resetMiscellaneousStoreData()
+              await this.resetMiscellaneousStoreData(epoch)
               await this.setMiscellaneousStoreData({
                 accountId: loginPayload.contactId,
-              })
+              }, epoch)
             }
           }
           (
@@ -358,7 +484,7 @@ class PuppetService extends PUPPET.Puppet {
         {
           const logoutPayload = JSON.parse(payload) as PUPPET.payloads.EventLogout
           if (!envVars.WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()) {
-            await this.resetMiscellaneousStoreData()
+            await this.resetMiscellaneousStoreData(epoch)
           }
           ;(
             async () => this.logout(logoutPayload.data)
@@ -371,8 +497,21 @@ class PuppetService extends PUPPET.Puppet {
         break
       case grpcPuppet.EventType.EVENT_TYPE_DIRTY:
         await this.fastDirty(JSON.parse(payload))
+        if (!this.isEventEpochCurrent(epoch)) { return }
         this.emit('dirty', JSON.parse(payload) as PUPPET.payloads.EventDirty)
         break
+      case grpcPuppet.EventType.EVENT_TYPE_ROOM_MEMBER_LOAD: {
+        const loadPayload: unknown = JSON.parse(payload)
+        validateRoomMemberLoadState(loadPayload)
+        this.roomCache.invalidate(loadPayload.roomId)
+        await this.roomCache.run(loadPayload.roomId, async (): Promise<void> => {
+          await this._payloadStore.room?.delete(loadPayload.roomId)
+          await this._payloadStore.roomMember?.delete(loadPayload.roomId)
+        })
+        if (!this.isEventEpochCurrent(epoch)) { return }
+        this.emit('room-member-load', loadPayload)
+        break
+      }
       case grpcPuppet.EventType.EVENT_TYPE_MESSAGE:
         this.emit('message', JSON.parse(payload) as PUPPET.payloads.EventMessage)
         break
@@ -445,6 +584,9 @@ class PuppetService extends PUPPET.Puppet {
       default:
         // Huan(202003): in default, the `type` type should be `never`, please check.
         this.log.error(`eventType ${type} unsupported! data: ${payload}`)
+    }
+    if (seq && this.isEventEpochCurrent(epoch) && !envVars.WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()) {
+      await this.commitEventCheckpoint(seq, timestamp, epoch)
     }
   }
 
@@ -523,8 +665,14 @@ class PuppetService extends PUPPET.Puppet {
       [PUPPET.types.Dirty.Friendship]:   async (_: string) => {},
       [PUPPET.types.Dirty.Message]:      async (_: string) => {},
       [PUPPET.types.Dirty.Post]:         async (_: string) => {},
-      [PUPPET.types.Dirty.Room]:         async (id: string) => this._payloadStore.room?.delete(id),
-      [PUPPET.types.Dirty.RoomMember]:   async (id: string) => this._payloadStore.roomMember?.delete(id),
+      [PUPPET.types.Dirty.Room]:         async (id: string) => {
+        this.roomCache.invalidate(id)
+        return this.roomCache.run(id, async () => this._payloadStore.room?.delete(id))
+      },
+      [PUPPET.types.Dirty.RoomMember]:   async (id: string) => {
+        this.roomCache.invalidate(id)
+        return this.roomCache.run(id, async () => this._payloadStore.roomMember?.delete(id))
+      },
       [PUPPET.types.Dirty.Tag]:          async (id: string) => this._payloadStore.tag?.delete(id),
       [PUPPET.types.Dirty.TagGroup]:     async (id: string) => this._payloadStore.tagGroup?.delete(id),
       [PUPPET.types.Dirty.Unspecified]:  async (id: string) => { throw new Error('Unspecified type with id: ' + id) },
@@ -2242,9 +2390,9 @@ class PuppetService extends PUPPET.Puppet {
     id: string,
   ): Promise<PUPPET.payloads.Room> {
     this.log.verbose('PuppetService', 'roomRawPayload(%s)', id)
-
-    const cachedPayload = await this._payloadStore.room?.get(id)
-    if (cachedPayload) {
+    const generation = this.roomCache.generation(id)
+    const cachedPayload = await this.roomCache.run(id, async () => this._payloadStore.room?.get(id))
+    if (cachedPayload && generation === this.roomCache.generation(id)) {
       this.log.silly('PuppetService', 'roomRawPayload(%s) cache HIT', id)
       return cachedPayload
     }
@@ -2257,28 +2405,56 @@ class PuppetService extends PUPPET.Puppet {
         .bind(this.grpcManager.client),
     )(request)
 
-    const payload: PUPPET.payloads.Room = {
-      adminIdList   : response.getAdminIdsList(),
-      avatar        : response.getAvatar(),
-      handle        : response.getHandle(),
-      id            : response.getId(),
-      memberIdList  : response.getMemberIdsList(),
-      ownerId       : response.getOwnerId(),
-      topic         : response.getTopic(),
-      additionalInfo: response.getAdditionalInfo(),
-      remark        : response.getRoomRemark(),
-      external      : response.getExternal(),
-    }
+    const payload = roomPbToPayload(response)
 
-    const createTime = response.getCreateTime()
-    if (createTime) {
-      payload.createTime = millisecondsFromTimestamp(createTime)
-    }
-
-    await this._payloadStore.room?.set(id, payload)
+    await this.roomCache.commit(id, generation, async () => this._payloadStore.room?.set(id, payload))
     this.log.silly('PuppetService', 'roomRawPayload(%s) cache SET', id)
 
     return payload
+  }
+
+  override async roomMemberSync (
+    roomId: string, options?: PUPPET.types.RoomMemberSyncOptions,
+  ): Promise<PUPPET.payloads.RoomMemberLoadState> {
+    if (!roomId) { throw new Error('roomId is required') }
+    const request = new grpcPuppet.RoomMemberSyncRequest()
+    request.setId(roomId)
+    if (options?.force !== undefined) { request.setForce(options.force) }
+    const response = await util.promisify(
+      this.grpcManager.client.roomMemberSync.bind(this.grpcManager.client),
+    )(request)
+    return roomMemberLoadStatePbToPayload(response, roomId)
+  }
+
+  override async roomMemberLoadState (roomId: string): Promise<PUPPET.payloads.RoomMemberLoadState> {
+    if (!roomId) { throw new Error('roomId is required') }
+    const request = new grpcPuppet.RoomMemberLoadStateRequest()
+    request.setId(roomId)
+    const response = await util.promisify(
+      this.grpcManager.client.roomMemberLoadState.bind(this.grpcManager.client),
+    )(request)
+    return roomMemberLoadStatePbToPayload(response, roomId)
+  }
+
+  override async roomMemberSnapshot (
+    roomId: string, revision: string, options?: PUPPET.types.RoomMemberSnapshotOptions,
+  ): Promise<PUPPET.payloads.RoomMemberSnapshot> {
+    if (!roomId) { throw new Error('roomId is required') }
+    validateRoomMemberRevision(revision)
+    const request = new grpcPuppet.RoomMemberSnapshotRequest()
+    request.setId(roomId)
+    request.setRevision(revision)
+    if (options?.pageToken !== undefined) { request.setPageToken(options.pageToken) }
+    if (options?.pageSize !== undefined) {
+      if (!Number.isInteger(options.pageSize) || options.pageSize < 0 || options.pageSize > 500) {
+        throw new Error('pageSize must be an integer between 0 and 500')
+      }
+      request.setPageSize(options.pageSize)
+    }
+    const response = await util.promisify(
+      this.grpcManager.client.roomMemberSnapshot.bind(this.grpcManager.client),
+    )(request)
+    return roomMemberSnapshotPbToPayload(response, roomId, revision)
   }
 
   override async roomRawPayloadParser (payload: PUPPET.payloads.Room): Promise<PUPPET.payloads.Room> {
@@ -2292,10 +2468,11 @@ class PuppetService extends PUPPET.Puppet {
 
     const result = new Map<string, PUPPET.payloads.Room>()
     const roomIdSet = new Set<string>(roomIdList)
+    const generations = new Map(Array.from(roomIdSet, id => [ id, this.roomCache.generation(id) ] as const))
     const needGetSet = new Set<string>()
     for (const roomId of roomIdSet) {
-      const cachedRoomPayload = await this._payloadStore.room?.get(roomId)
-      if (cachedRoomPayload) {
+      const cachedRoomPayload = await this.roomCache.run(roomId, async () => this._payloadStore.room?.get(roomId))
+      if (cachedRoomPayload && generations.get(roomId) === this.roomCache.generation(roomId)) {
         result.set(roomId, cachedRoomPayload)
       } else {
         needGetSet.add(roomId)
@@ -2315,26 +2492,15 @@ class PuppetService extends PUPPET.Puppet {
         const payloads = response.getRoomPayloadsList()
         for (const payload of payloads) {
           const roomId = payload.getId()
-          const puppetPayload: PUPPET.payloads.Room = {
-            adminIdList   : payload.getAdminIdsList(),
-            avatar        : payload.getAvatar(),
-            handle        : payload.getHandle(),
-            id            : payload.getId(),
-            memberIdList  : payload.getMemberIdsList(),
-            ownerId       : payload.getOwnerId(),
-            topic         : payload.getTopic(),
-            additionalInfo: payload.getAdditionalInfo(),
-            remark        : payload.getRoomRemark(),
-            external      : payload.getExternal(),
-          }
-          const createTime = payload.getCreateTime()
-          if (createTime) {
-            puppetPayload.createTime = millisecondsFromTimestamp(createTime)
-          }
+          const puppetPayload = roomPbToPayload(payload)
           result.set(roomId, puppetPayload)
-          await this._payloadStore.room?.set(roomId, puppetPayload)
+          const generation = generations.get(roomId)
+          if (generation !== undefined) {
+            await this.roomCache.commit(roomId, generation, async () => this._payloadStore.room?.set(roomId, puppetPayload))
+          }
         }
       } catch (e) {
+        if (e instanceof RoomCacheOperationError) { throw e }
         this.log.error('PuppetService', 'batchRoomRawPayload(%s, %s) error: %s, use one by one method', roomIdList, needGetSet, e)
         let fallbackSuccessCount = 0
         for (const roomId of needGetSet) {
@@ -2620,11 +2786,11 @@ class PuppetService extends PUPPET.Puppet {
 
   override async roomMemberRawPayload (roomId: string, contactId: string): Promise<PUPPET.payloads.RoomMember>  {
     this.log.verbose('PuppetService', 'roomMemberRawPayload(%s, %s)', roomId, contactId)
-
-    const cachedPayload           = await this._payloadStore.roomMember?.get(roomId)
+    const generation = this.roomCache.generation(roomId)
+    const cachedPayload = await this.roomCache.run(roomId, async () => this._payloadStore.roomMember?.get(roomId))
     const cachedRoomMemberPayload = cachedPayload && cachedPayload[contactId]
 
-    if (cachedRoomMemberPayload) {
+    if (cachedRoomMemberPayload && generation === this.roomCache.generation(roomId)) {
       this.log.silly('PuppetService', 'roomMemberRawPayload(%s, %s) cache HIT', roomId, contactId)
       return cachedRoomMemberPayload
     }
@@ -2649,9 +2815,9 @@ class PuppetService extends PUPPET.Puppet {
       joinTime      : response.getJoinTime(),
     }
 
-    await this._payloadStore.roomMember?.set(roomId, {
-      ...cachedPayload,
-      [contactId]: payload,
+    await this.roomCache.commit(roomId, generation, async (): Promise<void> => {
+      const current = await this._payloadStore.roomMember?.get(roomId)
+      await this._payloadStore.roomMember?.set(roomId, { ...current, [contactId]: payload })
     })
     this.log.silly('PuppetService', 'roomMemberRawPayload(%s, %s) cache SET', roomId, contactId)
 
@@ -2666,11 +2832,13 @@ class PuppetService extends PUPPET.Puppet {
 
   override async batchRoomMemberRawPayload (roomId: string, contactIdList: string[]): Promise<Map<string, PUPPET.payloads.RoomMember>> {
     this.log.verbose('PuppetService', 'batchRoomMemberRawPayload(%s, %s)', roomId, contactIdList)
+    const generation = this.roomCache.generation(roomId)
 
     const result = new Map<string, PUPPET.payloads.RoomMember>()
     const contactIdSet = new Set<string>(contactIdList)
     let needGetSet = new Set<string>()
-    const cachedPayload = await this._payloadStore.roomMember?.get(roomId) || {}
+    const cached = await this.roomCache.run(roomId, async () => this._payloadStore.roomMember?.get(roomId))
+    const cachedPayload = generation === this.roomCache.generation(roomId) ? cached || {} : {}
     if (Object.keys(cachedPayload).length > 0) {
       for (const contactId of contactIdSet) {
         const cachedRoomMemberPayload = cachedPayload[contactId]
@@ -2696,14 +2864,19 @@ class PuppetService extends PUPPET.Puppet {
         )(request)
 
         const payloads = response.getMemberPayloadsList()
+        const fetched: Record<string, PUPPET.payloads.RoomMember> = {}
         for (const payload of payloads) {
           const contactId = payload.getId()
           const puppetPayload = roomMemberPbToPayload(payload)
           result.set(contactId, puppetPayload)
-          cachedPayload[contactId] = puppetPayload
+          fetched[contactId] = puppetPayload
         }
-        await this._payloadStore.roomMember?.set(roomId, cachedPayload)
+        await this.roomCache.commit(roomId, generation, async (): Promise<void> => {
+          const current = await this._payloadStore.roomMember?.get(roomId)
+          await this._payloadStore.roomMember?.set(roomId, { ...current, ...fetched })
+        })
       } catch (e) {
+        if (e instanceof RoomCacheOperationError) { throw e }
         this.log.error('PuppetService', 'batchRoomMemberRawPayload(%s, %s) error: %s, use one by one method', roomId, needGetSet, e)
         for (const contactId of needGetSet) {
           const payload = await this.roomMemberRawPayload(roomId, contactId)
@@ -3800,28 +3973,35 @@ class PuppetService extends PUPPET.Puppet {
   private waitingForReady = false
   private reconnectIndicator: BooleanIndicator
   override async reset (): Promise<void> {
-    if (!this._grpcManager) {
-      this.log.warn('PuppetService', 'grpc manager not constructed, perform regular reset')
-      return super.reset()
-    }
-
-    if (!this.isLoggedIn) {
-      this.log.warn('PuppetService', 'puppet not logged in, perform regular reset')
-      return super.reset()
-    }
-
     if (this.reconnectIndicator.value()) {
       this.log.warn('PuppetService', 'already trying to reconnect, pass this one')
       return
     }
-
     this.reconnectIndicator.value(true)
+    this.suspendEventProcessing()
+    const epoch = this.eventEpoch
+    const manager = this._grpcManager
+    try {
+      await this.checkpointQueue
+      if (epoch !== this.eventEpoch) { return }
+      if (!manager || !this.isLoggedIn) {
+        this.log.warn('PuppetService', 'grpc manager unavailable or puppet logged out, perform regular reset')
+        return await super.reset()
+      }
+      await this.resetEventStream(manager, epoch)
+    } finally {
+      this.reconnectIndicator.value(false)
+    }
+  }
 
-    this.grpcManager.stopStream()
-    const { lastEventSeq, accountId } = await this.getMiscellaneousStoreData()
+  private async resetEventStream (manager: GrpcManager, epoch: number): Promise<void> {
+    manager.stopStream()
+    const { lastEventSeq, accountId } = await this.eventResumePosition(epoch)
+    if (epoch !== this.eventEpoch || manager !== this._grpcManager) { return }
 
     const onLoginResolve = (resolve: () => void) => {
       const onLogin = (event: grpcPuppet.EventResponse) => {
+        if (!this.ownsEventWorker(manager, epoch)) { return }
         const type = event.getType()
         const payload = event.getPayload()
         if (this.waitingForLogin && type === grpcPuppet.EventType.EVENT_TYPE_LOGIN) {
@@ -3837,6 +4017,7 @@ class PuppetService extends PUPPET.Puppet {
     }
     const onReadyResolve = (resolve: () => void) => {
       const onReady = (event: grpcPuppet.EventResponse) => {
+        if (!this.ownsEventWorker(manager, epoch)) { return }
         const type = event.getType()
         if (this.waitingForReady && type === grpcPuppet.EventType.EVENT_TYPE_READY) {
           this.waitingForReady = false
@@ -3846,59 +4027,68 @@ class PuppetService extends PUPPET.Puppet {
       return onReady
     }
 
-    let onLogin: ReturnType<typeof onLoginResolve>
-    let onReady: ReturnType<typeof onReadyResolve>
+    const removeListeners: (() => void)[] = []
     const loginFuture = new Promise<void>(resolve => {
-      onLogin = onLoginResolve(resolve)
-      this.grpcManager.on('data', onLogin)
+      const onLogin = onLoginResolve(resolve)
+      manager.on('data', onLogin)
+      removeListeners.push((): void => { manager.off('data', onLogin) })
     })
     const readyFuture = new Promise<void>(resolve => {
-      onReady = onReadyResolve(resolve)
-      this.grpcManager.on('data', onReady)
+      const onReady = onReadyResolve(resolve)
+      manager.on('data', onReady)
+      removeListeners.push((): void => { manager.off('data', onReady) })
     })
 
     const startTime = Date.now()
     const timeoutMilliseconds = this.timeoutMilliseconds / 10 // 2 min default, 4 min xiaoju-bot
-    while (true) {
-      try {
-        await timeoutPromise(this.grpcManager.startStream(lastEventSeq, accountId), 30 * 1000)
-        break
-      } catch (e) {
-        if (Date.now() - startTime < timeoutMilliseconds) {
-          this.log.warn('failed to start stream, will try again in 15 seconds')
-          await new Promise(resolve => {
-            setTimeout(resolve, 5000)
-          })
-        } else {
-          this.log.warn('failed to start stream and reaches timeout, will perform regular reset')
-          this.reconnectIndicator.value(false)
-          return super.reset()
-        }
-      }
-    }
-
     this.waitingForLogin = true
     this.waitingForReady = true
+    this.eventsBlocked = false
+    try {
+      while (true) {
+        try {
+          if (!this.ownsEventWorker(manager, epoch)) { return }
+          await timeoutPromise(manager.startStream(lastEventSeq, accountId), 30 * 1000)
+          if (!this.ownsEventWorker(manager, epoch)) { return }
+          break
+        } catch (e) {
+          if (!this.ownsEventWorker(manager, epoch)) { return }
+          if (Date.now() - startTime < timeoutMilliseconds) {
+            this.log.warn('failed to start stream, will try again in 15 seconds')
+            await new Promise(resolve => {
+              setTimeout(resolve, 5000)
+            })
+          } else {
+            this.log.warn('failed to start stream and reaches timeout, will perform regular reset')
+            return super.reset()
+          }
+        }
+      }
 
-    try {
-      await timeoutPromise(loginFuture, ResetLoginTimeout)
-        .finally(() => {
-          this.waitingForLogin = false
-          this.reconnectIndicator.value(false)
-          this.grpcManager.off('data', onLogin)
-        })
-    } catch (e) {
-      this.log.warn('PuppetService', 'waiting for event reset login error, will perform regular reset')
-      return super.reset()
-    }
-    try {
-      await timeoutPromise(readyFuture, ResetReadyTimeout)
-        .finally(() => {
-          this.waitingForReady = false
-          this.grpcManager.off('data', onReady)
-        })
-    } catch (e) {
-      this.log.warn('PuppetService', 'waiting for event reset ready error, will do nothing')
+      try {
+        await timeoutPromise(loginFuture, ResetLoginTimeout)
+          .finally(() => {
+            if (epoch === this.eventEpoch) { this.waitingForLogin = false }
+          })
+      } catch (e) {
+        if (!this.ownsEventWorker(manager, epoch)) { return }
+        this.log.warn('PuppetService', 'waiting for event reset login error, will perform regular reset')
+        return super.reset()
+      }
+      try {
+        await timeoutPromise(readyFuture, ResetReadyTimeout)
+          .finally(() => {
+            if (epoch === this.eventEpoch) { this.waitingForReady = false }
+          })
+      } catch (e) {
+        this.log.warn('PuppetService', 'waiting for event reset ready error, will do nothing')
+      }
+    } finally {
+      for (const removeListener of removeListeners) { removeListener() }
+      if (epoch === this.eventEpoch) {
+        this.waitingForLogin = false
+        this.waitingForReady = false
+      }
     }
   }
 
@@ -3929,28 +4119,24 @@ class PuppetService extends PUPPET.Puppet {
     lastEventSeq?: string,
     lastEventTimestamp?: string,
     accountId?: string,
-  }) {
+  }, epoch?: number): Promise<void> {
     if (envVars.WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()) {
       return
     }
-    if (typeof data.lastEventSeq !== 'undefined') {
-      await this._payloadStore.miscellaneous?.set('lastEventSeq', data.lastEventSeq)
-    }
-    if (typeof data.lastEventTimestamp !== 'undefined') {
-      await this._payloadStore.miscellaneous?.set('lastEventTimestamp', data.lastEventTimestamp)
-    }
-    if (typeof data.accountId !== 'undefined') {
-      await this._payloadStore.miscellaneous?.set('accountId', data.accountId)
-    }
+    const changes = new Map<string, string | undefined>()
+    if (data.lastEventTimestamp !== undefined) { changes.set('lastEventTimestamp', data.lastEventTimestamp) }
+    if (data.accountId !== undefined) { changes.set('accountId', data.accountId) }
+    if (data.lastEventSeq !== undefined) { changes.set('lastEventSeq', data.lastEventSeq) }
+    await this.withEventCheckpoint(async (): Promise<void> => this.writeEventMetadata(changes, epoch))
   }
 
-  async resetMiscellaneousStoreData () {
+  async resetMiscellaneousStoreData (epoch?: number): Promise<void> {
     if (envVars.WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()) {
       return
     }
-    await this._payloadStore.miscellaneous?.delete('lastEventSeq')
-    await this._payloadStore.miscellaneous?.delete('lastEventTimestamp')
-    await this._payloadStore.miscellaneous?.delete('accountId')
+    await this.withEventCheckpoint(async (): Promise<void> => this.writeEventMetadata(new Map([
+      [ 'lastEventSeq', undefined ], [ 'lastEventTimestamp', undefined ], [ 'accountId', undefined ],
+    ]), epoch))
   }
 
 }

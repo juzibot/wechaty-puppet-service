@@ -23,6 +23,7 @@ import {
 }                                   from '@juzi/wechaty-grpc'
 
 import * as PUPPET from '@juzi/wechaty-puppet'
+import { validateRoomMemberLoadState } from '../utils/pb-payload-helper.js'
 
 import { log, NO_LOG_EVENTS } from '../config.js'
 import {
@@ -243,6 +244,20 @@ class EventStreamManager {
           this.puppet.on('room-invite', listener)
           const off = () => this.puppet.off('room-invite', listener)
           this.offCallbackList.push(off)
+          break
+        }
+        case 'room-member-load': {
+          const listener = (payload: PUPPET.payloads.EventRoomMemberLoad): void => {
+            try {
+              validateRoomMemberLoadState(payload)
+              this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_ROOM_MEMBER_LOAD, payload)
+            } catch (error) {
+              log.error('EventStreamManager', 'room-member-load rejected: %s', error)
+              this.puppet.emit('error', error)
+            }
+          }
+          this.puppet.on('room-member-load', listener)
+          this.offCallbackList.push(() => this.puppet.off('room-member-load', listener))
           break
         }
         case 'room-join': {
