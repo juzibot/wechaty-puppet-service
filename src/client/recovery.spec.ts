@@ -14,6 +14,8 @@ class RecoveryTestService extends PuppetService {
   readonly loginAccounts: string[] = []
   protected override hookPayloadStore (): void {}
   override async login (contactId: string): Promise<void> { this.loginAccounts.push(contactId) }
+  get eventMetadataStore (): { get(key: string): Promise<string | undefined> } | undefined { return this._payloadStore.miscellaneous }
+  async destroyTestStore (): Promise<void> { await this._payloadStore.destroy() }
 
 }
 
@@ -520,5 +522,74 @@ test('suspended LOGIN persistence cannot log in after budget expiry, stop or epo
       t.same(service.loginAccounts, [], `${mode}: no late login side effect`)
       t.equal(metadata.get('accountId'), undefined, `${mode}: no account identity persisted`)
     } finally { release(); if (!stopping) { await service.onStop() }; server.forceShutdown() }
+  }
+})
+
+test('recovery cursor persists with event cache disabled while legacy clients keep caching disabled', async t => {
+  const previous = process.env['WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE']
+  process.env['WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE'] = 'true'
+  try {
+    for (const enabled of [ true, false ]) {
+      const server = new grpc.Server()
+      const streams: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>[] = []
+      server.addService(puppet.PuppetService, {
+        event: (call: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>): void => {
+          streams.push(call)
+          call.write(response(puppet.EventType.EVENT_TYPE_HEARTBEAT, {}))
+        },
+        start: (_call: grpc.ServerUnaryCall<puppet.StartRequest, puppet.StartResponse>, callback: grpc.sendUnaryData<puppet.StartResponse>): void => { callback(null, new puppet.StartResponse()) },
+        stop: (_call: grpc.ServerUnaryCall<puppet.StopRequest, puppet.StopResponse>, callback: grpc.sendUnaryData<puppet.StopResponse>): void => { callback(null, new puppet.StopResponse()) },
+      })
+      const port = await new Promise<number>((resolve, reject): void => {
+        server.bindAsync('127.0.0.1:0', grpc.ServerCredentials.createInsecure(), (error, value): void => { error ? reject(error) : resolve(value) })
+      })
+      const service = new RecoveryTestService({ token: `insecure_cache-disabled-${enabled}-${process.pid}`, endpoint: `127.0.0.1:${port}`, tls: { disable: true }, recovery: { enabled } })
+      const errors: unknown[] = []
+      service.on('error', (error: unknown): void => { errors.push(error) })
+      let messages = 0
+      service.on('message', (): void => { messages++ })
+      try {
+        await service.onStart()
+        assert.equal(streams[0]!.request.getReplayBarrier(), enabled)
+        streams[0]!.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'account' }))
+        streams[0]!.write(response(puppet.EventType.EVENT_TYPE_READY, {}))
+        streams[0]!.write(response(puppet.EventType.EVENT_TYPE_MESSAGE, { messageId: 'seq-1' }, 1))
+        await until((): boolean => messages === 1)
+        if (enabled) {
+          streams[0]!.write(response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'account', throughSeq: 1 }))
+          await until((): boolean => service.recoveryState.status === 'ready')
+          t.equal((await service.getMiscellaneousStoreData()).lastEventSeq, '1', 'recovery persists seq 1 even when event cache is disabled')
+          t.equal((await service.getMiscellaneousStoreData()).accountId, 'account', 'recovery persists account identity')
+          streams[0]!.end()
+          await until((): boolean => service.recoveryState.status === 'recovering')
+          await until((): boolean => streams.length === 2)
+          t.equal(streams[1]!.request.getSeq(), 1, 'reconnect resumes the durable cursor, not zero')
+          t.equal(streams[1]!.request.getAccountId(), 'account', 'reconnect retains the account binding')
+          streams[1]!.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'account' }))
+          streams[1]!.write(response(puppet.EventType.EVENT_TYPE_READY, {}))
+          streams[1]!.write(response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'account', throughSeq: 1 }))
+          await until((): boolean => service.recoveryState.status === 'ready')
+          t.equal(service.recoveryState.status, 'ready', 'durable throughSeq 1 unlocks the reconnected stream')
+        } else {
+          await service.setMiscellaneousStoreData({ accountId: 'ignored', lastEventSeq: '99' })
+          t.equal(service.eventMetadataStore, undefined, 'legacy disabled-cache clients do not allocate a metadata store')
+          t.same(await service.getMiscellaneousStoreData(), { accountId: '', lastEventSeq: undefined, lastEventTimestamp: undefined }, 'legacy metadata operations remain disabled')
+        }
+        t.same(errors, [], 'neither mode masks a stream or persistence error')
+      } finally { await service.onStop(); await service.destroyTestStore(); server.forceShutdown() }
+    }
+    const service = new RecoveryTestService({ token: `insecure_cursor-read-error-${process.pid}`, recovery: { enabled: true } })
+    service.on('error', (): void => {})
+    try {
+      assert.ok(service.eventMetadataStore, 'recovery must allocate cursor storage independently of event caching')
+      const failure = new Error('external cursor storage read failed')
+      const read = sinon.stub(service.eventMetadataStore, 'get').rejects(failure)
+      try {
+        await assert.rejects(service.onStart(), failure)
+        t.equal(service.grpcManager.eventStream, undefined, 'failed cursor read never opens a fabricated seq-zero stream')
+      } finally { read.restore() }
+    } finally { await service.onStop(); await service.destroyTestStore() }
+  } finally {
+    if (previous === undefined) { delete process.env['WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE'] } else { process.env['WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE'] = previous }
   }
 })

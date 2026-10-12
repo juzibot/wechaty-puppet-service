@@ -133,6 +133,10 @@ class PuppetService extends PUPPET.Puppet {
 
   get recoveryState (): RecoveryState { return this.recovery.state }
 
+  private get eventMetadataEnabled (): boolean {
+    return this.recovery.enabled || !envVars.WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()
+  }
+
   withRecoveryRequestContext<Result> (context: RecoveryRequestContext, operation: () => Result): Result {
     return withRecoveryRequestContext(context, operation)
   }
@@ -164,6 +168,7 @@ class PuppetService extends PUPPET.Puppet {
     this._payloadStore = new PayloadStore({
       token  : envVars.WECHATY_PUPPET_SERVICE_TOKEN(this.options.token),
       logger : this.options.logger,
+      recoveryCursor: this.recovery.enabled,
     })
 
     this.hookPayloadStore()
@@ -392,6 +397,9 @@ class PuppetService extends PUPPET.Puppet {
 
   private async eventResumePosition (epoch = this.eventEpoch): Promise<{ lastEventSeq?: string, accountId?: string }> {
     return this.withEventCheckpoint(async () => {
+      if (this.recovery.enabled && !this._payloadStore.miscellaneous) {
+        throw new Error('Recovery cursor storage is unavailable')
+      }
       if (this.pendingCheckpointRollback) {
         await this.restoreEventMetadata(this.pendingCheckpointRollback)
         this.pendingCheckpointRollback = undefined
@@ -526,7 +534,7 @@ class PuppetService extends PUPPET.Puppet {
             this.log.warn('PuppetService', 'this login event is ignored because the it is expected by event stream reconnect and this puppet is already logged in')
             return
           }
-          if (!envVars.WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()) {
+          if (this.eventMetadataEnabled) {
             const { accountId } = await this.getMiscellaneousStoreData()
             if (!this.isEventEpochCurrent(epoch)) { return }
             if (accountId !== loginPayload.contactId) {
@@ -551,7 +559,7 @@ class PuppetService extends PUPPET.Puppet {
       case grpcPuppet.EventType.EVENT_TYPE_LOGOUT:
         {
           const logoutPayload = JSON.parse(payload) as PUPPET.payloads.EventLogout
-          if (!envVars.WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()) {
+          if (this.eventMetadataEnabled) {
             await this.resetMiscellaneousStoreData(epoch)
           }
           ;(
@@ -677,7 +685,7 @@ class PuppetService extends PUPPET.Puppet {
         // Huan(202003): in default, the `type` type should be `never`, please check.
         this.log.error(`eventType ${type} unsupported! data: ${payload}`)
     }
-    if (seq && this.isEventEpochCurrent(epoch) && !envVars.WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()) {
+    if (seq && this.isEventEpochCurrent(epoch) && this.eventMetadataEnabled) {
       await this.commitEventCheckpoint(seq, timestamp, epoch)
     }
   }
@@ -4241,7 +4249,7 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   async getMiscellaneousStoreData () {
-    if (envVars.WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()) {
+    if (!this.eventMetadataEnabled) {
       return {
         lastEventSeq: undefined,
         lastEventTimestamp: undefined,
@@ -4250,7 +4258,7 @@ class PuppetService extends PUPPET.Puppet {
     }
     const lastEventTimestamp = await this._payloadStore.miscellaneous?.get('lastEventTimestamp')
     let lastEventSeq = await this._payloadStore.miscellaneous?.get('lastEventSeq')
-    if ((Date.now() - Number(lastEventTimestamp || 0)) > this.timeoutMilliseconds) {
+    if (!this.recovery.enabled && (Date.now() - Number(lastEventTimestamp || 0)) > this.timeoutMilliseconds) {
       this.log.warn(`last event was ${(Date.now() - Number(lastEventTimestamp || 0)) / 1000} seconds ago, will not request event cache`)
       lastEventSeq = undefined
     }
@@ -4268,7 +4276,7 @@ class PuppetService extends PUPPET.Puppet {
     lastEventTimestamp?: string,
     accountId?: string,
   }, epoch?: number): Promise<void> {
-    if (envVars.WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()) {
+    if (!this.eventMetadataEnabled) {
       return
     }
     const changes = new Map<string, string | undefined>()
@@ -4279,7 +4287,7 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   async resetMiscellaneousStoreData (epoch?: number): Promise<void> {
-    if (envVars.WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()) {
+    if (!this.eventMetadataEnabled) {
       return
     }
     await this.withEventCheckpoint(async (): Promise<void> => this.writeEventMetadata(new Map([
