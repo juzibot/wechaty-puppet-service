@@ -40,6 +40,7 @@ const { major, minor } = semverPkg
 interface PayloadStoreOptions {
   token   : string
   logger? : LoggerLike
+  recoveryCursor?: boolean
 }
 
 interface StoreRoomMemberPayload {
@@ -79,7 +80,7 @@ class PayloadStore {
       fs.mkdirSync(this.storeDir, { recursive: true })
     }
 
-    if (!WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()) {
+    if (this.options.recoveryCursor || !WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()) {
       this.miscellaneous = new FlashStore(path.join(this.storeDir, 'miscellaneous')) // account-free data
     }
   }

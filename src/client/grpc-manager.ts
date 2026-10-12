@@ -30,9 +30,6 @@ import {
   puppet,
 }                     from '@juzi/wechaty-grpc'
 import {
-  timeoutPromise,
-}                     from 'gerror'
-import {
   WechatyToken,
   WechatyResolver,
 }                     from 'wechaty-token'
@@ -50,6 +47,7 @@ import {
 }                                         from '../auth/ca.js'
 
 import type { PuppetServiceOptions } from './puppet-service.js'
+import type { RecoveryGate } from './recovery.js'
 
 /**
  * Huan(202108): register `wechaty` schema for gRPC service discovery
@@ -83,7 +81,7 @@ class GrpcManager extends EventEmitter {
 
   private readonly _log: LoggerLike
 
-  constructor (private options: PuppetServiceOptions) {
+  constructor (private options: PuppetServiceOptions, private readonly recovery?: RecoveryGate) {
     super()
     this._log = options.logger ?? log
     this._log.verbose('GrpcManager', 'constructor(%s)', JSON.stringify(options))
@@ -202,17 +200,9 @@ class GrpcManager extends EventEmitter {
       this._log.verbose('GrpcManager', 'stop() stop client ... done')
     } catch (e) {
       this.emit('error', e)
-    }
-
-    /**
-     * 3. Destroy grpc client
-     */
-    try {
-      this._log.verbose('GrpcManager', 'stop() destroy client ...')
+    } finally {
+      // Even a throwing error listener must not prevent channel destruction.
       this.destroyClient()
-      this._log.verbose('GrpcManager', 'stop() destroy client ... done')
-    } catch (e) {
-      this.emit('error', e)
     }
 
     this._log.verbose('GrpcManager', 'stop() ... done')
@@ -242,6 +232,7 @@ class GrpcManager extends EventEmitter {
     const clientOptions: grpc.ChannelOptions = {
       ...GRPC_OPTIONS,
       'grpc.ssl_target_name_override': this.serverName,
+      ...(this.recovery?.enabled ? { interceptors: [ this.recovery.interceptor ], 'grpc.enable_retries': 0 } : {}),
     }
 
     {
@@ -294,6 +285,9 @@ class GrpcManager extends EventEmitter {
   }
 
   async startStream (lastEventSeq?: string, accountId?: string): Promise<void> {
+    if (this.recovery?.enabled) {
+      return this.startRecoveryStream(lastEventSeq, accountId)
+    }
     this._log.verbose('GrpcManager', 'startStream()')
 
     if (this.eventStream) {
@@ -345,8 +339,8 @@ class GrpcManager extends EventEmitter {
       /**
        * Any of the following events will be emitted means that there's a problem.
        */
-      .once('cancel', reject)
-      .once('end',    reject)
+      .once('cancel', (): void => { reject(new Error('Event stream cancelled before connection')) })
+      .once('end',    (): void => { reject(new Error('Event stream ended before connection')) })
       .once('error',  reject)
       /**
        * The `status` event is import when we connect a gRPC stream.
@@ -361,9 +355,7 @@ class GrpcManager extends EventEmitter {
        */
       .once('status',   status => {
         // console.info('once(status)', status)
-        status.code === GrpcStatus.OK
-          ? resolve()
-          : reject(new Error('once(status)'))
+        reject(new Error(status.code === GrpcStatus.OK ? 'Event stream ended before connection' : `Event stream failed: ${status.details}`))
       }),
       /**
        * Huan(202108): `metadata` event will be fired
@@ -381,10 +373,15 @@ class GrpcManager extends EventEmitter {
      * So we need a timeout for compatible with those providers
      */
     this._log.verbose('GrpcManager', 'startStream() grpc -> event peeking data or timeout ...')
+    let peekTimer: NodeJS.Timeout | undefined
     try {
-      await timeoutPromise(future, 5 * 1000)  // 5 seconds
-    } catch (_) {
-      this._log.verbose('GrpcManager', 'startStream() grpc -> event peeking data or timeout ... timeout')
+      // Legacy providers may omit the initial heartbeat, but explicit stream failures are never readiness.
+      await Promise.race([ future, new Promise<void>(resolve => { peekTimer = setTimeout(resolve, 5000) }) ])
+    } catch (error) {
+      eventStream.cancel()
+      throw error
+    } finally {
+      clearTimeout(peekTimer)
     }
     this._log.verbose('GrpcManager', 'startStream() grpc -> event peeking data or timeout ... data peeked')
 
@@ -420,6 +417,43 @@ class GrpcManager extends EventEmitter {
     this._log.verbose('GrpcManager', 'startStream() ... done')
   }
 
+  private async startRecoveryStream (lastEventSeq?: string, accountId?: string): Promise<void> {
+    this.stopStream()
+    const request = new puppet.EventRequest()
+    request.setReplayBarrier(true)
+    if (lastEventSeq) { request.setSeq(Number(lastEventSeq)) }
+    if (accountId) { request.setAccountId(accountId) }
+    const stream = this.client.event(request)
+    this.eventStream = stream
+    await new Promise<void>((resolve, reject): void => {
+      let connected = false
+      const timer = setTimeout((): void => {
+        if (connected) { return }
+        reject(new Error('Event stream connection timed out'))
+        if (this.eventStream === stream) { this.stopStream() }
+      }, 5000)
+      const fail = (error: unknown): void => {
+        clearTimeout(timer)
+        if (this.eventStream !== stream) { return }
+        reject(error instanceof Error ? error : new Error('Event stream ended'))
+        this.emit('error', error instanceof Error ? error : new Error('Event stream ended'))
+      }
+      stream.on('data', (event: puppet.EventResponse): void => {
+        if (this.eventStream !== stream) { return }
+        connected = true
+        clearTimeout(timer)
+        resolve()
+        this.emit('data', event)
+      })
+      stream.on('error', fail)
+      stream.on('end', (): void => { fail(new Error('Event stream ended')) })
+      stream.on('status', (status: grpc.StatusObject): void => {
+        if (status.code !== grpc.status.OK) { fail(new Error(status.details)) }
+      })
+      stream.once('close', (): void => { clearTimeout(timer); if (!connected) { reject(new Error('Event stream closed')) } })
+    })
+  }
+
   stopStream (): void {
     this._log.verbose('GrpcManager', 'stopStream()')
 
@@ -443,6 +477,7 @@ class GrpcManager extends EventEmitter {
 
     try {
       this._log.verbose('GrpcManager', 'stopStream() destroying event stream ...')
+      if (this.recovery?.enabled) { eventStream.cancel() }
       eventStream.destroy()
       this._log.verbose('GrpcManager', 'stopStream() destroying event stream ... done')
     } catch (e) {
