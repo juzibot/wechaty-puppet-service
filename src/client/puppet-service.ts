@@ -765,7 +765,12 @@ class PuppetService extends PUPPET.Puppet {
       [PUPPET.types.Dirty.Contact]:      async (id: string) => {
         // Invalidate the base LRU before consumers reload this contact.
         this.onDirty({ payloadType: PUPPET.types.Dirty.Contact, payloadId: id })
-        return this._payloadStore.contact?.delete(id)
+        try {
+          return await this._payloadStore.contact?.delete(id)
+        } finally {
+          // Discard any stale value refilled while persistent deletion was pending.
+          this.onDirty({ payloadType: PUPPET.types.Dirty.Contact, payloadId: id })
+        }
       },
       [PUPPET.types.Dirty.Friendship]:   async (_: string) => {},
       [PUPPET.types.Dirty.Message]:      async (_: string) => {},

@@ -148,3 +148,79 @@ test('contact dirty remains idempotent with the normal base invalidation listene
   t.notOk(service.cache.contact?.has(id))
   t.same(service.cache.room?.get(room.id), room, 'contact invalidation does not affect room caches')
 })
+
+for (const withBaseListener of [ false, true ]) {
+  for (const deletionFails of [ false, true ]) {
+    test(`contact dirty clears concurrent refills (base listener=${withBaseListener}, deletion fails=${deletionFails})`, async t => {
+      const service = await fixture(operation => t.teardown(operation))
+      const id = 'concurrent-contact'
+      const previous = contact(id)
+      const other = contact('other-contact', true, 'other-external-id')
+      service.cache.contact?.set(id, previous)
+      service.cache.contact?.set(other.id, other)
+      const persisted = new Map([ [ id, previous ] ])
+      let release: () => void = () => { throw new Error('Missing deletion resolver') }
+      let started: () => void = () => { throw new Error('Missing start resolver') }
+      const pending = new Promise<void>(resolve => { release = resolve })
+      const deleting = new Promise<void>(resolve => { started = resolve })
+      setStore(service, {
+        get: async (key: string) => persisted.get(key),
+        set: async (key: string, value: PUPPET.payloads.Contact) => { persisted.set(key, value) },
+        delete: async (key: string) => {
+          started()
+          await pending
+          if (deletionFails) { throw new Error('contact deletion failed') }
+          return persisted.delete(key)
+        },
+      })
+      let reads = 0
+      const response = new grpcPuppet.ContactPayloadResponse()
+      response.setId(id)
+      response.setName('contact')
+      response.setType(PUPPET.types.Contact.Individual)
+      response.setFriend(true)
+      response.setWeixin('fresh-external-id')
+      Object.defineProperty(service, 'grpcManager', {
+        value: {
+          client: {
+            contactPayload: (_request: unknown, callback: (error: null, payload: grpcPuppet.ContactPayloadResponse) => void) => {
+              reads++
+              callback(null, response)
+            },
+          },
+        },
+      })
+      if (withBaseListener) { service.on('dirty', service.onDirty.bind(service)) }
+      let errors = 0
+      service.on('error', () => {
+        errors++
+        t.notOk(service.cache.contact?.has(id), 'the refill is cleared before reporting deletion failure')
+      })
+      let notified = false
+      service.on('dirty', () => {
+        notified = true
+        t.notOk(service.cache.contact?.has(id), 'the refill is cleared before dirty notification')
+      })
+
+      const processing = dirty(service, id)
+      await deleting
+      t.notOk(notified, 'dirty waits for persistent deletion')
+      t.same(await service.contactPayload(id), previous, 'a concurrent read can still see the old persistent value')
+      t.ok(service.cache.contact?.has(id), 'the concurrent read repopulates memory while deletion waits')
+      t.equal(reads, 0, 'the concurrent read used the persistent cache')
+      release()
+      await processing
+
+      t.ok(notified, 'the original dirty notification remains observable')
+      t.equal(errors, deletionFails ? 1 : 0, 'the original error event is preserved')
+      t.notOk(service.cache.contact?.has(id), 'the completed dirty operation leaves no stale refill')
+      t.same(service.cache.contact?.get(other.id), other, 'another contact remains cached')
+      if (!deletionFails) {
+        const refreshed = await service.contactPayload(id)
+        t.equal(refreshed.friend, true, 'the next read gets the new friend state')
+        t.equal(refreshed.handle, 'fresh-external-id', 'the next read gets the external user ID')
+        t.equal(reads, 1, 'the next read reaches the upstream RPC')
+      }
+    })
+  }
+}
