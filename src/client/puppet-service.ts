@@ -762,7 +762,16 @@ class PuppetService extends PUPPET.Puppet {
     this.log.verbose('PuppetService', 'fastDirty(%s<%s>, %s)', PUPPET.types.Dirty[payloadType], payloadType, payloadId)
 
     const dirtyMap: Partial<Record<PUPPET.types.Dirty, (id: string) => Promise<unknown>>> = {
-      [PUPPET.types.Dirty.Contact]:      async (id: string) => this._payloadStore.contact?.delete(id),
+      [PUPPET.types.Dirty.Contact]:      async (id: string) => {
+        // Invalidate the base LRU before consumers reload this contact.
+        this.onDirty({ payloadType: PUPPET.types.Dirty.Contact, payloadId: id })
+        try {
+          return await this._payloadStore.contact?.delete(id)
+        } finally {
+          // Discard any stale value refilled while persistent deletion was pending.
+          this.onDirty({ payloadType: PUPPET.types.Dirty.Contact, payloadId: id })
+        }
+      },
       [PUPPET.types.Dirty.Friendship]:   async (_: string) => {},
       [PUPPET.types.Dirty.Message]:      async (_: string) => {},
       [PUPPET.types.Dirty.Post]:         async (_: string) => {},
