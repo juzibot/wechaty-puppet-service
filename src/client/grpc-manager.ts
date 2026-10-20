@@ -36,6 +36,7 @@ import {
 
 import {
   GRPC_OPTIONS,
+  GRPC_STOP_TIMEOUT_MILLISECONDS,
   envVars,
 }                   from '../config.js'
 
@@ -193,10 +194,21 @@ class GrpcManager extends EventEmitter {
      */
     try {
       this._log.verbose('GrpcManager', 'stop() stop client ...')
-      await util.promisify(
-        this.client.stop
-          .bind(this.client),
-      )(new puppet.StopRequest())
+      /**
+       * The Stop RPC must be bounded: the client has no keepalive, so a server that
+       *  accepts the connection but never answers would keep `onStop()` pending forever.
+       *  `ServiceCtl.start()` only waits 5 seconds for a pending stop, after which a new
+       *  start runs concurrently and the old stop later tears down the new listeners.
+       */
+      const client = this.client
+      await new Promise<void>((resolve, reject) => {
+        client.stop(
+          new puppet.StopRequest(),
+          new grpc.Metadata(),
+          { deadline: Date.now() + GRPC_STOP_TIMEOUT_MILLISECONDS },
+          (error) => error ? reject(error) : resolve(),
+        )
+      })
       this._log.verbose('GrpcManager', 'stop() stop client ... done')
     } catch (e) {
       this.emit('error', e)
