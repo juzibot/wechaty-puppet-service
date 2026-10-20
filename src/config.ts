@@ -28,6 +28,12 @@ const GRPC_OPTIONS = {
   'grpc.max_send_message_length': 1024 * 1024 * 80,
 }
 
+/**
+ * Upper bound of the Stop RPC in `GrpcManager.stop()`.
+ *  Must stay below the 5 seconds `ServiceCtl.start()` waits for a pending stop.
+ */
+export const GRPC_STOP_TIMEOUT_MILLISECONDS = 3 * 1000
+
 export const NO_LOG_EVENTS: grpcPuppet.EventTypeMap[keyof grpcPuppet.EventTypeMap][] = [
   grpcPuppet.EventType.EVENT_TYPE_HEARTBEAT,
   grpcPuppet.EventType.EVENT_TYPE_DONG,
