@@ -23,7 +23,6 @@ import {
 }                                   from '@juzi/wechaty-grpc'
 
 import * as PUPPET from '@juzi/wechaty-puppet'
-import { validateRoomMemberLoadState } from '../utils/pb-payload-helper.js'
 
 import { log, NO_LOG_EVENTS } from '../config.js'
 import {
@@ -247,17 +246,15 @@ class EventStreamManager {
           break
         }
         case 'room-member-load': {
-          const listener = (payload: PUPPET.payloads.EventRoomMemberLoad): void => {
-            try {
-              validateRoomMemberLoadState(payload)
-              this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_ROOM_MEMBER_LOAD, payload)
-            } catch (error) {
-              log.error('EventStreamManager', 'room-member-load rejected: %s', error)
-              this.puppet.emit('error', error)
-            }
-          }
+          const listener = (payload: PUPPET.payloads.EventRoomMemberLoad): void => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_ROOM_MEMBER_LOAD, payload)
           this.puppet.on('room-member-load', listener)
           this.offCallbackList.push(() => this.puppet.off('room-member-load', listener))
+          break
+        }
+        case 'room-member-lazy-load-finished': {
+          const listener = (payload: PUPPET.payloads.EventRoomMemberLazyLoadFinished): void => this.grpcEmit(grpcPuppet.EventType.EVENT_TYPE_ROOM_MEMBER_LAZY_LOAD_FINISHED, payload)
+          this.puppet.on('room-member-lazy-load-finished', listener)
+          this.offCallbackList.push(() => this.puppet.off('room-member-lazy-load-finished', listener))
           break
         }
         case 'room-join': {

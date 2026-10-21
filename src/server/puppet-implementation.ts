@@ -20,7 +20,6 @@
 /* eslint-disable sort-keys */
 /* eslint-disable @typescript-eslint/no-misused-promises */
 import type { Writable }    from 'stream'
-import { inspect } from 'util'
 import {
   chunkDecoder,
   chunkEncoder,
@@ -44,27 +43,20 @@ import {
 import { log } from '../config.js'
 import { grpcError }          from './grpc-error.js'
 import { EventStreamManager } from './event-stream-manager.js'
-import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPayloadToPb, channelPayloadToPb, channelPbToPayload, chatHistoryPayloadToPb, postPbToPayload, urlLinkPayloadToPb, channelCardPayloadToPb, roomPayloadToPb, roomMemberLoadStateToPb, roomMemberSnapshotToPb, validateRoomMemberLoadState, validateRoomMemberSnapshot, validateRoomMemberRevision } from '../utils/pb-payload-helper.js'
+import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPayloadToPb, channelPayloadToPb, channelPbToPayload, chatHistoryPayloadToPb, postPbToPayload, urlLinkPayloadToPb, channelCardPayloadToPb, roomPayloadToPb } from '../utils/pb-payload-helper.js'
 import { grpcCallTypeToPuppetMedia, puppetCallMediaTypeToGrpc } from '../utils/call-media-mapping.js'
 import { TextContentType } from '@juzi/wechaty-puppet/types'
 
 type MessageBatchSendResponse = Awaited<ReturnType<PUPPET.impls.PuppetInterface['messageBatchSendText']>>
 
-function roomMemberRpcError<Response> (
+const UNSUPPORTED_PATTERN = /unsupported/i
+
+/** Adapters that lack an optional capability throw "... unsupported ..."; surface it as UNIMPLEMENTED. */
+function unsupportedOrGrpcError<Response> (
   method: string, error: unknown, callback: grpc.sendUnaryData<Response>,
 ): void {
-  log.error('PuppetServiceImpl', 'roomMemberRpcError() %s() rejection: %s', method, inspect(error))
-  if (typeof error === 'object' && error !== null && 'code' in error) {
-    const status = error as Record<string, unknown>
-    const code = status['code']
-    if (typeof code === 'number' && Number.isInteger(code) && code > 0 && code <= 16) {
-      const details = typeof status['details'] === 'string' ? status['details']
-        : error instanceof Error ? error.message : 'Room member RPC failed'
-      callback({ code, details }, null)
-      return
-    }
-  }
-  if (error instanceof Error && /unsupported/i.test(error.message)) {
+  if (error instanceof Error && UNSUPPORTED_PATTERN.test(error.message)) {
+    log.warn('PuppetServiceImpl', '%s() unsupported by adapter: %s', method, error.message)
     callback({ code: grpc.status.UNIMPLEMENTED, details: error.message }, null)
     return
   }
@@ -2018,72 +2010,19 @@ function puppetImplementation (
       }
     },
 
-    roomMemberSync: async (
-      call: grpc.ServerUnaryCall<grpcPuppet.RoomMemberSyncRequest, grpcPuppet.RoomMemberLoadStateResponse>,
-      callback: grpc.sendUnaryData<grpcPuppet.RoomMemberLoadStateResponse>,
+    roomMemberLazyLoadNow: async (
+      _call: grpc.ServerUnaryCall<grpcPuppet.RoomMemberLazyLoadNowRequest, grpcPuppet.RoomMemberLazyLoadNowResponse>,
+      callback: grpc.sendUnaryData<grpcPuppet.RoomMemberLazyLoadNowResponse>,
     ): Promise<void> => {
+      log.verbose('PuppetServiceImpl', 'roomMemberLazyLoadNow()')
       try {
-        const roomId = call.request.getId()
-        if (!roomId) {
-          return callback({ code: grpc.status.INVALID_ARGUMENT, details: 'roomId is required' }, null)
+        if (typeof puppet.roomMemberLazyLoadNow !== 'function') {
+          throw new Error('roomMemberLazyLoadNow is unsupported by this puppet')
         }
-        const options = call.request.getForce() ? { force: true } : undefined
-        if (typeof puppet.roomMemberSync !== 'function') { throw new Error('roomMemberSync unsupported by adapter') }
-        const state = await puppet.roomMemberSync(roomId, options)
-        validateRoomMemberLoadState(state, roomId)
-        return callback(null, roomMemberLoadStateToPb(state))
+        await puppet.roomMemberLazyLoadNow()
+        return callback(null, new grpcPuppet.RoomMemberLazyLoadNowResponse())
       } catch (error) {
-        return roomMemberRpcError('roomMemberSync', error, callback)
-      }
-    },
-
-    roomMemberLoadState: async (
-      call: grpc.ServerUnaryCall<grpcPuppet.RoomMemberLoadStateRequest, grpcPuppet.RoomMemberLoadStateResponse>,
-      callback: grpc.sendUnaryData<grpcPuppet.RoomMemberLoadStateResponse>,
-    ): Promise<void> => {
-      try {
-        const roomId = call.request.getId()
-        if (!roomId) {
-          return callback({ code: grpc.status.INVALID_ARGUMENT, details: 'roomId is required' }, null)
-        }
-        if (typeof puppet.roomMemberLoadState !== 'function') { throw new Error('roomMemberLoadState unsupported by adapter') }
-        const state = await puppet.roomMemberLoadState(roomId)
-        validateRoomMemberLoadState(state, roomId)
-        return callback(null, roomMemberLoadStateToPb(state))
-      } catch (error) {
-        return roomMemberRpcError('roomMemberLoadState', error, callback)
-      }
-    },
-
-    roomMemberSnapshot: async (
-      call: grpc.ServerUnaryCall<grpcPuppet.RoomMemberSnapshotRequest, grpcPuppet.RoomMemberSnapshotResponse>,
-      callback: grpc.sendUnaryData<grpcPuppet.RoomMemberSnapshotResponse>,
-    ): Promise<void> => {
-      try {
-        const roomId = call.request.getId()
-        const revision = call.request.getRevision()
-        const pageSize = call.request.getPageSize()
-        try {
-          if (!roomId) { throw new Error('roomId is required') }
-          validateRoomMemberRevision(revision)
-          if (!Number.isInteger(pageSize) || pageSize < 0 || pageSize > 500) {
-            throw new Error('pageSize must be an integer between 0 and 500')
-          }
-        } catch (error) {
-          return callback({ code: grpc.status.INVALID_ARGUMENT, details: (error as Error).message }, null)
-        }
-        if (typeof puppet.roomMemberSnapshot !== 'function') { throw new Error('roomMemberSnapshot unsupported by adapter') }
-        const snapshot = await puppet.roomMemberSnapshot(roomId, revision, {
-          pageToken: call.request.getPageToken(), pageSize,
-        })
-        try {
-          validateRoomMemberSnapshot(snapshot, roomId, revision)
-        } catch (error) {
-          return callback({ code: grpc.status.FAILED_PRECONDITION, details: (error as Error).message }, null)
-        }
-        return callback(null, roomMemberSnapshotToPb(snapshot))
-      } catch (error) {
-        return roomMemberRpcError('roomMemberSnapshot', error, callback)
+        return unsupportedOrGrpcError('roomMemberLazyLoadNow', error, callback)
       }
     },
 
