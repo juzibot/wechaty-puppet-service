@@ -190,7 +190,7 @@ test('PuppetService waits for serial cache work before barrier and fences the pr
     const first = streams[0]!
     first.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'account' }))
     first.write(response(puppet.EventType.EVENT_TYPE_READY, {}))
-    first.write(response(puppet.EventType.EVENT_TYPE_ROOM_MEMBER_LOAD, { roomId: 'room', taskId: 'task', status: 3, revision: '1' }, 1))
+    first.write(response(puppet.EventType.EVENT_TYPE_ROOM_MEMBER_LOAD, { roomId: 'room' }, 1))
     first.write(response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'account', throughSeq: 1 }))
     await new Promise<void>(resolve => setTimeout(resolve, 30))
     assert.equal(service.recoveryState.status, 'recovering')
