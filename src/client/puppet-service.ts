@@ -56,7 +56,7 @@ import { RecoveryGate, withRecoveryRequestContext } from './recovery.js'
 import type { RecoveryOptions, RecoveryRequestContext, RecoveryState } from './recovery.js'
 import { PayloadStore } from './payload-store.js'
 import { RoomCacheCoordinator, RoomCacheOperationError } from './room-cache-coordinator.js'
-import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPbToPayload, channelPayloadToPb, channelPbToPayload, chatHistoryPbToPayload, contactPbToPayload, postPayloadToPb, roomMemberPbToPayload, urlLinkPbToPayload, channelCardPayloadToPb, channelCardPbToPayload, miniProgramPayloadToPb, urlLinkPayloadToPb, locationPayloadToPb, roomPbToPayload, roomMemberLoadStatePbToPayload, roomMemberSnapshotPbToPayload, validateRoomMemberRevision, validateRoomMemberLoadState } from '../utils/pb-payload-helper.js'
+import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPbToPayload, channelPayloadToPb, channelPbToPayload, chatHistoryPbToPayload, contactPbToPayload, postPayloadToPb, roomMemberPbToPayload, urlLinkPbToPayload, channelCardPayloadToPb, channelCardPbToPayload, miniProgramPayloadToPb, urlLinkPayloadToPb, locationPayloadToPb, roomPbToPayload, isEventRoomMemberLoadPayload } from '../utils/pb-payload-helper.js'
 import { puppetCallMediaTypeToGrpc, grpcCallTypeToPuppetMedia } from '../utils/call-media-mapping.js'
 import type { MessageBroadcastTargets } from '@juzi/wechaty-puppet/dist/esm/src/schemas/message.js'
 import type { CallInviteWithMediaOptions } from '@juzi/wechaty-puppet/dist/esm/src/schemas/call.js'
@@ -578,16 +578,23 @@ class PuppetService extends PUPPET.Puppet {
         break
       case grpcPuppet.EventType.EVENT_TYPE_ROOM_MEMBER_LOAD: {
         const loadPayload: unknown = JSON.parse(payload)
-        validateRoomMemberLoadState(loadPayload)
-        this.roomCache.invalidate(loadPayload.roomId)
-        await this.roomCache.run(loadPayload.roomId, async (): Promise<void> => {
-          await this._payloadStore.room?.delete(loadPayload.roomId)
-          await this._payloadStore.roomMember?.delete(loadPayload.roomId)
+        if (!isEventRoomMemberLoadPayload(loadPayload)) {
+          this.log.warn('PuppetService', 'onGrpcStreamEvent() dropped room-member-load with invalid payload: %s', payload)
+          break
+        }
+        const { roomId } = loadPayload
+        this.roomCache.invalidate(roomId)
+        await this.roomCache.run(roomId, async (): Promise<void> => {
+          await this._payloadStore.room?.delete(roomId)
+          await this._payloadStore.roomMember?.delete(roomId)
         })
         if (!this.isEventEpochCurrent(epoch)) { return }
-        this.emit('room-member-load', loadPayload)
+        this.emit('room-member-load', { roomId })
         break
       }
+      case grpcPuppet.EventType.EVENT_TYPE_ROOM_MEMBER_LAZY_LOAD_FINISHED:
+        this.emit('room-member-lazy-load-finished', {})
+        break
       case grpcPuppet.EventType.EVENT_TYPE_MESSAGE:
         this.emit('message', JSON.parse(payload) as PUPPET.payloads.EventMessage)
         break
@@ -2523,48 +2530,11 @@ class PuppetService extends PUPPET.Puppet {
     return payload
   }
 
-  override async roomMemberSync (
-    roomId: string, options?: PUPPET.types.RoomMemberSyncOptions,
-  ): Promise<PUPPET.payloads.RoomMemberLoadState> {
-    if (!roomId) { throw new Error('roomId is required') }
-    const request = new grpcPuppet.RoomMemberSyncRequest()
-    request.setId(roomId)
-    if (options?.force !== undefined) { request.setForce(options.force) }
-    const response = await util.promisify(
-      this.grpcManager.client.roomMemberSync.bind(this.grpcManager.client),
-    )(request)
-    return roomMemberLoadStatePbToPayload(response, roomId)
-  }
-
-  override async roomMemberLoadState (roomId: string): Promise<PUPPET.payloads.RoomMemberLoadState> {
-    if (!roomId) { throw new Error('roomId is required') }
-    const request = new grpcPuppet.RoomMemberLoadStateRequest()
-    request.setId(roomId)
-    const response = await util.promisify(
-      this.grpcManager.client.roomMemberLoadState.bind(this.grpcManager.client),
-    )(request)
-    return roomMemberLoadStatePbToPayload(response, roomId)
-  }
-
-  override async roomMemberSnapshot (
-    roomId: string, revision: string, options?: PUPPET.types.RoomMemberSnapshotOptions,
-  ): Promise<PUPPET.payloads.RoomMemberSnapshot> {
-    if (!roomId) { throw new Error('roomId is required') }
-    validateRoomMemberRevision(revision)
-    const request = new grpcPuppet.RoomMemberSnapshotRequest()
-    request.setId(roomId)
-    request.setRevision(revision)
-    if (options?.pageToken !== undefined) { request.setPageToken(options.pageToken) }
-    if (options?.pageSize !== undefined) {
-      if (!Number.isInteger(options.pageSize) || options.pageSize < 0 || options.pageSize > 500) {
-        throw new Error('pageSize must be an integer between 0 and 500')
-      }
-      request.setPageSize(options.pageSize)
-    }
-    const response = await util.promisify(
-      this.grpcManager.client.roomMemberSnapshot.bind(this.grpcManager.client),
-    )(request)
-    return roomMemberSnapshotPbToPayload(response, roomId, revision)
+  override async roomMemberLazyLoadNow (): Promise<void> {
+    this.log.verbose('PuppetService', 'roomMemberLazyLoadNow()')
+    await util.promisify(
+      this.grpcManager.client.roomMemberLazyLoadNow.bind(this.grpcManager.client),
+    )(new grpcPuppet.RoomMemberLazyLoadNowRequest())
   }
 
   override async roomRawPayloadParser (payload: PUPPET.payloads.Room): Promise<PUPPET.payloads.Room> {

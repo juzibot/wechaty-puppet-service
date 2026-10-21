@@ -48,7 +48,7 @@ function event (payload: unknown, seq = 2): grpcPuppet.EventResponse {
   return response
 }
 
-const state = { roomId: 'room', taskId: 'task', status: 3, revision: '1' }
+const state = { roomId: 'room' }
 
 async function drain (): Promise<void> {
   await new Promise<void>(resolve => setImmediate(resolve))
@@ -122,7 +122,7 @@ test('bridge cache failure stops the stream and fences later seq until explicit 
   service.on('room-member-load', completed)
   service.connect(manager)
   manager.emit('data', event(state))
-  manager.emit('data', event({ ...state, revision: '2' }, 3))
+  manager.emit('data', event({ roomId: 'other-room' }, 3))
   await drain()
   t.equal(unhandled.callCount, 0)
   t.equal(errors.callCount, 1)
@@ -137,10 +137,9 @@ test('bridge cache failure stops the stream and fences later seq until explicit 
   t.equal(metadata.get('lastEventSeq'), '1')
 })
 
-test('invalid event payloads never reach persistent cache or emit completion', async t => {
+test('invalid event payloads are dropped without touching cache, emitting, or halting the stream', async t => {
   for (const payload of [
-    { ...state, revision: 1 }, { ...state, revision: '01' }, { ...state, status: 99 },
-    { ...state, roomId: '' }, { ...state, roomId: undefined }, { ...state, taskId: 1 },
+    {}, null, 'room', { roomId: '' }, { roomId: '   ' }, { roomId: 1 }, { roomId: undefined },
   ]) {
     const service = serviceFixture()
     const manager = new GrpcManager({ token: 'insecure_token' })
@@ -157,7 +156,7 @@ test('invalid event payloads never reach persistent cache or emit completion', a
     await drain()
     t.equal(remove.callCount, 0)
     t.equal(completed.callCount, 0)
-    t.equal(errors.callCount, 1)
+    t.equal(errors.callCount, 0, `${JSON.stringify(payload)} is dropped, not a stream failure`)
   }
 })
 

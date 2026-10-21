@@ -43,7 +43,7 @@ const controls = new Set([ 'Event', 'Start', 'Stop', 'Logout', 'Ding', 'EnterVer
 const replayReads = new Set([
   'CurrentUser', 'Version', 'ContactPayload', 'BatchContactPayload', 'ContactList',
   'RoomPayload', 'BatchRoomPayload', 'RoomList', 'RoomMemberPayload', 'BatchRoomMemberPayload',
-  'RoomMemberList', 'RoomMemberSnapshot', 'RoomMemberLoadState', 'MessagePayload', 'CallPayload',
+  'RoomMemberList', 'MessagePayload', 'CallPayload',
   'FriendshipPayload', 'RoomInvitationPayload', 'TagPayload', 'TagGroupPayload', 'TagGroupList',
   'TagGroupTagList', 'TagTagList', 'TagContactTagList', 'TagTagContactList', 'postPayload',
   'postPayloadSayable', 'OrgBroadcastPayload',

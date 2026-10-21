@@ -12,7 +12,6 @@ type grpcPuppet = typeof puppet
 
 export function roomPbToPayload (pb: puppet.RoomPayloadResponse): PUPPET.payloads.Room {
   const createTime = pb.getCreateTime()
-  const loadedAt = pb.getMemberLoadedAt()
   return {
     adminIdList: pb.getAdminIdsList(),
     avatar: pb.getAvatar(),
@@ -26,10 +25,6 @@ export function roomPbToPayload (pb: puppet.RoomPayloadResponse): PUPPET.payload
     external: pb.getExternal(),
     ...(createTime ? { createTime: millisecondsFromTimestamp(createTime) } : {}),
     memberCount: pb.getMemberCount(),
-    memberLoadMode: pb.getMemberLoadMode(),
-    memberLoadStatus: pb.getMemberLoadStatus(),
-    memberLoadRevision: pb.getMemberLoadRevision(),
-    ...(loadedAt ? { memberLoadedAt: millisecondsFromTimestamp(loadedAt) } : {}),
   }
 }
 
@@ -47,48 +42,14 @@ export function roomPayloadToPb (payload: PUPPET.payloads.Room): puppet.RoomPayl
   pb.setExternal(!!payload.external)
   if (payload.createTime !== undefined) { pb.setCreateTime(timestampFromMilliseconds(payload.createTime)) }
   if (payload.memberCount !== undefined) { pb.setMemberCount(payload.memberCount) }
-  if (payload.memberLoadMode !== undefined) { pb.setMemberLoadMode(payload.memberLoadMode) }
-  if (payload.memberLoadStatus !== undefined) { pb.setMemberLoadStatus(payload.memberLoadStatus) }
-  if (payload.memberLoadRevision !== undefined) { pb.setMemberLoadRevision(payload.memberLoadRevision) }
-  if (payload.memberLoadedAt !== undefined) { pb.setMemberLoadedAt(timestampFromMilliseconds(payload.memberLoadedAt)) }
   return pb
 }
 
-export function validateRoomMemberRevision (revision: string): void {
-  if (typeof revision !== 'string' || !/^(0|[1-9][0-9]*)$/.test(revision)) {
-    throw new Error('Invalid room member revision')
-  }
-}
-
-export function validateRoomMemberLoadState (state: unknown, roomId?: string): asserts state is PUPPET.payloads.RoomMemberLoadState {
-  if (typeof state !== 'object' || state === null) { throw new Error('Invalid room member load state') }
-  const value = state as Record<string, unknown>
-  if (typeof value['roomId'] !== 'string' || !value['roomId'].trim()
-    || (roomId !== undefined && value['roomId'] !== roomId)) { throw new Error('Invalid room member roomId') }
-  if (typeof value['taskId'] !== 'string') { throw new Error('Invalid room member taskId') }
-  if (typeof value['revision'] !== 'string') { throw new Error('Invalid room member revision') }
-  validateRoomMemberRevision(value['revision'])
-  const status = value['status']
-  if (typeof status !== 'number' || !Number.isInteger(status) || status < 0 || status > 4) {
-    throw new Error('Invalid room member load status')
-  }
-  if (value['loadedAt'] !== undefined && (typeof value['loadedAt'] !== 'number' || !Number.isFinite(value['loadedAt']))) {
-    throw new Error('Invalid room member loadedAt')
-  }
-  if (value['error'] !== undefined && typeof value['error'] !== 'string') { throw new Error('Invalid room member error') }
-}
-
-export function validateRoomMemberSnapshot (
-  snapshot: PUPPET.payloads.RoomMemberSnapshot, roomId: string, revision: string,
-): void {
-  if (!roomId || snapshot.roomId !== roomId) { throw new Error('Room member snapshot roomId mismatch') }
-  validateRoomMemberRevision(snapshot.revision)
-  validateRoomMemberRevision(revision)
-  if (snapshot.revision !== revision) { throw new Error('Room member snapshot revision mismatch') }
-  if (!Array.isArray(snapshot.members)) { throw new Error('Invalid room member snapshot members') }
-  if (snapshot.loadedAt !== undefined && !Number.isFinite(snapshot.loadedAt)) {
-    throw new Error('Invalid room member snapshot loadedAt')
-  }
+/** Event 39 payload: the only accepted shape is `{ roomId: <non-empty string> }`. */
+export function isEventRoomMemberLoadPayload (value: unknown): value is PUPPET.payloads.EventRoomMemberLoad {
+  if (typeof value !== 'object' || value === null) { return false }
+  const roomId = (value as Record<string, unknown>)['roomId']
+  return typeof roomId === 'string' && roomId.trim().length > 0
 }
 
 export const miniProgramPayloadToPb = (grpcPuppet: grpcPuppet, miniProgramPayload: PUPPET.payloads.MiniProgram) => {
@@ -534,60 +495,6 @@ export function roomMemberPayloadToPb (payload: PUPPET.payloads.RoomMember): pup
   pb.setJoinScene(payload.joinScene ?? PUPPET.types.RoomMemberJoinScene.Unknown)
   pb.setJoinTime(payload.joinTime ?? 0)
   return pb
-}
-
-export function roomMemberLoadStateToPb (state: PUPPET.payloads.RoomMemberLoadState): puppet.RoomMemberLoadStateResponse {
-  validateRoomMemberLoadState(state, state.roomId)
-  const pb = new puppet.RoomMemberLoadStateResponse()
-  pb.setId(state.roomId)
-  pb.setTaskId(state.taskId)
-  pb.setStatus(state.status)
-  pb.setRevision(state.revision)
-  if (state.loadedAt !== undefined) { pb.setLoadedAt(timestampFromMilliseconds(state.loadedAt)) }
-  if (state.error !== undefined) { pb.setError(state.error) }
-  return pb
-}
-
-export function roomMemberLoadStatePbToPayload (
-  pb: puppet.RoomMemberLoadStateResponse, roomId: string,
-): PUPPET.payloads.RoomMemberLoadState {
-  const loadedAt = pb.getLoadedAt()
-  const state: PUPPET.payloads.RoomMemberLoadState = {
-    roomId: pb.getId(),
-    taskId: pb.getTaskId(),
-    status: pb.getStatus(),
-    revision: pb.getRevision(),
-    ...(loadedAt ? { loadedAt: millisecondsFromTimestamp(loadedAt) } : {}),
-    ...(pb.getError() ? { error: pb.getError() } : {}),
-  }
-  validateRoomMemberLoadState(state, roomId)
-  return state
-}
-
-export function roomMemberSnapshotToPb (snapshot: PUPPET.payloads.RoomMemberSnapshot): puppet.RoomMemberSnapshotResponse {
-  validateRoomMemberSnapshot(snapshot, snapshot.roomId, snapshot.revision)
-  const pb = new puppet.RoomMemberSnapshotResponse()
-  pb.setId(snapshot.roomId)
-  pb.setRevision(snapshot.revision)
-  pb.setMembersList(snapshot.members.map(roomMemberPayloadToPb))
-  if (snapshot.loadedAt !== undefined) { pb.setLoadedAt(timestampFromMilliseconds(snapshot.loadedAt)) }
-  if (snapshot.nextPageToken !== undefined) { pb.setNextPageToken(snapshot.nextPageToken) }
-  return pb
-}
-
-export function roomMemberSnapshotPbToPayload (
-  pb: puppet.RoomMemberSnapshotResponse, roomId: string, revision: string,
-): PUPPET.payloads.RoomMemberSnapshot {
-  const loadedAt = pb.getLoadedAt()
-  const snapshot: PUPPET.payloads.RoomMemberSnapshot = {
-    roomId: pb.getId(),
-    revision: pb.getRevision(),
-    members: pb.getMembersList().map(roomMemberPbToPayload),
-    ...(loadedAt ? { loadedAt: millisecondsFromTimestamp(loadedAt) } : {}),
-    ...(pb.getNextPageToken() ? { nextPageToken: pb.getNextPageToken() } : {}),
-  }
-  validateRoomMemberSnapshot(snapshot, roomId, revision)
-  return snapshot
 }
 
 export const contactPbToPayload = (pb: puppet.ContactPayloadResponse) => {
