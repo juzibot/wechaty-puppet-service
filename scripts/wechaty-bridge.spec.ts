@@ -10,7 +10,7 @@ import { GrpcManager } from '../src/client/grpc-manager.js'
 
 interface BridgeBot {
   init(): Promise<void>
-  on(event: string, listener: (...args: unknown[]) => void): BridgeBot
+  on(event: string, listener: (...args: unknown[]) => unknown): BridgeBot
   removeAllListeners(): BridgeBot
 }
 interface BridgeModule {
@@ -45,8 +45,10 @@ test('published Wechaty 1.2 message bridge finishes before prepare resolves', as
   })
   sinon.stub(service, 'contactPayload').callsFake(async (id): Promise<PUPPET.payloads.Contact> => ({ id, name: id, avatar: '', phone: [], gender: PUPPET.types.ContactGender.Unknown, type: PUPPET.types.Contact.Individual, friend: true }))
   let pendingBotTasks = 0
+  let releaseBusiness!: () => void
+  const business = new Promise<void>((resolve): void => { releaseBusiness = resolve })
   const errors: unknown[] = []
-  bot.on('message', (): void => { pendingBotTasks++ })
+  bot.on('message', async (): Promise<void> => { pendingBotTasks++; await business; pendingBotTasks-- })
   bot.on('error', (error): void => { errors.push(error) })
   try {
     await bot.init()
@@ -63,5 +65,5 @@ test('published Wechaty 1.2 message bridge finishes before prepare resolves', as
     manager.emit('data', event)
     assert.equal(pendingBotTasks, 1)
     t.pass('real Message.find/payload loading can no longer outlive the SDK barrier')
-  } finally { release(); bot.removeAllListeners(); await service.cleanup(); sinon.restore() }
+  } finally { release(); releaseBusiness(); bot.removeAllListeners(); await service.cleanup(); sinon.restore() }
 })

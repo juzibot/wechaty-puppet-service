@@ -80,6 +80,13 @@ export type PuppetServiceOptions = PUPPET.PuppetOptions & {
 
 const ResetLoginTimeout = 30 * 1000
 const ResetReadyTimeout = 20 * 1000 // normally ready comes 15 seconds after login
+const TRACKED_LISTENER_EVENTS = new Set([ ...Object.keys(PUPPET.types.CHAT_EVENT_DICT), 'ready', 'dong' ])
+
+interface ListenerDrain {
+  readonly pending: Set<Promise<void>>
+  error?: Error
+}
+type PuppetEventName = Parameters<PUPPET.Puppet['rawListeners']>[0]
 
 type MessageBatchSendResponse = Awaited<ReturnType<PUPPET.impls.PuppetInterface['messageBatchSendText']>>
 
@@ -131,6 +138,7 @@ class PuppetService extends PUPPET.Puppet {
   private startingTask?: Promise<void>
   private stoppingTask?: Promise<void>
   private readonly sdkLifecycleTasks = new Set<Promise<void>>()
+  private listenerDrain: ListenerDrain = { pending: new Set() }
 
   private timeoutMilliseconds: number
   private readonly recovery: RecoveryGate
@@ -140,6 +148,40 @@ class PuppetService extends PUPPET.Puppet {
   private recoveryProcessedSeq = 0
 
   get recoveryState (): RecoveryState { return this.recovery.state }
+
+  override emit = function (this: PuppetService, event: string | symbol, ...args: unknown[]): boolean {
+    if (typeof event !== 'string' || !TRACKED_LISTENER_EVENTS.has(event)) { return PUPPET.Puppet.prototype.emit.call(this, event, ...args) }
+    const drain = this.listenerDrain
+    // rawListeners preserves once wrappers, registration order and EventEmitter's snapshot semantics.
+    const listeners = this.rawListeners(event as PuppetEventName)
+    for (const listener of listeners) {
+      try {
+        const result: unknown = Reflect.apply(listener, this, args)
+        if (result !== null && (typeof result === 'object' || typeof result === 'function')
+          && typeof Reflect.get(result, 'then') === 'function') {
+          this.trackListenerPromise(Promise.resolve(result), drain)
+        }
+      } catch (error) {
+        drain.error ??= error instanceof Error ? error : new Error(String(error))
+        throw error
+      }
+    }
+    return listeners.length > 0
+  }
+
+  private trackListenerPromise (promise: Promise<unknown>, drain: ListenerDrain): void {
+    const task = promise.then((): undefined => undefined, (error: unknown): undefined => {
+      drain.error ??= error instanceof Error ? error : new Error(String(error))
+      this.log.error('PuppetService', 'async puppet listener failed: %s', error)
+      return undefined
+    }).finally((): void => { drain.pending.delete(task) })
+    drain.pending.add(task)
+  }
+
+  private async waitForListeners (drain: ListenerDrain): Promise<void> {
+    while (drain.pending.size) { await Promise.all([ ...drain.pending ]) }
+    if (drain.error) { throw drain.error }
+  }
 
   private get eventMetadataEnabled (): boolean {
     return this.recovery.enabled || !envVars.WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE()
@@ -245,6 +287,7 @@ class PuppetService extends PUPPET.Puppet {
     this.restartRequested = false
     this.restartPreparation = undefined
     this.eventDrainError = undefined
+    this.listenerDrain = { pending: new Set() }
     this.eventsBlocked = false
 
     this.log.info('PuppetService', 'start() instanciating GrpcManager ...')
@@ -314,6 +357,7 @@ class PuppetService extends PUPPET.Puppet {
     const manager = this._grpcManager
     const epoch = this.eventEpoch
     const queue = this.eventQueue
+    const listeners = this.listenerDrain
     const interrupted = this.startInProgress || this.eventsBlocked || this.reconnectIndicator.value()
       || (this.recovery.enabled && this.recovery.state.status !== 'ready')
     this.recoveryStopped = true
@@ -325,7 +369,10 @@ class PuppetService extends PUPPET.Puppet {
     manager.stopStream({ throwOnError: true, preventRestart: true })
     if (interrupted) { throw new Error('Cannot prepare restart during recovery or suspended event processing') }
     await queue
-    await this.waitForSdkLifecycle()
+    do {
+      await this.waitForSdkLifecycle()
+      await this.waitForListeners(listeners)
+    } while (this.sdkLifecycleTasks.size || listeners.pending.size)
     await this.checkpointQueue
     if (this.eventDrainError) { throw this.eventDrainError }
     if (epoch !== this.eventEpoch || manager !== this._grpcManager) { throw new Error('Restart preparation superseded') }

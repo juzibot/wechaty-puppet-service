@@ -117,7 +117,7 @@ test('real logout RPC remains pending in prepare and its delayed rejection is no
   } finally { await service.cleanup(); sinon.restore(); server.forceShutdown() }
 })
 
-test('SDK lifecycle tracking does not await application async login listeners', async t => {
+test('prepare also awaits async login listeners attached directly to PuppetService', async t => {
   const service = new LifecycleService({ token: `insecure_${randomUUID()}` })
   const manager = new GrpcManager({ token: `insecure_${randomUUID()}` })
   sinon.stub(manager, 'stopStream'); sinon.stub(manager, 'stop').resolves()
@@ -128,9 +128,11 @@ test('SDK lifecycle tracking does not await application async login listeners', 
   service.attach(manager)
   try {
     manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'account' }))
+    await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 20 }), /deadline/)
+    release()
     await service.prepareForRestart({ deadline: Date.now() + 1000 })
     assert.equal(service.isLoggedIn, true)
-    t.pass('Bot retains ownership of its async business listener completion')
+    t.pass('direct PuppetService listeners are inside the bridge barrier')
   } finally { release(); await service.cleanup(); sinon.restore() }
 })
 

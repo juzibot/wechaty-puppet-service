@@ -27,9 +27,31 @@ option. This is **not an fsync/power-loss durability guarantee**, nor an atomic
 transaction across cursor keys. It does not close the metadata store while business
 work may still need it.
 
-SDK event listeners use EventEmitter semantics. Synchronous listener failures are
-captured; promises returned by application listeners are not awaited by EventEmitter.
-The Bot must track and await its own asynchronous business completion separately.
+Direct PuppetService chat-event, ready and dong listeners retain synchronous
+EventEmitter order/return/once/removal/receiver semantics. Their returned promises
+are tracked independently, not awaited by the event worker, and preparation joins
+them after stopping intake. Synchronous throws and rejected promises remain failed
+for that start's preparation. Control/error/heartbeat events keep the base emitter.
+This includes Wechaty's async message bridge while it loads payloads before emitting
+to Bot. The Bot must still await business listener promises attached to **Wechaty**,
+which Wechaty's own emitter does not return to PuppetService.
+
+Normal stop does not join these external listener promises (a listener may itself
+await stop). A new start has a separate listener-drain state; old errors cannot
+poison it. After a failed/timed-out preparation, outstanding external listener work
+is not magically cancelled and must not be treated as a completed restart barrier.
+
+### Remaining published Wechaty timer gap
+
+Published Wechaty 1.2 `src/wechaty-mixins/puppet-mixin.ts` login bridge creates a
+15-second ready fallback timer whose lifetime is outside its returned promise
+(published JS lines 228–237). This SDK-only promise barrier cannot cancel or await
+that timer and is **not yet an unconditional no-new-application-event guarantee**.
+Proposed follow-up, not implemented in another repo: add an optional public
+`registerRestartBarrier(barrier: () => void | Promise<void>): () => void` on Service;
+the Wechaty mixin registers a cleanup that clears its pending ready timers and
+prevents late scheduling during preparation, then unregisters on disposal. The
+prepare signature and gRPC metadata contract need not change.
 
 SDK-owned login/logout operations and payload-store lifecycle listeners are tracked
 separately from the serial event queue. Preparation waits for those tasks and their
@@ -101,5 +123,10 @@ Real gRPC tests cover the synthetic-null path and actual response-then-error pat
   boundary, plus legacy servers that never answer Start or Logout. Login failure,
   delayed store failure, stop/start ownership and unbounded lifecycle waits were
   reproduced before their respective implementations.
+- Listener follow-up: four groups cover emitter semantics, sticky failures,
+  session ownership and READY/write-gate progress. The explicit integration target
+  `scripts/wechaty-bridge.spec.ts` uses the published Wechaty 1.2 module and real
+  Message.find/messagePayload bridge; it verifies Bot work becomes visible before
+  preparation completes. Its RED log is `.validation-overlay/bridge-red.log`.
 - Logs/artifacts remain in `.validation-overlay` (untracked); package version stays
   `1.2.0`. No package publication or remote Git operation is part of this change.
