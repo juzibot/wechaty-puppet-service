@@ -17,7 +17,6 @@
  *   limitations under the License.
  *
  */
-import util from 'util'
 import EventEmitter from 'events'
 import crypto from 'crypto'
 
@@ -80,6 +79,8 @@ class GrpcManager extends EventEmitter {
   token      : WechatyToken
 
   private readonly _log: LoggerLike
+  private readonly lifecycleCalls = new Set<grpc.ClientUnaryCall>()
+  private lifecycleStopping = false
 
   constructor (private options: PuppetServiceOptions, private readonly recovery?: RecoveryGate) {
     super()
@@ -170,10 +171,7 @@ class GrpcManager extends EventEmitter {
      * 3. Start the puppet
      */
     this._log.verbose('GrpcManager', 'start() calling grpc server: start() ...')
-    await util.promisify(
-      this.client.start
-        .bind(this.client),
-    )(new puppet.StartRequest())
+    await this.runLifecycleRpc(callback => this.client.start(new puppet.StartRequest(), new grpc.Metadata(), this.lifecycleCallOptions(), callback))
     this._log.verbose('GrpcManager', 'start() calling grpc server: start() ... done')
 
     this._log.verbose('GrpcManager', 'start() ... done')
@@ -194,10 +192,7 @@ class GrpcManager extends EventEmitter {
      */
     try {
       this._log.verbose('GrpcManager', 'stop() stop client ...')
-      await util.promisify(
-        this.client.stop
-          .bind(this.client),
-      )(new puppet.StopRequest())
+      await this.runLifecycleRpc(callback => this.client.stop(new puppet.StopRequest(), new grpc.Metadata(), this.lifecycleCallOptions(), callback), true)
       this._log.verbose('GrpcManager', 'stop() stop client ... done')
     } catch (e) {
       this.emit('error', e)
@@ -207,6 +202,35 @@ class GrpcManager extends EventEmitter {
     }
 
     this._log.verbose('GrpcManager', 'stop() ... done')
+  }
+
+  async logout (): Promise<void> {
+    await this.runLifecycleRpc(callback => this.client.logout(new puppet.LogoutRequest(), new grpc.Metadata(), this.lifecycleCallOptions(), callback))
+  }
+
+  cancelLifecycleCalls (): void {
+    this.lifecycleStopping = true
+    for (const call of this.lifecycleCalls) { call.cancel() }
+  }
+
+  private lifecycleCallOptions (): grpc.CallOptions {
+    return { deadline: Date.now() + (this.options.recovery?.controlTimeoutMilliseconds ?? 10_000) }
+  }
+
+  private async runLifecycleRpc (
+    operation: (callback: (error: grpc.ServiceError | null) => void) => grpc.ClientUnaryCall,
+    allowStopping = false,
+  ): Promise<void> {
+    if (this.lifecycleStopping && !allowStopping) { throw new Error('Manager lifecycle is stopping') }
+    let call: grpc.ClientUnaryCall | undefined
+    try {
+      await new Promise<void>((resolve, reject): void => {
+        call = operation((error): void => { error ? reject(error) : resolve() })
+        this.lifecycleCalls.add(call)
+      })
+    } finally {
+      if (call) { this.lifecycleCalls.delete(call) }
+    }
   }
 
   protected async initClient (): Promise<void> {

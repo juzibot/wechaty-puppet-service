@@ -31,6 +31,23 @@ SDK event listeners use EventEmitter semantics. Synchronous listener failures ar
 captured; promises returned by application listeners are not awaited by EventEmitter.
 The Bot must track and await its own asynchronous business completion separately.
 
+SDK-owned login/logout operations and payload-store lifecycle listeners are tracked
+separately from the serial event queue. Preparation waits for those tasks and their
+SDK-owned descendants and retains their failures, including a rejected logout RPC.
+They are not awaited inside the event worker: doing so could prevent READY/barrier
+events needed by a lifecycle operation from being processed.
+
+Concurrent starts share their startup operation. Stop captures the old manager and
+startup at entry, fences its stream, and waits for checkpoint/startup/SDK lifecycle
+work before closing that manager. A new start waits for this stop; late startup
+continuations cannot restore ownership or health checks. Direct logout also captures
+its manager before awaiting, so it cannot issue its RPC against a replacement.
+Stop cancels only that manager's in-flight lifecycle RPCs before waiting; preparation
+does not perform this cancellation. Start/Logout/Stop RPCs also have a finite control
+deadline (10s by default, or `recovery.controlTimeoutMilliseconds`), including when
+recovery is disabled, so an unresponsive legacy server cannot hold channel release
+behind an unbounded lifecycle RPC.
+
 ## Proven non-admission (opt-in)
 
 With recovery enabled, generated Puppet business unary calls add request metadata
@@ -78,5 +95,11 @@ Real gRPC tests cover the synthetic-null path and actual response-then-error pat
   call cancellation and the finite retry budget for callers without a deadline.
 - ESM/CJS compiled against exact published grpc/puppet `1.2.0` in the independent
   `.validation-overlay`; shared `node_modules` and dependency manifests unchanged.
+- Lifecycle follow-up: eight groups cover the real login bridge's synchronous error,
+  delayed SDK store failure, real delayed logout RPC rejection, blocked-checkpoint
+  stop/start ownership, coalesced restart/late startup, and the application-listener
+  boundary, plus legacy servers that never answer Start or Logout. Login failure,
+  delayed store failure, stop/start ownership and unbounded lifecycle waits were
+  reproduced before their respective implementations.
 - Logs/artifacts remain in `.validation-overlay` (untracked); package version stays
   `1.2.0`. No package publication or remote Git operation is part of this change.

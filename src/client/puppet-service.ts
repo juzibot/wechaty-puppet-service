@@ -128,6 +128,9 @@ class PuppetService extends PUPPET.Puppet {
   private restartPreparation?: Promise<void>
   private eventDrainError?: Error
   private stoppingManager?: GrpcManager
+  private startingTask?: Promise<void>
+  private stoppingTask?: Promise<void>
+  private readonly sdkLifecycleTasks = new Set<Promise<void>>()
 
   private timeoutMilliseconds: number
   private readonly recovery: RecoveryGate
@@ -222,6 +225,17 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   override async onStart (): Promise<void> {
+    if (this.stoppingTask) { await this.stoppingTask }
+    if (this.startingTask) { return this.startingTask }
+    if (this._grpcManager) { await this.onStop(); return this.onStart() }
+    const task = this.startService()
+    this.startingTask = task
+    try { await task } finally {
+      if (this.startingTask === task) { this.startingTask = undefined; this.startInProgress = false }
+    }
+  }
+
+  private async startService (): Promise<void> {
     this.log.verbose('PuppetService', 'onStart()')
     this.startInProgress = true
 
@@ -232,11 +246,6 @@ class PuppetService extends PUPPET.Puppet {
     this.restartPreparation = undefined
     this.eventDrainError = undefined
     this.eventsBlocked = false
-
-    if (this._grpcManager) {
-      this.log.warn('PuppetService', 'onStart() found this.grpc is already existed. dropped.')
-      this._grpcManager = undefined
-    }
 
     this.log.info('PuppetService', 'start() instanciating GrpcManager ...')
     const grpcManager = new GrpcManager(this.options, this.recovery)
@@ -254,6 +263,7 @@ class PuppetService extends PUPPET.Puppet {
 
     this.log.info('PuppetService', 'start() starting grpc manager...')
     const { lastEventSeq, accountId } = await this.eventResumePosition()
+    if (grpcManager !== this._grpcManager) { return }
     if (this.isPreparingForRestart()) { throw new Error('Start interrupted by restart preparation') }
     this.recoveryStopped = false
     this.recovery.begin(accountId, true)
@@ -262,9 +272,11 @@ class PuppetService extends PUPPET.Puppet {
     try {
       await grpcManager.start(lastEventSeq, accountId)
     } catch (error) {
+      if (grpcManager !== this._grpcManager) { return }
       if (!this.recovery.enabled) { throw error }
       this.requestRecovery(grpcManager)
     }
+    if (grpcManager !== this._grpcManager) { return }
     if (this.isPreparingForRestart()) { throw new Error('Start interrupted by restart preparation') }
     this.log.info('PuppetService', 'start() starting grpc manager... done')
 
@@ -313,6 +325,7 @@ class PuppetService extends PUPPET.Puppet {
     manager.stopStream({ throwOnError: true, preventRestart: true })
     if (interrupted) { throw new Error('Cannot prepare restart during recovery or suspended event processing') }
     await queue
+    await this.waitForSdkLifecycle()
     await this.checkpointQueue
     if (this.eventDrainError) { throw this.eventDrainError }
     if (epoch !== this.eventEpoch || manager !== this._grpcManager) { throw new Error('Restart preparation superseded') }
@@ -323,15 +336,34 @@ class PuppetService extends PUPPET.Puppet {
   private isPreparingForRestart (): boolean { return this.restartRequested }
 
   override async onStop (): Promise<void> {
+    if (this.stoppingTask) { return this.stoppingTask }
+    const task = this.stopService()
+    this.stoppingTask = task
+    try { await task } finally {
+      if (this.stoppingTask === task) { this.stoppingTask = undefined }
+    }
+  }
+
+  private async stopService (): Promise<void> {
     this.log.info('PuppetService', 'onStop()')
+    const grpcManager = this._grpcManager
+    const starting = this.startingTask
     this.stopRecovery('Puppet stopped')
     this.suspendEventProcessing()
+    this.stopHealthCheck()
+    grpcManager?.cancelLifecycleCalls()
+    try { grpcManager?.stopStream({ preventRestart: true }) } catch (error) {
+      this.reportStreamError(error)
+    }
+    this._grpcManager = undefined
     await this.checkpointQueue
+    if (starting) {
+      try { await starting } catch (error) { this.log.warn('PuppetService', 'stopped startup failed: %s', error) }
+    }
+    await this.waitForSdkLifecycle()
 
-    if (this._grpcManager) {
+    if (grpcManager) {
       this.log.info('PuppetService', 'onStop() stopping grpc manager ...')
-      const grpcManager = this._grpcManager
-      this._grpcManager = undefined
       this.stoppingManager = grpcManager
       try {
         await this.recovery.runDetached(async (): Promise<void> => grpcManager.stop())
@@ -340,29 +372,36 @@ class PuppetService extends PUPPET.Puppet {
     }
 
     this.log.info('PuppetService', 'onStop() ... done')
-    this.log.info('PuppetService', 'stop healthCheck')
-    this.stopHealthCheck()
+  }
+
+  private trackSdkLifecycle (operation: () => void | Promise<void>): void {
+    // Keep the event worker free to process READY/barriers required by lifecycle RPCs.
+    const task = Promise.resolve().then(operation).catch((error: unknown): void => {
+      this.eventDrainError ??= error instanceof Error ? error : new Error(String(error))
+      this.log.error('PuppetService', 'SDK lifecycle task failed: %s', error)
+    }).finally((): void => { this.sdkLifecycleTasks.delete(task) })
+    this.sdkLifecycleTasks.add(task)
+  }
+
+  private async waitForSdkLifecycle (): Promise<void> {
+    while (this.sdkLifecycleTasks.size) { await Promise.all([ ...this.sdkLifecycleTasks ]) }
   }
 
   protected hookPayloadStore (): void {
     this.log.verbose('PuppetService', 'hookPayloadStore()')
 
-    this.on('login',  async ({ contactId }) => {
-      try {
+    this.on('login', ({ contactId }): void => {
+      this.trackSdkLifecycle(async (): Promise<void> => {
         this.log.verbose('PuppetService', 'hookPayloadStore() this.on(login) contactId: "%s"', contactId)
         await this._payloadStore.start(contactId)
-      } catch (e) {
-        this.log.verbose('PuppetService', 'hookPayloadStore() this.on(login) rejection "%s"', (e as Error).message)
-      }
+      })
     })
 
-    this.on('logout', async ({ contactId }) => {
+    this.on('logout', ({ contactId }): void => {
       this.log.verbose('PuppetService', 'hookPayloadStore() this.on(logout) contactId: "%s"', contactId)
-      try {
+      this.trackSdkLifecycle(async (): Promise<void> => {
         await this._payloadStore.stop()
-      } catch (e) {
-        this.log.verbose('PuppetService', 'hookPayloadStore() this.on(logout) rejection "%s"', (e as Error).message)
-      }
+      })
     })
   }
 
@@ -629,13 +668,7 @@ class PuppetService extends PUPPET.Puppet {
             }
           }
           if (!this.isEventEpochCurrent(epoch)) { return }
-          (
-            async () => this.login(loginPayload.contactId)
-          )().catch(e =>
-            this.log.error('PuppetService', 'onGrpcStreamEvent() this.login() rejection %s',
-              (e as Error).message,
-            ),
-          )
+          this.trackSdkLifecycle(async (): Promise<void> => this.login(loginPayload.contactId))
         }
         break
       case grpcPuppet.EventType.EVENT_TYPE_LOGOUT:
@@ -644,13 +677,7 @@ class PuppetService extends PUPPET.Puppet {
           if (this.eventMetadataEnabled) {
             await this.resetMiscellaneousStoreData(epoch)
           }
-          ;(
-            async () => this.logout(logoutPayload.data)
-          )().catch(e =>
-            this.log.error('PuppetService', 'onGrpcStreamEvent() this.logout() rejection %s',
-              (e as Error).message,
-            ),
-          )
+          this.trackSdkLifecycle(async (): Promise<void> => this.logout(logoutPayload.data))
         }
         break
       case grpcPuppet.EventType.EVENT_TYPE_DIRTY:
@@ -780,19 +807,18 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   override async logout (reason?: string): Promise<void> {
+    const manager = this._grpcManager
     this.stopRecovery(reason ?? 'Account logged out', false)
     this.log.verbose('PuppetService', 'logout(%s)', reason ? `"${reason}"` : '')
 
     await super.logout(reason)
+    if (!manager) { return }
 
     try {
-      await util.promisify(
-        this.grpcManager.client.logout
-          .bind(this.grpcManager.client),
-      )(new grpcPuppet.LogoutRequest())
-
+      await manager.logout()
     } catch (e) {
-      this.log.silly('PuppetService', 'logout() no grpc client')
+      this.log.error('PuppetService', 'logout() RPC failed: %s', e)
+      throw e
     }
   }
 
