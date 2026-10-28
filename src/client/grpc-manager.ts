@@ -17,7 +17,6 @@
  *   limitations under the License.
  *
  */
-import util from 'util'
 import EventEmitter from 'events'
 import crypto from 'crypto'
 
@@ -80,6 +79,8 @@ class GrpcManager extends EventEmitter {
   token      : WechatyToken
 
   private readonly _log: LoggerLike
+  private readonly lifecycleCalls = new Set<grpc.ClientUnaryCall>()
+  private lifecycleStopping = false
 
   constructor (private options: PuppetServiceOptions, private readonly recovery?: RecoveryGate) {
     super()
@@ -163,16 +164,14 @@ class GrpcManager extends EventEmitter {
      */
     this._log.verbose('GrpcManager', 'start() starting stream ...')
     await this.startStream(lastEventSeq, accountId)
+    if (this.streamRestartPrevented) { throw new Error('Start interrupted by restart preparation') }
     this._log.verbose('GrpcManager', 'start() starting stream ... done')
 
     /**
      * 3. Start the puppet
      */
     this._log.verbose('GrpcManager', 'start() calling grpc server: start() ...')
-    await util.promisify(
-      this.client.start
-        .bind(this.client),
-    )(new puppet.StartRequest())
+    await this.runLifecycleRpc(callback => this.client.start(new puppet.StartRequest(), new grpc.Metadata(), this.lifecycleCallOptions(), callback))
     this._log.verbose('GrpcManager', 'start() calling grpc server: start() ... done')
 
     this._log.verbose('GrpcManager', 'start() ... done')
@@ -193,10 +192,7 @@ class GrpcManager extends EventEmitter {
      */
     try {
       this._log.verbose('GrpcManager', 'stop() stop client ...')
-      await util.promisify(
-        this.client.stop
-          .bind(this.client),
-      )(new puppet.StopRequest())
+      await this.runLifecycleRpc(callback => this.client.stop(new puppet.StopRequest(), new grpc.Metadata(), this.lifecycleCallOptions(), callback), true)
       this._log.verbose('GrpcManager', 'stop() stop client ... done')
     } catch (e) {
       this.emit('error', e)
@@ -206,6 +202,35 @@ class GrpcManager extends EventEmitter {
     }
 
     this._log.verbose('GrpcManager', 'stop() ... done')
+  }
+
+  async logout (): Promise<void> {
+    await this.runLifecycleRpc(callback => this.client.logout(new puppet.LogoutRequest(), new grpc.Metadata(), this.lifecycleCallOptions(), callback))
+  }
+
+  cancelLifecycleCalls (): void {
+    this.lifecycleStopping = true
+    for (const call of this.lifecycleCalls) { call.cancel() }
+  }
+
+  private lifecycleCallOptions (): grpc.CallOptions {
+    return { deadline: Date.now() + (this.options.recovery?.controlTimeoutMilliseconds ?? 10_000) }
+  }
+
+  private async runLifecycleRpc (
+    operation: (callback: (error: grpc.ServiceError | null) => void) => grpc.ClientUnaryCall,
+    allowStopping = false,
+  ): Promise<void> {
+    if (this.lifecycleStopping && !allowStopping) { throw new Error('Manager lifecycle is stopping') }
+    let call: grpc.ClientUnaryCall | undefined
+    try {
+      await new Promise<void>((resolve, reject): void => {
+        call = operation((error): void => { error ? reject(error) : resolve() })
+        this.lifecycleCalls.add(call)
+      })
+    } finally {
+      if (call) { this.lifecycleCalls.delete(call) }
+    }
   }
 
   protected async initClient (): Promise<void> {
@@ -284,7 +309,10 @@ class GrpcManager extends EventEmitter {
     }
   }
 
+  private streamRestartPrevented = false
+
   async startStream (lastEventSeq?: string, accountId?: string): Promise<void> {
+    if (this.streamRestartPrevented) { throw new Error('Event stream disabled for restart') }
     if (this.recovery?.enabled) {
       return this.startRecoveryStream(lastEventSeq, accountId)
     }
@@ -307,6 +335,7 @@ class GrpcManager extends EventEmitter {
     this._log.info('GrpcManager', `startStream() connecting event stream with account ${accountId} and seq ${lastEventSeq}`)
 
     const eventStream = this.client.event(eventRequest)
+    this.eventStream = eventStream
     this._log.verbose('GrpcManager', 'startStream() grpc -> event() ... done')
 
     /**
@@ -340,6 +369,7 @@ class GrpcManager extends EventEmitter {
        * Any of the following events will be emitted means that there's a problem.
        */
       .once('cancel', (): void => { reject(new Error('Event stream cancelled before connection')) })
+      .once('close',  (): void => { reject(new Error('Event stream closed before connection')) })
       .once('end',    (): void => { reject(new Error('Event stream ended before connection')) })
       .once('error',  reject)
       /**
@@ -383,6 +413,7 @@ class GrpcManager extends EventEmitter {
     } finally {
       clearTimeout(peekTimer)
     }
+    if (this.eventStream !== eventStream) { throw new Error('Event stream superseded') }
     this._log.verbose('GrpcManager', 'startStream() grpc -> event peeking data or timeout ... data peeked')
 
     /**
@@ -454,7 +485,8 @@ class GrpcManager extends EventEmitter {
     })
   }
 
-  stopStream (): void {
+  stopStream (options: { throwOnError?: boolean, preventRestart?: boolean } = {}): void {
+    if (options.preventRestart) { this.streamRestartPrevented = true }
     this._log.verbose('GrpcManager', 'stopStream()')
 
     if (!this.eventStream) {
@@ -481,6 +513,7 @@ class GrpcManager extends EventEmitter {
       eventStream.destroy()
       this._log.verbose('GrpcManager', 'stopStream() destroying event stream ... done')
     } catch (e) {
+      if (options.throwOnError) { throw e }
       this.emit('error', e)
     }
   }
