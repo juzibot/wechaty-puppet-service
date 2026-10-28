@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 
-import { grpc } from '@juzi/wechaty-grpc'
+import { grpc, puppet } from '@juzi/wechaty-grpc'
+
+import { AdmissionRetryCall } from './admission-retry-call.js'
 
 export interface RecoveryOptions {
   readonly enabled: boolean
@@ -25,6 +27,10 @@ export type RecoveryState =
 interface EventContext { readonly current: () => boolean }
 interface RequestContext extends RecoveryRequestContext { readonly signals?: readonly AbortSignal[] }
 interface PendingMessage { readonly message: unknown, readonly next: (message: unknown) => void }
+interface AdmissionFence {
+  readonly current: () => boolean
+  readonly retrySignal?: AbortSignal
+}
 
 class AdmissionError extends Error {
 
@@ -77,8 +83,10 @@ export class RecoveryGate {
   private pendingRequests = 0
   private pendingBytes = 0
   private controls = new AbortController()
+  private admissionEpoch = 0
+  private admissionRetries = new AbortController()
 
-  constructor (readonly options?: RecoveryOptions, private readonly onExpired?: () => void) {
+  constructor (readonly options?: RecoveryOptions, private readonly onExpired?: () => void, private readonly onUnsubmitted?: () => boolean) {
     this.budget = options?.maxRecoveryMilliseconds ?? 300_000
     this.inactivity = options?.inactivityMilliseconds ?? 45_000
     this.maxPendingRequests = options?.maxPendingRequests ?? 256
@@ -100,6 +108,9 @@ export class RecoveryGate {
   begin (accountId?: string, newSession = false): void {
     if (!this.enabled) { return }
     if (newSession) {
+      this.admissionEpoch++
+      this.admissionRetries.abort()
+      this.admissionRetries = new AbortController()
       this.replaceControls()
       clearTimeout(this.timer)
       this.value = { status: 'offline', reason: 'New session' }
@@ -160,6 +171,7 @@ export class RecoveryGate {
 
   fail (reason: string): void {
     if (!this.enabled) { return }
+    this.admissionEpoch++
     clearTimeout(this.timer)
     this.value = { status: 'offline', reason }
     this.notify()
@@ -180,6 +192,28 @@ export class RecoveryGate {
 
   runDetached<Result> (operation: () => Result): Result {
     return requests.run({}, (): Result => events.exit(operation))
+  }
+
+  stopAdmissionRetries (): void { this.admissionRetries.abort() }
+
+  private async waitForAttempt (notBefore: number, deadline: number, signal: AbortSignal): Promise<void> {
+    await new Promise<void>((resolve, reject): void => {
+      let timer: NodeJS.Timeout | undefined
+      const finish = (error?: Error): void => {
+        clearTimeout(timer)
+        signal.removeEventListener('abort', check)
+        error ? reject(error) : resolve()
+      }
+      const check = (): void => {
+        if (signal.aborted) { finish(new Error('Request cancelled')); return }
+        const now = Date.now()
+        if (now >= deadline) { finish(new Error('Request deadline exceeded')); return }
+        if (now >= notBefore) { finish(); return }
+        timer = setTimeout(check, Math.max(1, Math.min(notBefore, deadline) - now))
+      }
+      signal.addEventListener('abort', check, { once: true })
+      check()
+    })
   }
 
   async wait (context: RequestContext = requests.getStore() ?? {}, bypass = false): Promise<void> {
@@ -212,7 +246,50 @@ export class RecoveryGate {
     const context = requests.getStore() ?? {}
     const event = events.getStore()
     const method = options.method_definition.path.split('/').pop() ?? ''
-    const bypass = controls.has(method) || (event !== undefined && replayReads.has(method))
+    const generatedUnary = Object.values(puppet.PuppetService).some(definition =>
+      definition.path === options.method_definition.path
+      && definition.responseDeserialize === options.method_definition.responseDeserialize
+      && definition.requestSerialize === options.method_definition.requestSerialize,
+    )
+    if (!this.enabled || controls.has(method) || options.method_definition.requestStream
+      || options.method_definition.responseStream || !generatedUnary) {
+      return this.interceptAttempt(options, nextCall, context, event)
+    }
+    const epoch = this.admissionEpoch
+    const deadline = Math.min(
+      context.deadline ?? Infinity,
+      options.deadline instanceof Date ? options.deadline.getTime() : options.deadline ?? Infinity,
+      event && replayReads.has(method) ? Date.now() + this.controlTimeout : Infinity,
+    )
+    const current = (): boolean => epoch === this.admissionEpoch && (!event || event.current())
+    let attempts = 0
+    let retryDeadline = deadline
+    return new grpc.InterceptingCall(new AdmissionRetryCall({ ...options, deadline },
+      (attemptOptions, notBefore) => {
+        const retrySignal = attempts++ > 0 ? this.admissionRetries.signal : undefined
+        return this.interceptAttempt({ ...attemptOptions, deadline: retryDeadline }, nextCall, context, event, notBefore, { current, retrySignal })
+      },
+      (): boolean => {
+        if (!current() || this.admissionRetries.signal.aborted || signalsOf(context).some(signal => signal.aborted) || Date.now() >= retryDeadline) { return false }
+        // Calls without a caller deadline still get one finite, non-renewing requeue budget.
+        if (!Number.isFinite(retryDeadline)) { retryDeadline = Date.now() + this.budget }
+        if (this.onUnsubmitted) { return this.onUnsubmitted() }
+        this.begin()
+        return true
+      },
+    ))
+  }
+
+  private interceptAttempt (
+    options: grpc.InterceptorOptions,
+    nextCall: grpc.NextCall,
+    context: RequestContext,
+    event?: EventContext,
+    notBefore = 0,
+    admission?: AdmissionFence,
+  ): grpc.InterceptingCall {
+    const method = options.method_definition.path.split('/').pop() ?? ''
+    const bypass = controls.has(method) || (event !== undefined && replayReads.has(method) && !admission?.retrySignal)
     const signals = signalsOf({ signals: signalsOf(context), signal: bypass ? this.controls.signal : undefined })
     const deadline = Math.min(
       context.deadline ?? Infinity,
@@ -244,6 +321,9 @@ export class RecoveryGate {
         } catch (error) { rejectCall(error) }
       },
       start: (metadata, listener, next): void => {
+        const cancelWaitingRetry = (): void => {
+          if (!started) { rejectCall(new Error('Restart preparation prevents deferred submission')) }
+        }
         const release = (): void => {
           if (reserved) { this.pendingRequests--; reserved = false }
           this.pendingBytes -= bytes
@@ -254,6 +334,7 @@ export class RecoveryGate {
           messages = []
           release()
           for (const signal of signals) { signal.removeEventListener('abort', abort) }
+          admission?.retrySignal?.removeEventListener('abort', cancelWaitingRetry)
         }
         rejectCall = (error: unknown): void => {
           if (finished) { return }
@@ -272,14 +353,18 @@ export class RecoveryGate {
           this.pendingRequests++; reserved = true
         }
         for (const signal of signals) { signal.addEventListener('abort', abort, { once: true }) }
+        admission?.retrySignal?.addEventListener('abort', cancelWaitingRetry, { once: true })
+        if (admission?.retrySignal?.aborted) { cancelWaitingRetry() }
         if (signals.some(signal => signal.aborted)) { abort() }
         const send = async (): Promise<void> => {
+          await this.waitForAttempt(notBefore, deadline, controller.signal)
           while (true) {
             await this.wait({ deadline, signal: controller.signal }, bypass)
             if (bypass || this.value.status !== 'recovering') { break }
           }
           if (!bypass && this.value.status === 'offline') { throw new Error(this.value.reason) }
           if (event && !event.current()) { throw new Error('Superseded event epoch') }
+          if (admission && (!admission.current() || admission.retrySignal?.aborted)) { throw new Error('Superseded admission attempt') }
           if (controller.signal.aborted || Date.now() >= deadline) { throw new Error('Request cancelled or expired') }
           if (finished) { return }
           started = true

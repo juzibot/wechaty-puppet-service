@@ -170,6 +170,10 @@ class PuppetService extends PUPPET.Puppet {
       if (this.restartRequested) { return }
       this.stopRecovery('Recovery budget exhausted')
       this.reportStreamError(new Error('Recovery budget exhausted'))
+    }, (): boolean => {
+      if (this.restartRequested || this.recoveryStopped || !this._grpcManager) { return false }
+      this.requestRecovery(this._grpcManager)
+      return this.recovery.state.status === 'recovering'
     })
     this._payloadStore = new PayloadStore({
       token  : envVars.WECHATY_PUPPET_SERVICE_TOKEN(this.options.token),
@@ -294,6 +298,7 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   private async drainForRestart (): Promise<void> {
+    this.recovery.stopAdmissionRetries()
     const manager = this._grpcManager
     const epoch = this.eventEpoch
     const queue = this.eventQueue
