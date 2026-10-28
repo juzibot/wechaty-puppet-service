@@ -123,6 +123,11 @@ class PuppetService extends PUPPET.Puppet {
   private pendingEventSeq?: number
   private checkpointQueue: Promise<void> = Promise.resolve()
   private pendingCheckpointRollback?: ReadonlyMap<string, string | undefined>
+  private restartRequested = false
+  private startInProgress = false
+  private restartPreparation?: Promise<void>
+  private eventDrainError?: Error
+  private stoppingManager?: GrpcManager
 
   private timeoutMilliseconds: number
   private readonly recovery: RecoveryGate
@@ -162,6 +167,7 @@ class PuppetService extends PUPPET.Puppet {
   ) {
     super(options)
     this.recovery = new RecoveryGate(options.recovery, (): void => {
+      if (this.restartRequested) { return }
       this.stopRecovery('Recovery budget exhausted')
       this.reportStreamError(new Error('Recovery budget exhausted'))
     })
@@ -213,10 +219,14 @@ class PuppetService extends PUPPET.Puppet {
 
   override async onStart (): Promise<void> {
     this.log.verbose('PuppetService', 'onStart()')
+    this.startInProgress = true
 
     this.waitingForLogin = false
     this.waitingForReady = false
     this.suspendEventProcessing()
+    this.restartRequested = false
+    this.restartPreparation = undefined
+    this.eventDrainError = undefined
     this.eventsBlocked = false
 
     if (this._grpcManager) {
@@ -240,6 +250,7 @@ class PuppetService extends PUPPET.Puppet {
 
     this.log.info('PuppetService', 'start() starting grpc manager...')
     const { lastEventSeq, accountId } = await this.eventResumePosition()
+    if (this.isPreparingForRestart()) { throw new Error('Start interrupted by restart preparation') }
     this.recoveryStopped = false
     this.recovery.begin(accountId, true)
     this.recoveryProcessedSeq = Number(lastEventSeq ?? 0)
@@ -250,13 +261,61 @@ class PuppetService extends PUPPET.Puppet {
       if (!this.recovery.enabled) { throw error }
       this.requestRecovery(grpcManager)
     }
+    if (this.isPreparingForRestart()) { throw new Error('Start interrupted by restart preparation') }
     this.log.info('PuppetService', 'start() starting grpc manager... done')
 
     this.log.info('PuppetService', 'start healthCheck')
     this.startHealthCheck()
 
     this.log.info('PuppetService', 'onStart() ... done')
+    this.startInProgress = false
   }
+
+  /** Stops event intake, not business RPCs. Deadline is absolute Unix milliseconds.
+   * Awaits store writes; it does not promise fsync or await async application listeners.
+   */
+  async prepareForRestart (options: { deadline: number }): Promise<void> {
+    if (!Number.isFinite(options.deadline)) { throw new RangeError('Restart deadline must be finite') }
+    if (options.deadline <= Date.now()) { throw new Error('Restart preparation deadline exceeded') }
+    if (!this.restartPreparation) {
+      this.restartRequested = true
+      this.restartPreparation = this.drainForRestart()
+    }
+    let timer: NodeJS.Timeout | undefined
+    const deadline = new Promise<never>((_resolve, reject): void => {
+      const check = (): void => {
+        const remaining = options.deadline - Date.now()
+        if (remaining <= 0) { reject(new Error('Restart preparation deadline exceeded')); return }
+        timer = setTimeout(check, Math.min(remaining, 2_147_483_647))
+      }
+      check()
+    })
+    try { await Promise.race([ this.restartPreparation, deadline ]) } finally { clearTimeout(timer) }
+  }
+
+  private async drainForRestart (): Promise<void> {
+    const manager = this._grpcManager
+    const epoch = this.eventEpoch
+    const queue = this.eventQueue
+    const interrupted = this.startInProgress || this.eventsBlocked || this.reconnectIndicator.value()
+      || (this.recovery.enabled && this.recovery.state.status !== 'ready')
+    this.recoveryStopped = true
+    clearTimeout(this.recoveryTimer)
+    clearTimeout(this.inactivityTimer)
+    this.recoveryTimer = undefined
+    this.stopHealthCheck()
+    if (!manager) { throw new Error('Cannot prepare restart without a grpc manager') }
+    manager.stopStream({ throwOnError: true, preventRestart: true })
+    if (interrupted) { throw new Error('Cannot prepare restart during recovery or suspended event processing') }
+    await queue
+    await this.checkpointQueue
+    if (this.eventDrainError) { throw this.eventDrainError }
+    if (epoch !== this.eventEpoch || manager !== this._grpcManager) { throw new Error('Restart preparation superseded') }
+    if (this.eventMetadataEnabled && !this._payloadStore.miscellaneous) { throw new Error('Event cursor storage is unavailable') }
+    if (this.pendingCheckpointRollback) { throw new Error('Event checkpoint rollback is incomplete') }
+  }
+
+  private isPreparingForRestart (): boolean { return this.restartRequested }
 
   override async onStop (): Promise<void> {
     this.log.info('PuppetService', 'onStop()')
@@ -268,7 +327,10 @@ class PuppetService extends PUPPET.Puppet {
       this.log.info('PuppetService', 'onStop() stopping grpc manager ...')
       const grpcManager = this._grpcManager
       this._grpcManager = undefined
-      await this.recovery.runDetached(async (): Promise<void> => grpcManager.stop())
+      this.stoppingManager = grpcManager
+      try {
+        await this.recovery.runDetached(async (): Promise<void> => grpcManager.stop())
+      } finally { this.stoppingManager = undefined }
       this.log.info('PuppetService', 'onStop() stopping grpc manager ... done')
     }
 
@@ -304,7 +366,7 @@ class PuppetService extends PUPPET.Puppet {
 
     client
       .on('data', (event: grpcPuppet.EventResponse): void => {
-        if (client !== this._grpcManager || this.eventsBlocked) { return }
+        if (client !== this._grpcManager || this.eventsBlocked || this.restartRequested) { return }
         this.touchRecoveryStream()
         if (this.recovery.enabled && event.getType() === grpcPuppet.EventType.EVENT_TYPE_LOGIN) {
           try {
@@ -346,13 +408,22 @@ class PuppetService extends PUPPET.Puppet {
           }
           if (epoch === this.eventEpoch) { this.activeEventSeq = undefined }
           return undefined
-        }).catch((error: unknown): void => { this.reportStreamError(error) })
+        }).catch((error: unknown): void => {
+          this.eventDrainError ??= error instanceof Error ? error : new Error(String(error))
+          this.reportStreamError(error)
+        })
       })
       .on('end', () => {
+        if (client !== this._grpcManager || this.restartRequested) { return }
         if (this.recovery.enabled) { this.requestRecovery(client) }
         this.log.verbose('PuppetService', 'bridgeGrpcEventStream() eventStream.on(end)')
       })
       .on('error', (e: unknown) => {
+        if (client === this.stoppingManager && !this.restartRequested) { this.reportStreamError(e); return }
+        if (client !== this._grpcManager || this.restartRequested) {
+          this.log.verbose('PuppetService', 'inactive stream error: %s', e)
+          return
+        }
         if (this.recovery.enabled) {
           if (this.recoveryStopped || client !== this._grpcManager) { this.reportStreamError(e) } else { this.requestRecovery(client) }
           return
@@ -374,6 +445,7 @@ class PuppetService extends PUPPET.Puppet {
         // }
       })
       .on('cancel', (...args: unknown[]) => {
+        if (client !== this._grpcManager || this.restartRequested) { return }
         if (this.recovery.enabled) { this.requestRecovery(client) }
         this.log.verbose('PuppetService', 'bridgeGrpcEventStream() eventStream.on(cancel), %s', JSON.stringify(args))
       })
@@ -416,7 +488,10 @@ class PuppetService extends PUPPET.Puppet {
 
   private async withEventCheckpoint<Result> (operation: () => Promise<Result>): Promise<Result> {
     const result = this.checkpointQueue.then(operation)
-    this.checkpointQueue = result.then((): undefined => undefined, (): undefined => undefined)
+    this.checkpointQueue = result.then((): undefined => undefined, (error: unknown): undefined => {
+      this.eventDrainError ??= error instanceof Error ? error : new Error(String(error))
+      return undefined
+    })
     return result
   }
 
@@ -467,7 +542,9 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   private haltEventStream (manager: GrpcManager, event: grpcPuppet.EventResponse, error: unknown): void {
+    this.eventDrainError ??= error instanceof Error ? error : new Error(String(error))
     this.failedEventSeq ??= event.getSeq()
+    if (this.restartRequested) { return }
     this.suspendEventProcessing()
     try {
       manager.stopStream()
@@ -4037,7 +4114,7 @@ class PuppetService extends PUPPET.Puppet {
 
   healthCheckInterval?: NodeJS.Timeout
   startHealthCheck () {
-    if (this.recovery.enabled) { return }
+    if (this.recovery.enabled || this.restartRequested) { return }
     this.healthCheckInterval = setInterval(() => {
       this.ding('healthCheck')
     }, 60 * 1000)
@@ -4054,6 +4131,7 @@ class PuppetService extends PUPPET.Puppet {
   private waitingForReady = false
   private reconnectIndicator: BooleanIndicator
   override async reset (): Promise<void> {
+    if (this.restartRequested) { return }
     if (this.recovery.enabled) {
       if (this._grpcManager) { this.requestRecovery(this._grpcManager) }
       return
@@ -4068,7 +4146,7 @@ class PuppetService extends PUPPET.Puppet {
     const manager = this._grpcManager
     try {
       await this.checkpointQueue
-      if (epoch !== this.eventEpoch) { return }
+      if (epoch !== this.eventEpoch || this.isPreparingForRestart()) { return }
       if (!manager || !this.isLoggedIn) {
         this.log.warn('PuppetService', 'grpc manager unavailable or puppet logged out, perform regular reset')
         return await super.reset()
@@ -4101,7 +4179,7 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   private requestRecovery (manager: GrpcManager): void {
-    if (this.recoveryStopped || manager !== this._grpcManager || this.recoveryTimer) { return }
+    if (this.restartRequested || this.recoveryStopped || manager !== this._grpcManager || this.recoveryTimer) { return }
     this.recovery.begin()
     this.suspendEventProcessing()
     manager.stopStream()
@@ -4125,6 +4203,7 @@ class PuppetService extends PUPPET.Puppet {
     this.eventsBlocked = false
     this.touchRecoveryStream()
     await manager.startStream(lastEventSeq, accountId)
+    if (this.restartRequested) { manager.stopStream(); return }
     if (!this.ownsEventWorker(manager, epoch)) { return }
     await util.promisify(manager.client.start.bind(manager.client))(new grpcPuppet.StartRequest())
   }
@@ -4132,7 +4211,7 @@ class PuppetService extends PUPPET.Puppet {
   private async resetEventStream (manager: GrpcManager, epoch: number): Promise<void> {
     manager.stopStream()
     const { lastEventSeq, accountId } = await this.eventResumePosition(epoch)
-    if (epoch !== this.eventEpoch || manager !== this._grpcManager) { return }
+    if (epoch !== this.eventEpoch || manager !== this._grpcManager || this.restartRequested) { return }
 
     const onLoginResolve = (resolve: () => void) => {
       const onLogin = (event: grpcPuppet.EventResponse) => {
@@ -4182,12 +4261,13 @@ class PuppetService extends PUPPET.Puppet {
     try {
       while (true) {
         try {
-          if (!this.ownsEventWorker(manager, epoch)) { return }
+          if (!this.ownsEventWorker(manager, epoch) || this.isPreparingForRestart()) { return }
           await timeoutPromise(manager.startStream(lastEventSeq, accountId), 30 * 1000)
+          if (this.isPreparingForRestart()) { manager.stopStream(); return }
           if (!this.ownsEventWorker(manager, epoch)) { return }
           break
         } catch (e) {
-          if (!this.ownsEventWorker(manager, epoch)) { return }
+          if (!this.ownsEventWorker(manager, epoch) || this.isPreparingForRestart()) { return }
           if (Date.now() - startTime < timeoutMilliseconds) {
             this.log.warn('failed to start stream, will try again in 15 seconds')
             await new Promise(resolve => {
@@ -4206,7 +4286,7 @@ class PuppetService extends PUPPET.Puppet {
             if (epoch === this.eventEpoch) { this.waitingForLogin = false }
           })
       } catch (e) {
-        if (!this.ownsEventWorker(manager, epoch)) { return }
+        if (!this.ownsEventWorker(manager, epoch) || this.isPreparingForRestart()) { return }
         this.log.warn('PuppetService', 'waiting for event reset login error, will perform regular reset')
         return super.reset()
       }

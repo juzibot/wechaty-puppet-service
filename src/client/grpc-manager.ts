@@ -163,6 +163,7 @@ class GrpcManager extends EventEmitter {
      */
     this._log.verbose('GrpcManager', 'start() starting stream ...')
     await this.startStream(lastEventSeq, accountId)
+    if (this.streamRestartPrevented) { throw new Error('Start interrupted by restart preparation') }
     this._log.verbose('GrpcManager', 'start() starting stream ... done')
 
     /**
@@ -284,7 +285,10 @@ class GrpcManager extends EventEmitter {
     }
   }
 
+  private streamRestartPrevented = false
+
   async startStream (lastEventSeq?: string, accountId?: string): Promise<void> {
+    if (this.streamRestartPrevented) { throw new Error('Event stream disabled for restart') }
     if (this.recovery?.enabled) {
       return this.startRecoveryStream(lastEventSeq, accountId)
     }
@@ -307,6 +311,7 @@ class GrpcManager extends EventEmitter {
     this._log.info('GrpcManager', `startStream() connecting event stream with account ${accountId} and seq ${lastEventSeq}`)
 
     const eventStream = this.client.event(eventRequest)
+    this.eventStream = eventStream
     this._log.verbose('GrpcManager', 'startStream() grpc -> event() ... done')
 
     /**
@@ -340,6 +345,7 @@ class GrpcManager extends EventEmitter {
        * Any of the following events will be emitted means that there's a problem.
        */
       .once('cancel', (): void => { reject(new Error('Event stream cancelled before connection')) })
+      .once('close',  (): void => { reject(new Error('Event stream closed before connection')) })
       .once('end',    (): void => { reject(new Error('Event stream ended before connection')) })
       .once('error',  reject)
       /**
@@ -383,6 +389,7 @@ class GrpcManager extends EventEmitter {
     } finally {
       clearTimeout(peekTimer)
     }
+    if (this.eventStream !== eventStream) { throw new Error('Event stream superseded') }
     this._log.verbose('GrpcManager', 'startStream() grpc -> event peeking data or timeout ... data peeked')
 
     /**
@@ -454,7 +461,8 @@ class GrpcManager extends EventEmitter {
     })
   }
 
-  stopStream (): void {
+  stopStream (options: { throwOnError?: boolean, preventRestart?: boolean } = {}): void {
+    if (options.preventRestart) { this.streamRestartPrevented = true }
     this._log.verbose('GrpcManager', 'stopStream()')
 
     if (!this.eventStream) {
@@ -481,6 +489,7 @@ class GrpcManager extends EventEmitter {
       eventStream.destroy()
       this._log.verbose('GrpcManager', 'stopStream() destroying event stream ... done')
     } catch (e) {
+      if (options.throwOnError) { throw e }
       this.emit('error', e)
     }
   }
