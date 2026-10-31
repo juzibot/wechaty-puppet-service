@@ -136,6 +136,7 @@ class PuppetService extends PUPPET.Puppet {
   private startInProgress = false
   private restartPreparation?: Promise<void>
   private eventDrainError?: Error
+  private sdkLifecycleError?: Error
   private stoppingManager?: GrpcManager
   private startingTask?: Promise<void>
   private transportStart?: TransportStartAttempt
@@ -320,6 +321,7 @@ class PuppetService extends PUPPET.Puppet {
     this.restartRequested = false
     this.restartPreparation = undefined
     this.eventDrainError = undefined
+    this.sdkLifecycleError = undefined
     this.listenerDrain = { pending: new Set() }
     this.eventsBlocked = false
 
@@ -459,7 +461,10 @@ class PuppetService extends PUPPET.Puppet {
     // Keep the event worker free to process READY/barriers required by lifecycle RPCs.
     const result = Promise.resolve().then(operation)
     const task = result.catch((error: unknown): void => {
-      if (drain === this.listenerDrain) { this.eventDrainError ??= error instanceof Error ? error : new Error(String(error)) }
+      if (drain === this.listenerDrain) {
+        this.sdkLifecycleError ??= error instanceof Error ? error : new Error(String(error))
+        this.eventDrainError ??= this.sdkLifecycleError
+      }
       this.log.error('PuppetService', 'SDK lifecycle task failed: %s', error)
     }).finally((): void => { this.sdkLifecycleTasks.delete(task) })
     this.sdkLifecycleTasks.add(task)
@@ -484,7 +489,8 @@ class PuppetService extends PUPPET.Puppet {
 
   private async acceptLogin (contactId: string, epoch: number): Promise<void> {
     await this.enqueueAuthentication(epoch, async (): Promise<void> => {
-      if (this.eventDrainError) { throw this.eventDrainError }
+      // Replayable event failures stay sticky for restart drain, not authentication.
+      if (this.sdkLifecycleError) { throw this.sdkLifecycleError }
       if (this.listenerDrain.error) { throw this.listenerDrain.error }
       if (this.isLoggedIn && this.currentUserId !== contactId) {
         throw new Error('Conflicting LOGIN account: must logout first before login again')

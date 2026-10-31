@@ -75,6 +75,75 @@ async function snapshotLoginTest (recoveryEnabled: boolean): Promise<void> {
 }
 
 for (const recoveryEnabled of [ false, true ]) {
+  test(`cache failure replays after same-account LOGIN, recovery=${recoveryEnabled}`, async t => {
+    const server = new grpc.Server()
+    let stream!: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>
+    let connections = 0
+    let sends = 0
+    const cursors: number[] = []
+    server.addService(puppet.PuppetService, {
+      event: (call: typeof stream): void => {
+        stream = call
+        connections++
+        cursors.push(call.request.getSeq())
+        call.write(response(puppet.EventType.EVENT_TYPE_HEARTBEAT, {}))
+        call.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }, connections === 1 ? 1 : 0))
+        if (connections > 1) { call.write(response(puppet.EventType.EVENT_TYPE_ROOM_MEMBER_LOAD, { roomId: 'room' }, 2)) }
+        call.write(response(puppet.EventType.EVENT_TYPE_READY, {}))
+        call.write(response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'A', throughSeq: connections === 1 ? 1 : 2 }))
+        call.write(response(puppet.EventType.EVENT_TYPE_DONG, { data: 'processed' }))
+      },
+      start: (_call: grpc.ServerUnaryCall<puppet.StartRequest, puppet.StartResponse>, callback: grpc.sendUnaryData<puppet.StartResponse>): void => { callback(null, new puppet.StartResponse()) },
+      stop: (_call: grpc.ServerUnaryCall<puppet.StopRequest, puppet.StopResponse>, callback: grpc.sendUnaryData<puppet.StopResponse>): void => { callback(null, new puppet.StopResponse()) },
+      messageSendText: (_call: grpc.ServerUnaryCall<puppet.MessageSendTextRequest, puppet.MessageSendTextResponse>, callback: grpc.sendUnaryData<puppet.MessageSendTextResponse>): void => {
+        sends++
+        const sent = new puppet.MessageSendTextResponse()
+        sent.setId('sent')
+        callback(null, sent)
+      },
+    })
+    const port = await bounded(new Promise<number>((resolve, reject): void => {
+      server.bindAsync('127.0.0.1:0', grpc.ServerCredentials.createInsecure(), (error, value): void => { error ? reject(error) : resolve(value) })
+    }))
+    const service = new AuthService({ token: `insecure_${randomUUID()}`, endpoint: `127.0.0.1:${port}`, tls: { disable: true }, recovery: { enabled: recoveryEnabled } })
+    sinon.stub(service.store, 'start').resolves(); sinon.stub(service.store, 'stop').resolves()
+    const remove = sinon.stub().onFirstCall().rejects(new Error('transient cache delete failure'))
+    remove.onSecondCall().resolves()
+    Object.defineProperty(service.store, 'room', { configurable: true, value: { delete: remove } })
+    Object.defineProperty(service.store, 'roomMember', { configurable: true, value: { delete: sinon.stub().resolves() } })
+    let logins = 0
+    let loaded = 0
+    service.on('login', (): void => { logins++ })
+    service.on('room-member-load', (): void => { loaded++ })
+    const initial = new Promise<void>((resolve): void => { service.once('dong', (): void => { resolve() }) })
+    try {
+      await bounded(service.onStart())
+      await bounded(initial)
+      assert.equal(service.currentUserId, 'A')
+      const failed = new Promise<void>((resolve): void => {
+        if (recoveryEnabled) { stream.once('cancelled', (): void => { resolve() }) } else { service.once('error', (): void => { resolve() }) }
+      })
+      stream.write(response(puppet.EventType.EVENT_TYPE_ROOM_MEMBER_LOAD, { roomId: 'room' }, 2))
+      await bounded(failed)
+      assert.equal(await service.store.miscellaneous!.get('lastEventSeq'), '1')
+      assert.equal(loaded, 0)
+      const replayed = new Promise<void>((resolve): void => { service.once('dong', (): void => { resolve() }) })
+      if (!recoveryEnabled) { await bounded(service.reset()) }
+      await bounded(replayed)
+      assert.equal(connections, 2)
+      assert.equal(cursors[1], 1)
+      assert.equal(logins, 1)
+      assert.equal(loaded, 1)
+      assert.equal(remove.callCount, 2)
+      assert.equal(await service.store.miscellaneous!.get('lastEventSeq'), '2')
+      if (recoveryEnabled) { assert.equal(service.recoveryState.status, 'ready') }
+      assert.equal(await bounded(service.messageSendText('recipient', 'after replay')), 'sent')
+      assert.equal(sends, 1)
+      await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 2000 }), /transient cache delete failure/)
+      t.pass('replay restores delivery without erasing the sticky restart-drain failure')
+    } finally { server.forceShutdown(); await bounded(service.cleanup()); sinon.restore() }
+  })
+
   test(`Event snapshot plus Start LOGIN is idempotent, recovery=${recoveryEnabled}`, async t => {
     await snapshotLoginTest(recoveryEnabled)
     t.pass('duplicate notification and recovery reconnect leave a clean drain')

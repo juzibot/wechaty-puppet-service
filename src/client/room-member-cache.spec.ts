@@ -60,6 +60,8 @@ function resetFixture (remove: () => Promise<void> = async (): Promise<void> => 
   const metadata = new Map([ [ 'lastEventSeq', '1' ], [ 'lastEventTimestamp', String(Date.now()) ], [ 'accountId', 'account' ] ])
   Object.defineProperty(service, '_payloadStore', {
     value: {
+      start: async (): Promise<void> => {},
+      stop: async (): Promise<void> => {},
       room: { delete: remove },
       roomMember: { delete: async (): Promise<void> => {} },
       miscellaneous: {
@@ -69,8 +71,7 @@ function resetFixture (remove: () => Promise<void> = async (): Promise<void> => 
       },
     },
   })
-  Object.defineProperty(service, 'isLoggedIn', { get: (): boolean => true })
-  sinon.stub(service, 'login').resolves()
+  service.login('account')
   const stop = sinon.stub(manager, 'stopStream')
   const started = deferred<void>()
   const release = deferred<void>()
@@ -384,6 +385,8 @@ test('reset waits for and rolls back a superseded asynchronous cursor commit bef
   const finishWrite = deferred<void>()
   Object.defineProperty(fixture.service, '_payloadStore', {
     value: {
+      start: async (): Promise<void> => {},
+      stop: async (): Promise<void> => {},
       room: { delete: async (): Promise<void> => {} },
       roomMember: { delete: async (): Promise<void> => {} },
       miscellaneous: {
