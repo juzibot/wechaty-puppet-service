@@ -6,6 +6,19 @@ import { test, sinon } from 'tstest'
 import { GrpcManager } from './grpc-manager.js'
 import { PuppetService } from './puppet-service.js'
 
+interface ResumePositionReader {
+  eventResumePosition: () => Promise<{ lastEventSeq?: string, accountId?: string }>
+}
+
+async function bounded<Result> (operation: Promise<Result>): Promise<Result> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([ operation, new Promise<never>((_resolve, reject): void => {
+      timer = setTimeout((): void => { reject(new Error('test operation did not settle')) }, 5000)
+    }) ])
+  } finally { clearTimeout(timer) }
+}
+
 class TransportService extends PuppetService {
 
   get manager (): GrpcManager | undefined { return this._grpcManager }
@@ -84,6 +97,48 @@ for (const mode of [ 'scan', 'rpc-error', 'rpc-timeout', 'refused', 'recovery' ]
   })
 }
 
+test('deadline during cursor initialization rejects before Start and fences late initialization', async t => {
+  const service = new TransportService({ token: `insecure_${randomUUID()}`, recovery: { enabled: true } })
+  let entered!: () => void
+  const entry = new Promise<void>((resolve): void => { entered = resolve })
+  let release!: () => void
+  const pending = new Promise<void>((resolve): void => { release = resolve })
+  // Hold the actual async boundary before GrpcManager.start, independent of disk speed.
+  const position = sinon.stub(service as unknown as ResumePositionReader, 'eventResumePosition').callsFake(async () => {
+    entered()
+    await bounded(pending)
+    return {}
+  })
+  const start = sinon.stub(GrpcManager.prototype, 'start').resolves()
+  const abort = sinon.spy(GrpcManager.prototype, 'abortStartup')
+  sinon.stub(GrpcManager.prototype, 'stop').resolves()
+  sinon.stub(GrpcManager.prototype, 'stopStream')
+  const health = sinon.spy(service, 'startHealthCheck')
+  try {
+    const starting = service.onStart()
+    const started = Promise.allSettled([ starting ])
+    await bounded(Promise.race([ entry, starting ]))
+    assert.equal(start.callCount, 0)
+    await assert.rejects(service.waitForTransportStart({ deadline: Date.now() + 10 }), /deadline/)
+    const [ outcome ] = await bounded(started)
+    assert.equal(outcome!.status, 'rejected')
+    if (outcome!.status === 'rejected') { assert.match(String(outcome!.reason), /deadline/) }
+    assert.equal(service.manager, undefined)
+    assert.equal(abort.callCount, 1)
+    assert.equal(health.callCount, 0)
+    release()
+    await bounded(new Promise<void>((resolve): void => { setImmediate(resolve) }))
+    assert.equal(start.callCount, 0, 'late initialization must not start the abandoned manager')
+    assert.equal(service.manager, undefined)
+    assert.equal(health.callCount, 0)
+    position.restore()
+    await bounded(Promise.all([ service.waitForTransportStart({ deadline: Date.now() + 2000 }), service.onStart() ]))
+    assert.equal(start.callCount, 1)
+    assert.equal(health.callCount, 1)
+    t.pass('pre-Start expiry cleans up and a fresh generation can start')
+  } finally { release(); try { await bounded(service.cleanup()) } finally { sinon.restore() } }
+})
+
 for (const mode of [ 'success', 'failure', 'timeout', 'stop', 'drain', 'legacy-end', 'legacy-cancel' ] as const) {
   test(`transport start contract: ${mode}`, async t => {
     const legacyEvent = mode === 'legacy-end' ? 'end' : mode === 'legacy-cancel' ? 'cancel' : undefined
@@ -93,23 +148,29 @@ for (const mode of [ 'success', 'failure', 'timeout', 'stop', 'drain', 'legacy-e
     let release!: () => void
     const pending = new Promise<void>((resolve): void => { release = resolve })
     const start = sinon.stub(GrpcManager.prototype, 'start').callsFake(async (): Promise<void> => {
-      entered(); await pending
+      entered(); await bounded(pending)
       if (mode === 'failure') { throw new Error('initial transport rejected') }
     })
     sinon.stub(GrpcManager.prototype, 'stop').resolves()
     sinon.stub(GrpcManager.prototype, 'stopStream')
     const health = sinon.spy(service, 'startHealthCheck')
     try {
-      const waiting = service.waitForTransportStart({ deadline: Date.now() + (mode === 'timeout' ? 30 : 2000) })
+      const waiting = service.waitForTransportStart({ deadline: Date.now() + 2000 })
       const starting = service.onStart()
       const results = Promise.allSettled([ waiting, starting ])
-      await entry
+      await bounded(Promise.race([ entry, starting.then((): never => { throw new Error('Start completed without entering the stub') }) ]))
+      if (mode === 'timeout') {
+        await assert.rejects(service.waitForTransportStart({ deadline: Date.now() + 10 }), /deadline/)
+      }
       if (mode === 'stop') { await service.onStop() }
       if (mode === 'drain') { await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 1000 })) }
       if (legacyEvent) { service.grpcManager.emit(legacyEvent); release() }
       if (mode === 'success' || mode === 'failure') { release() }
-      const outcomes = await results
+      const outcomes = await bounded(results)
       assert.deepEqual(outcomes.map(result => result.status), mode === 'success' ? [ 'fulfilled', 'fulfilled' ] : [ 'rejected', 'rejected' ])
+      if (mode === 'timeout') {
+        for (const outcome of outcomes) { if (outcome.status === 'rejected') { assert.match(String(outcome.reason), /deadline/) } }
+      }
       assert.equal(health.callCount, mode === 'success' ? 1 : 0)
       if (mode !== 'success') { assert.equal(service.manager, undefined) }
       release(); await new Promise<void>((resolve): void => { setImmediate(resolve) })
@@ -126,6 +187,6 @@ for (const mode of [ 'success', 'failure', 'timeout', 'stop', 'drain', 'legacy-e
         assert.equal(service.manager, manager, 'established legacy stream behavior is unchanged')
       }
       t.pass('generation invalidation fences late completion; a fresh generation can start')
-    } finally { release(); await service.cleanup(); sinon.restore() }
+    } finally { release(); try { await bounded(service.cleanup()) } finally { sinon.restore() } }
   })
 }
