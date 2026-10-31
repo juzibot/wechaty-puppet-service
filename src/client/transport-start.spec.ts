@@ -84,9 +84,10 @@ for (const mode of [ 'scan', 'rpc-error', 'rpc-timeout', 'refused', 'recovery' ]
   })
 }
 
-for (const mode of [ 'success', 'failure', 'timeout', 'stop', 'drain' ] as const) {
+for (const mode of [ 'success', 'failure', 'timeout', 'stop', 'drain', 'legacy-end', 'legacy-cancel' ] as const) {
   test(`transport start contract: ${mode}`, async t => {
-    const service = new TransportService({ token: `insecure_${randomUUID()}`, recovery: { enabled: true } })
+    const legacyEvent = mode === 'legacy-end' ? 'end' : mode === 'legacy-cancel' ? 'cancel' : undefined
+    const service = new TransportService({ token: `insecure_${randomUUID()}`, recovery: { enabled: !legacyEvent } })
     let entered!: () => void
     const entry = new Promise<void>((resolve): void => { entered = resolve })
     let release!: () => void
@@ -105,6 +106,7 @@ for (const mode of [ 'success', 'failure', 'timeout', 'stop', 'drain' ] as const
       await entry
       if (mode === 'stop') { await service.onStop() }
       if (mode === 'drain') { await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 1000 })) }
+      if (legacyEvent) { service.grpcManager.emit(legacyEvent); release() }
       if (mode === 'success' || mode === 'failure') { release() }
       const outcomes = await results
       assert.deepEqual(outcomes.map(result => result.status), mode === 'success' ? [ 'fulfilled', 'fulfilled' ] : [ 'rejected', 'rejected' ])
@@ -117,6 +119,12 @@ for (const mode of [ 'success', 'failure', 'timeout', 'stop', 'drain' ] as const
       start.resolves()
       await Promise.all([ service.waitForTransportStart({ deadline: Date.now() + 1000 }), service.onStart() ])
       assert.equal(health.callCount, mode === 'success' ? 2 : 1)
+      if (legacyEvent) {
+        const manager = service.grpcManager
+        manager.emit(legacyEvent)
+        await service.waitForTransportStart({ deadline: Date.now() + 1000 })
+        assert.equal(service.manager, manager, 'established legacy stream behavior is unchanged')
+      }
       t.pass('generation invalidation fences late completion; a fresh generation can start')
     } finally { release(); await service.cleanup(); sinon.restore() }
   })

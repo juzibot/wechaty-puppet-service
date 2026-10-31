@@ -292,7 +292,7 @@ class PuppetService extends PUPPET.Puppet {
   private async startTransport (attempt: TransportStartAttempt): Promise<void> {
     try {
       if (attempt.failed) { await attempt.completed() }
-      await Promise.race([ this.startService(), attempt.completed() ])
+      await Promise.race([ this.startService(attempt), attempt.completed() ])
       if (attempt.failed) { await attempt.completed() }
       attempt.succeed()
     } catch (error) {
@@ -307,7 +307,7 @@ class PuppetService extends PUPPET.Puppet {
     }
   }
 
-  private async startService (): Promise<void> {
+  private async startService (attempt: TransportStartAttempt): Promise<void> {
     this.log.verbose('PuppetService', 'onStart()')
     this.startInProgress = true
 
@@ -337,6 +337,7 @@ class PuppetService extends PUPPET.Puppet {
     this.log.info('PuppetService', 'start() starting grpc manager...')
     const { lastEventSeq, accountId } = await this.eventResumePosition()
     if (grpcManager !== this._grpcManager) { throw new Error('Transport start superseded') }
+    if (attempt.failed) { await attempt.completed() }
     if (this.isPreparingForRestart()) { throw new Error('Start interrupted by restart preparation') }
     this.recoveryStopped = false
     this.recovery.begin(accountId, true)
@@ -344,6 +345,7 @@ class PuppetService extends PUPPET.Puppet {
     this.touchRecoveryStream()
     await grpcManager.start(lastEventSeq, accountId)
     if (grpcManager !== this._grpcManager) { throw new Error('Transport start superseded') }
+    if (attempt.failed) { await attempt.completed() }
     if (this.isPreparingForRestart()) { throw new Error('Start interrupted by restart preparation') }
     this.log.info('PuppetService', 'start() starting grpc manager... done')
 
@@ -533,6 +535,10 @@ class PuppetService extends PUPPET.Puppet {
       })
       .on('end', () => {
         if (client !== this._grpcManager || this.restartRequested) { return }
+        if (this.startInProgress) {
+          this.transportStart?.fail(new Error('Initial transport stream ended'))
+          return
+        }
         if (this.recovery.enabled) { this.requestRecovery(client) }
         this.log.verbose('PuppetService', 'bridgeGrpcEventStream() eventStream.on(end)')
       })
@@ -568,6 +574,10 @@ class PuppetService extends PUPPET.Puppet {
       })
       .on('cancel', (...args: unknown[]) => {
         if (client !== this._grpcManager || this.restartRequested) { return }
+        if (this.startInProgress) {
+          this.transportStart?.fail(new Error('Initial transport stream cancelled'))
+          return
+        }
         if (this.recovery.enabled) { this.requestRecovery(client) }
         this.log.verbose('PuppetService', 'bridgeGrpcEventStream() eventStream.on(cancel), %s', JSON.stringify(args))
       })
