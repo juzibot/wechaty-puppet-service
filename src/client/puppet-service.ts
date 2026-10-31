@@ -141,6 +141,8 @@ class PuppetService extends PUPPET.Puppet {
   private transportStart?: TransportStartAttempt
   private stoppingTask?: Promise<void>
   private readonly sdkLifecycleTasks = new Set<Promise<void>>()
+  private authenticationQueue: Promise<void> = Promise.resolve()
+  private authenticationGeneration = 0
   private listenerDrain: ListenerDrain = { pending: new Set() }
 
   private timeoutMilliseconds: number
@@ -308,6 +310,7 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   private async startService (attempt: TransportStartAttempt): Promise<void> {
+    this.authenticationGeneration++
     this.log.verbose('PuppetService', 'onStart()')
     this.startInProgress = true
 
@@ -419,6 +422,7 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   private async stopService (): Promise<void> {
+    this.authenticationGeneration++
     this.log.info('PuppetService', 'onStop()')
     this.transportStart?.fail(new Error('Transport start interrupted by stop'))
     this.transportStart = undefined
@@ -450,13 +454,64 @@ class PuppetService extends PUPPET.Puppet {
     this.log.info('PuppetService', 'onStop() ... done')
   }
 
-  private trackSdkLifecycle (operation: () => void | Promise<void>): void {
+  private trackSdkLifecycle (operation: () => void | Promise<void>): Promise<void> {
+    const drain = this.listenerDrain
     // Keep the event worker free to process READY/barriers required by lifecycle RPCs.
-    const task = Promise.resolve().then(operation).catch((error: unknown): void => {
-      this.eventDrainError ??= error instanceof Error ? error : new Error(String(error))
+    const result = Promise.resolve().then(operation)
+    const task = result.catch((error: unknown): void => {
+      if (drain === this.listenerDrain) { this.eventDrainError ??= error instanceof Error ? error : new Error(String(error)) }
       this.log.error('PuppetService', 'SDK lifecycle task failed: %s', error)
     }).finally((): void => { this.sdkLifecycleTasks.delete(task) })
     this.sdkLifecycleTasks.add(task)
+    return result
+  }
+
+  private enqueueAuthentication (epoch: number, operation: () => Promise<void>, eventBound = true): Promise<void> {
+    const manager = this._grpcManager
+    const generation = this.authenticationGeneration
+    const task = this.authenticationQueue.then(async (): Promise<void> => {
+      if (generation !== this.authenticationGeneration || manager !== this._grpcManager) { return }
+      if (eventBound && !this.isEventEpochCurrent(epoch)) { return }
+      await operation()
+      return undefined
+    })
+    void this.trackSdkLifecycle((): Promise<void> => task)
+    // Failure is retained by trackSdkLifecycle; only local transitions serialize here.
+    // Store hooks and RPCs may need later events and must not join this queue.
+    this.authenticationQueue = task.catch((): void => {})
+    return task
+  }
+
+  private async acceptLogin (contactId: string, epoch: number): Promise<void> {
+    await this.enqueueAuthentication(epoch, async (): Promise<void> => {
+      if (this.eventDrainError) { throw this.eventDrainError }
+      if (this.listenerDrain.error) { throw this.listenerDrain.error }
+      if (this.isLoggedIn && this.currentUserId !== contactId) {
+        throw new Error('Conflicting LOGIN account: must logout first before login again')
+      }
+      if (this.recovery.enabled) {
+        this.recovery.login(contactId)
+        if (this.recovery.state.status === 'offline') { throw new Error('Account changed during recovery') }
+      }
+      if (this.isLoggedIn) { return }
+      if (this.eventMetadataEnabled) {
+        const { accountId } = await this.getMiscellaneousStoreData()
+        if (!this.isEventEpochCurrent(epoch)) { return }
+        if (accountId !== contactId) {
+          await this.resetMiscellaneousStoreData(epoch)
+          if (!this.isEventEpochCurrent(epoch)) { return }
+          await this.setMiscellaneousStoreData({ accountId: contactId }, epoch)
+        }
+      }
+      if (this.isEventEpochCurrent(epoch)) { this.login(contactId) }
+    })
+  }
+
+  private async logoutLocally (reason: string | undefined, epoch: number, eventBound = true): Promise<void> {
+    await this.enqueueAuthentication(epoch, async (): Promise<void> => {
+      this.stopRecovery(reason ?? 'Account logged out', false)
+      await super.logout(reason)
+    }, eventBound)
   }
 
   private async waitForSdkLifecycle (): Promise<void> {
@@ -467,7 +522,7 @@ class PuppetService extends PUPPET.Puppet {
     this.log.verbose('PuppetService', 'hookPayloadStore()')
 
     this.on('login', ({ contactId }): void => {
-      this.trackSdkLifecycle(async (): Promise<void> => {
+      void this.trackSdkLifecycle(async (): Promise<void> => {
         this.log.verbose('PuppetService', 'hookPayloadStore() this.on(login) contactId: "%s"', contactId)
         await this._payloadStore.start(contactId)
       })
@@ -475,7 +530,7 @@ class PuppetService extends PUPPET.Puppet {
 
     this.on('logout', ({ contactId }): void => {
       this.log.verbose('PuppetService', 'hookPayloadStore() this.on(logout) contactId: "%s"', contactId)
-      this.trackSdkLifecycle(async (): Promise<void> => {
+      void this.trackSdkLifecycle(async (): Promise<void> => {
         await this._payloadStore.stop()
       })
     })
@@ -493,12 +548,12 @@ class PuppetService extends PUPPET.Puppet {
             const payload = JSON.parse(event.getPayload()) as { contactId: string }
             if (!this.recovery.checkAccount(payload.contactId)) {
               this.stopRecovery('Account changed or invalid login')
-              this.reportStreamError(new Error('Account changed or invalid login'))
+              this.haltEventStream(client, event, new Error('Account changed or invalid login'))
               return
             }
           } catch (error) {
             this.stopRecovery('Invalid login payload')
-            this.reportStreamError(error)
+            this.haltEventStream(client, event, error)
             return
           }
         }
@@ -730,33 +785,7 @@ class PuppetService extends PUPPET.Puppet {
       case grpcPuppet.EventType.EVENT_TYPE_LOGIN:
         {
           const loginPayload = JSON.parse(payload) as PUPPET.payloads.EventLogin
-          if (this.recovery.enabled) {
-            this.recovery.login(loginPayload.contactId)
-            if (this.recovery.state.status === 'offline') {
-              this.stopRecovery('Account changed during recovery')
-              this.reportStreamError(new Error('Account changed during recovery'))
-              return
-            }
-            if (this.isLoggedIn) { break }
-          }
-          if (this.waitingForLogin && this.isLoggedIn) {
-            this.log.warn('PuppetService', 'this login event is ignored because the it is expected by event stream reconnect and this puppet is already logged in')
-            return
-          }
-          if (this.eventMetadataEnabled) {
-            const { accountId } = await this.getMiscellaneousStoreData()
-            if (!this.isEventEpochCurrent(epoch)) { return }
-            if (accountId !== loginPayload.contactId) {
-              await this.resetMiscellaneousStoreData(epoch)
-              if (!this.isEventEpochCurrent(epoch)) { return }
-              await this.setMiscellaneousStoreData({
-                accountId: loginPayload.contactId,
-              }, epoch)
-              if (!this.isEventEpochCurrent(epoch)) { return }
-            }
-          }
-          if (!this.isEventEpochCurrent(epoch)) { return }
-          this.trackSdkLifecycle(async (): Promise<void> => this.login(loginPayload.contactId))
+          await this.acceptLogin(loginPayload.contactId, epoch)
         }
         break
       case grpcPuppet.EventType.EVENT_TYPE_LOGOUT:
@@ -765,7 +794,11 @@ class PuppetService extends PUPPET.Puppet {
           if (this.eventMetadataEnabled) {
             await this.resetMiscellaneousStoreData(epoch)
           }
-          this.trackSdkLifecycle(async (): Promise<void> => this.logout(logoutPayload.data))
+          const manager = this._grpcManager
+          await this.logoutLocally(logoutPayload.data, epoch)
+          if (manager && this.ownsEventWorker(manager, epoch)) {
+            void this.trackSdkLifecycle(async (): Promise<void> => manager.logout())
+          }
         }
         break
       case grpcPuppet.EventType.EVENT_TYPE_DIRTY:
@@ -896,14 +929,14 @@ class PuppetService extends PUPPET.Puppet {
 
   override async logout (reason?: string): Promise<void> {
     const manager = this._grpcManager
-    this.stopRecovery(reason ?? 'Account logged out', false)
+    const epoch = this.eventEpoch
     this.log.verbose('PuppetService', 'logout(%s)', reason ? `"${reason}"` : '')
 
-    await super.logout(reason)
-    if (!manager) { return }
+    await this.logoutLocally(reason, epoch, false)
+    if (!manager || manager !== this._grpcManager) { return }
 
     try {
-      await manager.logout()
+      await this.trackSdkLifecycle(async (): Promise<void> => manager.logout())
     } catch (e) {
       this.log.error('PuppetService', 'logout() RPC failed: %s', e)
       throw e

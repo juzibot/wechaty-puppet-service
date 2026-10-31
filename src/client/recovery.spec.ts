@@ -19,6 +19,13 @@ class RecoveryTestService extends PuppetService {
 
 }
 
+class RealLoginRecoveryService extends PuppetService {
+
+  protected override hookPayloadStore (): void {}
+  async destroyTestStore (): Promise<void> { await this._payloadStore.destroy() }
+
+}
+
 async function until (condition: () => boolean): Promise<void> {
   const deadline = Date.now() + 3000
   while (!condition()) {
@@ -419,12 +426,12 @@ test('PuppetService isolates LOGIN B after ready A even when already logged in',
   const port = await new Promise<number>((resolve, reject): void => {
     server.bindAsync('127.0.0.1:0', grpc.ServerCredentials.createInsecure(), (error, value): void => { error ? reject(error) : resolve(value) })
   })
-  const service = new RecoveryTestService({ token: 'insecure_swapped-account', endpoint: `127.0.0.1:${port}`, tls: { disable: true }, recovery: { enabled: true } })
-  Object.defineProperty(service, 'isLoggedIn', { get: (): boolean => true })
+  const service = new RealLoginRecoveryService({ token: `insecure_swapped-account-${Date.now()}`, endpoint: `127.0.0.1:${port}`, tls: { disable: true }, recovery: { enabled: true } })
   service.on('error', (): void => {})
   try {
     await service.onStart()
     await until((): boolean => service.recoveryState.status === 'ready')
+    assert.equal(service.currentUserId, 'A')
     await service.messageSendText('contact', 'before')
     assert.equal(sends, 1)
     stream!.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'B' }))
@@ -432,7 +439,7 @@ test('PuppetService isolates LOGIN B after ready A even when already logged in',
     await assert.rejects(service.messageSendText('contact', 'after'), /Account changed/)
     assert.equal(sends, 1)
     assert.equal(service.grpcManager.eventStream, undefined)
-  } finally { await service.onStop(); server.forceShutdown() }
+  } finally { await service.onStop(); await service.destroyTestStore(); server.forceShutdown() }
   t.pass('the SDK rejects writes after a ready-session account change')
 })
 
