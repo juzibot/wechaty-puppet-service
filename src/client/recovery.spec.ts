@@ -360,11 +360,12 @@ test('healthy heartbeat cannot keep unanswered lifecycle controls alive', async 
   const service = new RecoveryTestService({ token: 'insecure_controls', endpoint: `127.0.0.1:${port}`, tls: { disable: true }, recovery: { enabled: true, controlTimeoutMilliseconds: 40 } })
   service.on('error', (): void => {})
   try {
-    await service.onStart()
-    assert.equal(started, 1)
+    const starting = assert.rejects(service.onStart(), /DEADLINE_EXCEEDED/)
     const manager = service.grpcManager
+    await starting
+    assert.equal(started, 1)
     await service.onStop()
-    assert.equal(stopped, 1)
+    assert.equal(stopped, 0, 'failed initial startup closes locally without another remote control')
     assert.throws((): void => { void manager.client }, /NO CLIENT/)
     for (const mode of [ 'epoch', 'session', 'budget' ]) {
       const gate = new RecoveryGate({ enabled: true, maxRecoveryMilliseconds: 100, controlTimeoutMilliseconds: 1000 })
@@ -388,14 +389,14 @@ test('healthy heartbeat cannot keep unanswered lifecycle controls alive', async 
     const concurrent = new RecoveryTestService({ token: 'insecure_concurrent-stop', endpoint: `127.0.0.1:${port}`, tls: { disable: true }, recovery: { enabled: true, controlTimeoutMilliseconds: 1000 } })
     concurrent.on('error', (): void => {})
     const startCount = started
-    const starting = concurrent.onStart()
+    const concurrentStarting = assert.rejects(concurrent.onStart(), /interrupted by stop/)
     await until((): boolean => started > startCount)
     const stoppingAt = Date.now()
     const stopping = concurrent.withRecoveryRequestContext({ deadline: Date.now() + 40 }, async (): Promise<void> => concurrent.onStop())
-    await starting
+    await concurrentStarting
     assert.ok(Date.now() - stoppingAt < 500, 'stop cancels old Start instead of waiting its 1000ms deadline')
     await stopping
-    await until((): boolean => cancelled >= 10)
+    await until((): boolean => cancelled >= 9)
   } finally { server.forceShutdown() }
   t.pass('control deadlines and lifecycle cancellation bound start and stop')
 })
@@ -586,7 +587,7 @@ test('recovery cursor persists with event cache disabled while legacy clients ke
       const read = sinon.stub(service.eventMetadataStore, 'get').rejects(failure)
       try {
         await assert.rejects(service.onStart(), failure)
-        t.equal(service.grpcManager.eventStream, undefined, 'failed cursor read never opens a fabricated seq-zero stream')
+        assert.throws((): void => { void service.grpcManager }, /no grpc manager/, 'failed cursor read releases the manager')
       } finally { read.restore() }
     } finally { await service.onStop(); await service.destroyTestStore() }
   } finally {

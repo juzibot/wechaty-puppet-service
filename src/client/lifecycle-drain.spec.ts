@@ -151,7 +151,7 @@ test('late startup cannot resume ownership after stop and concurrent restarts co
   sinon.stub(GrpcManager.prototype, 'stopStream')
   const health = sinon.spy(service, 'startHealthCheck')
   try {
-    const initial = service.onStart()
+    const initial = assert.rejects(service.onStart(), /interrupted by stop/)
     await entry
     const oldManager = service.grpcManager
     const stopping = service.onStop()
@@ -188,7 +188,7 @@ for (const mode of [ 'start', 'logout' ] as const) {
     })
     const service = new LifecycleService({ token: `insecure_${randomUUID()}`, endpoint: `127.0.0.1:${port}`, tls: { disable: true } })
     sinon.stub(service.store, 'start').resolves(); sinon.stub(service.store, 'stop').resolves()
-    const starting = service.onStart()
+    const starting = mode === 'start' ? assert.rejects(service.onStart(), /interrupted by stop/) : service.onStart()
     let stopping: Promise<void> | undefined
     let timer: NodeJS.Timeout | undefined
     try {

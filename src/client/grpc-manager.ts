@@ -213,6 +213,11 @@ class GrpcManager extends EventEmitter {
     for (const call of this.lifecycleCalls) { call.cancel() }
   }
 
+  abortStartup (): void {
+    this.cancelLifecycleCalls()
+    try { this.stopStream({ preventRestart: true }) } finally { this.destroyClient() }
+  }
+
   private lifecycleCallOptions (): grpc.CallOptions {
     return { deadline: Date.now() + (this.options.recovery?.controlTimeoutMilliseconds ?? 10_000) }
   }
