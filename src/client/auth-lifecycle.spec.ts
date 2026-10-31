@@ -81,6 +81,82 @@ for (const recoveryEnabled of [ false, true ]) {
   })
 }
 
+test('real gRPC logout listener can await public logout while echoed LOGOUT RPCs drain', async t => {
+  const server = new grpc.Server()
+  let stream!: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>
+  let logoutCalls = 0
+  let releaseDerivedRpc: (() => void) | undefined
+  let derivedRpcEntered!: () => void
+  const derivedRpc = new Promise<void>((resolve): void => { derivedRpcEntered = resolve })
+  server.addService(puppet.PuppetService, {
+    event: (call: typeof stream): void => {
+      stream = call
+      call.write(response(puppet.EventType.EVENT_TYPE_HEARTBEAT, {}))
+    },
+    start: (_call: grpc.ServerUnaryCall<puppet.StartRequest, puppet.StartResponse>, callback: grpc.sendUnaryData<puppet.StartResponse>): void => {
+      stream.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+      stream.write(response(puppet.EventType.EVENT_TYPE_READY, {}))
+      callback(null, new puppet.StartResponse())
+    },
+    logout: (_call: grpc.ServerUnaryCall<puppet.LogoutRequest, puppet.LogoutResponse>, callback: grpc.sendUnaryData<puppet.LogoutResponse>): void => {
+      logoutCalls++
+      // Model one in-flight duplicate notification, not an echo for every RPC.
+      // The server delegates to puppet.logout(); the base Puppet stops emitting
+      // once logged out. An adapter that always emits would create a feedback loop.
+      if (logoutCalls === 1) {
+        stream.write(response(puppet.EventType.EVENT_TYPE_LOGOUT, { data: 'server echo' }))
+        stream.write(response(puppet.EventType.EVENT_TYPE_DONG, { data: 'echo processed' }))
+      }
+      if (logoutCalls === 3) {
+        releaseDerivedRpc = (): void => { callback(null, new puppet.LogoutResponse()) }
+        derivedRpcEntered()
+        return
+      }
+      callback(null, new puppet.LogoutResponse())
+    },
+    stop: (_call: grpc.ServerUnaryCall<puppet.StopRequest, puppet.StopResponse>, callback: grpc.sendUnaryData<puppet.StopResponse>): void => { callback(null, new puppet.StopResponse()) },
+  })
+  const port = await bounded(new Promise<number>((resolve, reject): void => {
+    server.bindAsync('127.0.0.1:0', grpc.ServerCredentials.createInsecure(), (error, value): void => { error ? reject(error) : resolve(value) })
+  }))
+  const service = new AuthService({ token: `insecure_${randomUUID()}`, endpoint: `127.0.0.1:${port}`, tls: { disable: true } })
+  sinon.stub(service.store, 'start').resolves(); sinon.stub(service.store, 'stop').resolves()
+  const ready = new Promise<void>((resolve): void => { service.once('ready', (): void => { resolve() }) })
+  const echoProcessed = new Promise<void>((resolve): void => { service.once('dong', (): void => { resolve() }) })
+  let listenerCompleted!: () => void
+  const listenerDone = new Promise<void>((resolve): void => { listenerCompleted = resolve })
+  let logoutEvents = 0
+  service.on('logout', async (): Promise<void> => {
+    logoutEvents++
+    assert.equal(logoutEvents, 1, 'logout must not recursively emit')
+    await service.logout('listener reentry')
+    listenerCompleted()
+  })
+  try {
+    await bounded(service.onStart())
+    await bounded(ready)
+    assert.equal(service.currentUserId, 'A')
+    stream.write(response(puppet.EventType.EVENT_TYPE_LOGOUT, { data: 'remote logout' }))
+    await bounded(Promise.all([ listenerDone, echoProcessed, derivedRpc ]))
+    assert.equal(service.isLoggedIn, false)
+    assert.equal(logoutEvents, 1)
+    assert.equal(logoutCalls, 3, 'remote logout, listener reentry and server echo each issue one RPC')
+    await bounded(assert.rejects(service.prepareForRestart({ deadline: Date.now() + 20 }), /deadline/))
+    assert.ok(releaseDerivedRpc)
+    releaseDerivedRpc()
+    releaseDerivedRpc = undefined
+    await bounded(service.prepareForRestart({ deadline: Date.now() + 2000 }))
+    assert.equal(logoutEvents, 1)
+    assert.equal(logoutCalls, 3)
+    t.pass('listener completes without recursion or deadlock, but derived RPC still blocks restart')
+  } finally {
+    releaseDerivedRpc?.()
+    server.forceShutdown()
+    await bounded(service.cleanup())
+    sinon.restore()
+  }
+})
+
 function fixture (logout: () => Promise<void> = async (): Promise<void> => {}, startStore: () => Promise<void> = async (): Promise<void> => {}): { service: AuthService, manager: GrpcManager } {
   const service = new AuthService({ token: `insecure_${randomUUID()}` })
   const manager = new GrpcManager({ token: `insecure_${randomUUID()}` })
