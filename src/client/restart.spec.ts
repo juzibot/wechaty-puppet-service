@@ -194,11 +194,13 @@ test('preparation racing a connecting legacy stream rejects and cannot reopen it
   try {
     const starting = assert.rejects(service.onStart(), /closed|superseded|restart/)
     await connection
+    const manager = service.grpcManager
     await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 2000 }), /during recovery/)
     await starting
     assert.equal(starts, 0)
-    assert.equal(service.grpcManager.eventStream, undefined)
-    await assert.rejects(service.grpcManager.startStream(), /disabled for restart/)
+    assert.equal(manager.eventStream, undefined)
+    await assert.rejects(manager.startStream(), /disabled for restart/)
+    assert.throws((): void => { void manager.client }, /NO CLIENT/)
     t.pass('pending startup cannot publish a late stream or start RPC')
   } finally { await service.cleanup(); server.forceShutdown() }
 })

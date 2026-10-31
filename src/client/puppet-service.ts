@@ -52,6 +52,8 @@ import {
 import { packageJson }  from '../package-json.js'
 
 import { GrpcManager }  from './grpc-manager.js'
+import { TransportStartAttempt } from './transport-start.js'
+import type { TransportStartOptions } from './transport-start.js'
 import { RecoveryGate, withRecoveryRequestContext } from './recovery.js'
 import type { RecoveryOptions, RecoveryRequestContext, RecoveryState } from './recovery.js'
 import { PayloadStore } from './payload-store.js'
@@ -136,6 +138,7 @@ class PuppetService extends PUPPET.Puppet {
   private eventDrainError?: Error
   private stoppingManager?: GrpcManager
   private startingTask?: Promise<void>
+  private transportStart?: TransportStartAttempt
   private stoppingTask?: Promise<void>
   private readonly sdkLifecycleTasks = new Set<Promise<void>>()
   private listenerDrain: ListenerDrain = { pending: new Set() }
@@ -266,14 +269,41 @@ class PuppetService extends PUPPET.Puppet {
     return packageJson.version || '0.0.0'
   }
 
+  /** May be armed before start(). Confirms transport Start only, never login/readiness. */
+  waitForTransportStart (options: TransportStartOptions): Promise<void> {
+    if (!this.transportStart || (this.transportStart.failed && !this.startingTask)) {
+      this.transportStart = new TransportStartAttempt()
+    }
+    return this.transportStart.wait(options)
+  }
+
   override async onStart (): Promise<void> {
     if (this.stoppingTask) { await this.stoppingTask }
     if (this.startingTask) { return this.startingTask }
     if (this._grpcManager) { await this.onStop(); return this.onStart() }
-    const task = this.startService()
+    const attempt = this.transportStart ??= new TransportStartAttempt()
+    const task = this.startTransport(attempt)
     this.startingTask = task
     try { await task } finally {
       if (this.startingTask === task) { this.startingTask = undefined; this.startInProgress = false }
+    }
+  }
+
+  private async startTransport (attempt: TransportStartAttempt): Promise<void> {
+    try {
+      if (attempt.failed) { await attempt.completed() }
+      await Promise.race([ this.startService(), attempt.completed() ])
+      if (attempt.failed) { await attempt.completed() }
+      attempt.succeed()
+    } catch (error) {
+      attempt.fail(error instanceof Error ? error : new Error(String(error)))
+      const manager = this._grpcManager
+      this.stopRecovery('Initial transport start failed', false)
+      this.suspendEventProcessing()
+      this.stopHealthCheck()
+      this._grpcManager = undefined
+      try { manager?.abortStartup() } catch (cleanupError) { this.reportStreamError(cleanupError) }
+      throw error
     }
   }
 
@@ -306,20 +336,14 @@ class PuppetService extends PUPPET.Puppet {
 
     this.log.info('PuppetService', 'start() starting grpc manager...')
     const { lastEventSeq, accountId } = await this.eventResumePosition()
-    if (grpcManager !== this._grpcManager) { return }
+    if (grpcManager !== this._grpcManager) { throw new Error('Transport start superseded') }
     if (this.isPreparingForRestart()) { throw new Error('Start interrupted by restart preparation') }
     this.recoveryStopped = false
     this.recovery.begin(accountId, true)
     this.recoveryProcessedSeq = Number(lastEventSeq ?? 0)
     this.touchRecoveryStream()
-    try {
-      await grpcManager.start(lastEventSeq, accountId)
-    } catch (error) {
-      if (grpcManager !== this._grpcManager) { return }
-      if (!this.recovery.enabled) { throw error }
-      this.requestRecovery(grpcManager)
-    }
-    if (grpcManager !== this._grpcManager) { return }
+    await grpcManager.start(lastEventSeq, accountId)
+    if (grpcManager !== this._grpcManager) { throw new Error('Transport start superseded') }
     if (this.isPreparingForRestart()) { throw new Error('Start interrupted by restart preparation') }
     this.log.info('PuppetService', 'start() starting grpc manager... done')
 
@@ -338,6 +362,7 @@ class PuppetService extends PUPPET.Puppet {
     if (options.deadline <= Date.now()) { throw new Error('Restart preparation deadline exceeded') }
     if (!this.restartPreparation) {
       this.restartRequested = true
+      this.transportStart?.fail(new Error('Transport start interrupted by restart preparation'))
       this.restartPreparation = this.drainForRestart()
     }
     let timer: NodeJS.Timeout | undefined
@@ -393,6 +418,8 @@ class PuppetService extends PUPPET.Puppet {
 
   private async stopService (): Promise<void> {
     this.log.info('PuppetService', 'onStop()')
+    this.transportStart?.fail(new Error('Transport start interrupted by stop'))
+    this.transportStart = undefined
     const grpcManager = this._grpcManager
     const starting = this.startingTask
     this.stopRecovery('Puppet stopped')
@@ -513,6 +540,10 @@ class PuppetService extends PUPPET.Puppet {
         if (client === this.stoppingManager && !this.restartRequested) { this.reportStreamError(e); return }
         if (client !== this._grpcManager || this.restartRequested) {
           this.log.verbose('PuppetService', 'inactive stream error: %s', e)
+          return
+        }
+        if (this.startInProgress) {
+          this.transportStart?.fail(e instanceof Error ? e : new Error(String(e)))
           return
         }
         if (this.recovery.enabled) {
@@ -4258,6 +4289,10 @@ class PuppetService extends PUPPET.Puppet {
 
   private requestRecovery (manager: GrpcManager): void {
     if (this.restartRequested || this.recoveryStopped || manager !== this._grpcManager || this.recoveryTimer) { return }
+    if (this.startInProgress) {
+      this.transportStart?.fail(new Error('Initial transport stream interrupted'))
+      return
+    }
     this.recovery.begin()
     this.suspendEventProcessing()
     manager.stopStream()
