@@ -68,6 +68,59 @@ const uuidRegisterGrpc: (grpcClient: () => pbPuppet.PuppetClient) => UuidSaver =
   return uuid
 }
 
+// File sends use this directly so cancellation can detach exactly the pipe
+// it owns, without FileBox.toUuid's additional pipe/error-forwarding listeners.
+const uploadFileBoxForRun = async (
+  client: pbPuppet.PuppetClient,
+  stream: Readable,
+  assertCurrent: () => void,
+): Promise<string> => {
+  const response = await new Promise<pbPuppet.UploadResponse>((resolve, reject) => {
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let request: ReturnType<pbPuppet.PuppetClient['upload']> | undefined
+    let encoder: ReturnType<typeof chunkEncoder> | undefined
+
+    const finish = (error: unknown, response?: pbPuppet.UploadResponse): void => {
+      if (settled) { return }
+      settled = true
+      clearTimeout(timer)
+      stream.removeListener('error', fail)
+      if (encoder) {
+        stream.unpipe(encoder)
+        encoder.unpipe()
+        encoder.destroy()
+      }
+      if (error) {
+        reject(error)
+        request?.cancel()
+      } else {
+        resolve(response!)
+      }
+    }
+    const fail = (error: unknown): void => { finish(error) }
+    stream.on('error', fail)
+    try {
+      // normalizeFileBoxUuid has awaited toStream before entering this saver.
+      assertCurrent()
+      request = client.upload((error, response) => { finish(error, response) })
+      if (settled) { return }
+      request.on('error', fail)
+      request.write(new pbPuppet.UploadRequest())
+      timer = setTimeout(() => {
+        if (settled) { return }
+        try {
+          assertCurrent()
+          encoder = chunkEncoder(pbPuppet.UploadRequest)
+          encoder.on('error', fail)
+          stream.pipe(encoder).pipe(request!)
+        } catch (error) { fail(error) }
+      }, 1000)
+    } catch (error) { fail(error) }
+  })
+  return response.getId()
+}
+
 type UuidifyFileBoxGrpcFactory = (grpcClient: () => pbPuppet.PuppetClient) => typeof FileBox
 
 const uuidifyFileBoxGrpc: UuidifyFileBoxGrpcFactory = (
@@ -89,4 +142,5 @@ const uuidifyFileBoxGrpc: UuidifyFileBoxGrpcFactory = (
 
 export {
   uuidifyFileBoxGrpc,
+  uploadFileBoxForRun,
 }
