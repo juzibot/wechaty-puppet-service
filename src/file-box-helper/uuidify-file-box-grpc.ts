@@ -1,6 +1,7 @@
 import type {
   Readable,
 }                       from 'stream'
+import { PassThrough } from 'stream'
 
 import {
   FileBox,
@@ -79,6 +80,7 @@ const uploadFileBoxForRun = async (
     let settled = false
     let timer: ReturnType<typeof setTimeout> | undefined
     let request: ReturnType<pbPuppet.PuppetClient['upload']> | undefined
+    let bytes: PassThrough | undefined
     let encoder: ReturnType<typeof chunkEncoder> | undefined
 
     const finish = (error: unknown, response?: pbPuppet.UploadResponse): void => {
@@ -86,8 +88,12 @@ const uploadFileBoxForRun = async (
       settled = true
       clearTimeout(timer)
       stream.removeListener('error', fail)
+      if (bytes) {
+        stream.unpipe(bytes)
+        bytes.unpipe()
+        bytes.destroy()
+      }
       if (encoder) {
-        stream.unpipe(encoder)
         encoder.unpipe()
         encoder.destroy()
       }
@@ -111,9 +117,13 @@ const uploadFileBoxForRun = async (
         if (settled) { return }
         try {
           assertCurrent()
+          // Keep FileBox.toUuid's byte-mode boundary: protobuf bytes fields
+          // interpret strings as base64, while file stream strings are UTF-8.
+          bytes = new PassThrough()
+          bytes.on('error', fail)
           encoder = chunkEncoder(pbPuppet.UploadRequest)
           encoder.on('error', fail)
-          stream.pipe(encoder).pipe(request!)
+          stream.pipe(bytes).pipe(encoder).pipe(request!)
         } catch (error) { fail(error) }
       }, 1000)
     } catch (error) { fail(error) }

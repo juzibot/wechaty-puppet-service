@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
+import { createReadStream, readFileSync } from 'node:fs'
 import { Readable, Writable } from 'node:stream'
 
 import { grpc, puppet, StringValue } from '@juzi/wechaty-grpc'
@@ -30,6 +31,7 @@ function observe<T> (promise: Promise<T>) {
 class Upload extends Writable {
 
   readonly chunks: puppet.UploadRequest[] = []
+  readonly wire: Buffer[] = []
   readonly cancel = sinon.spy((): void => {})
   readonly piped = sinon.spy()
 
@@ -41,7 +43,13 @@ class Upload extends Writable {
 
   override _write (chunk: puppet.UploadRequest, _encoding: BufferEncoding, callback: (error?: Error) => void): void {
     this.chunks.push(chunk)
-    callback()
+    try {
+      // Exercise the actual protobuf wire contract: string bytes fields are
+      // interpreted as base64, so inspecting the pre-serialization value is insufficient.
+      const decoded = puppet.UploadRequest.deserializeBinary(chunk.serializeBinary())
+      this.wire.push(Buffer.from(decoded.getChunk_asU8()))
+      callback()
+    } catch (error) { callback(error as Error) }
   }
 
   reply (error: Error | null = null): void {
@@ -146,6 +154,33 @@ async function send (service: MediaService, mode: Mode, file: FileBox) {
 }
 
 for (const mode of [ 'single', 'batch' ] as const) {
+  for (const sample of [
+    { name: 'ASCII string chunks', stream: (): Readable => Readable.from([ 'hel', 'lo' ]), expected: Buffer.from('hello') },
+    { name: 'base64-looking string chunk', stream: (): Readable => Readable.from([ 'YWJj' ]), expected: Buffer.from('YWJj') },
+    { name: 'Unicode string chunks', stream: (): Readable => Readable.from([ '你', '好，SDK 👋' ]), expected: Buffer.from('你好，SDK 👋') },
+    { name: 'UTF-8 encoded file stream', stream: (): Readable => createReadStream(new URL(import.meta.url), { encoding: 'utf8', highWaterMark: 127 }), expected: readFileSync(new URL(import.meta.url)) },
+    { name: 'binary Buffer chunks', stream: (): Readable => Readable.from([ Buffer.from([ 0, 255, 254, 195, 40 ]), Buffer.from('YWJj') ]), expected: Buffer.concat([ Buffer.from([ 0, 255, 254, 195, 40 ]), Buffer.from('YWJj') ]) },
+  ]) {
+    test(`${mode}: protobuf upload preserves bytes for ${sample.name}`, async t => {
+      const f = await fixture()
+      const source = sample.stream()
+      try {
+        const operation = send(f.service, mode, FileBox.fromStream(source, 'wire.txt'))
+        const result = observe(operation)
+        const settled = Promise.allSettled([ operation ])
+        await f.clock.tickAsync(1000)
+        await settled
+        assert.equal(result.state, 'fulfilled', String(result.error ?? 'send succeeds'))
+        const client = f.clients[0]!
+        assert.equal(client.uploads.length, 1)
+        const bytes = Buffer.concat(client.uploads[0]!.wire)
+        assert.deepEqual(bytes, sample.expected, 'decoded protobuf wire bytes match the original file bytes')
+        assert.equal(client.sends.length, 1)
+        t.pass('both upload content and send count match')
+      } finally { source.destroy(); await f.cleanup() }
+    })
+  }
+
   for (const restart of [ false, true ]) {
     test(`${mode}: pending toStream cannot upload/send after stop${restart ? ' and start' : ''}`, async t => {
       const f = await fixture()
