@@ -15,14 +15,14 @@ type Callback<T> = (error: Error | null, response?: T) => void
 type Mode = 'single' | 'batch'
 
 function deferred<T> () {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>(done => { resolve = done })
-  return { promise, resolve }
+  let release!: (value: T) => void
+  const promise = new Promise<T>(resolve => { release = resolve })
+  return { promise, resolve: release }
 }
 
 function observe<T> (promise: Promise<T>) {
   const result: { state: 'pending' | 'fulfilled' | 'rejected', value?: T, error?: unknown } = { state: 'pending' }
-  void promise.then(value => { result.state = 'fulfilled'; result.value = value }, error => { result.state = 'rejected'; result.error = error })
+  void promise.then(value => { result.state = 'fulfilled'; result.value = value; return undefined }, error => { result.state = 'rejected'; result.error = error; return undefined })
   return result
 }
 
@@ -41,7 +41,7 @@ class Upload extends Writable {
     this.on('finish', (): void => { if (autoReply) { this.reply() } })
   }
 
-  override _write (chunk: puppet.UploadRequest, _encoding: BufferEncoding, callback: (error?: Error) => void): void {
+  override _write (chunk: puppet.UploadRequest, _encoding: string, callback: (error?: Error) => void): void {
     this.chunks.push(chunk)
     try {
       // Exercise the actual protobuf wire contract: string bytes fields are
@@ -154,6 +154,35 @@ async function send (service: MediaService, mode: Mode, file: FileBox) {
 }
 
 for (const mode of [ 'single', 'batch' ] as const) {
+  for (const error of [ null, new Error('synchronous upload failure') ]) {
+    test(`${mode}: synchronous upload ${error ? 'failure' : 'success'} does not write or schedule a pipe`, async t => {
+      const f = await fixture()
+      const source = Readable.from([ Buffer.from('not consumed') ])
+      const pipe = sinon.spy(source, 'pipe')
+      try {
+        const client = f.clients[0]!
+        sinon.stub(client, 'upload').callsFake(callback => {
+          const request = new Upload(callback, false)
+          client.uploads.push(request)
+          request.reply(error)
+          return request
+        })
+        const timersBefore = f.clock.countTimers()
+        const result = observe(send(f.service, mode, FileBox.fromStream(source, 'sync.txt')))
+        await f.clock.tickAsync(0)
+        assert.equal(result.state, error ? 'rejected' : 'fulfilled')
+        if (error) { assert.equal(result.error, error) }
+        assert.equal(client.uploads[0]!.chunks.length, 0, 'no header write after the callback has settled')
+        assert.equal(f.clock.countTimers(), timersBefore, 'no delayed pipe timer is installed')
+        await f.clock.tickAsync(1000)
+        assert.equal(pipe.callCount, 0)
+        assert.equal(source.destroyed, false, 'borrowed source is preserved')
+        assert.equal(client.sends.length, error ? 0 : 1)
+        t.pass('synchronous completion retains the early return')
+      } finally { source.destroy(); await f.cleanup() }
+    })
+  }
+
   for (const sample of [
     { name: 'ASCII string chunks', stream: (): Readable => Readable.from([ 'hel', 'lo' ]), expected: Buffer.from('hello') },
     { name: 'base64-looking string chunk', stream: (): Readable => Readable.from([ 'YWJj' ]), expected: Buffer.from('YWJj') },

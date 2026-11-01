@@ -77,15 +77,15 @@ const uploadFileBoxForRun = async (
   assertCurrent: () => void,
 ): Promise<string> => {
   const response = await new Promise<pbPuppet.UploadResponse>((resolve, reject) => {
-    let settled = false
+    const state = { settled: false }
     let timer: ReturnType<typeof setTimeout> | undefined
     let request: ReturnType<pbPuppet.PuppetClient['upload']> | undefined
     let bytes: PassThrough | undefined
     let encoder: ReturnType<typeof chunkEncoder> | undefined
 
     const finish = (error: unknown, response?: pbPuppet.UploadResponse): void => {
-      if (settled) { return }
-      settled = true
+      if (state.settled) { return }
+      state.settled = true
       clearTimeout(timer)
       stream.removeListener('error', fail)
       if (bytes) {
@@ -110,11 +110,11 @@ const uploadFileBoxForRun = async (
       // normalizeFileBoxUuid has awaited toStream before entering this saver.
       assertCurrent()
       request = client.upload((error, response) => { finish(error, response) })
-      if (settled) { return }
+      if (state.settled) { return }
       request.on('error', fail)
       request.write(new pbPuppet.UploadRequest())
       timer = setTimeout(() => {
-        if (settled) { return }
+        if (state.settled) { return }
         try {
           assertCurrent()
           // Keep FileBox.toUuid's byte-mode boundary: protobuf bytes fields
