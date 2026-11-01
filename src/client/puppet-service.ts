@@ -40,6 +40,8 @@ import {
   uuidifyFileBoxGrpc,
   normalizeFileBoxUuid,
 }                       from '../file-box-helper/mod.js'
+import { uploadFileBoxForRun } from '../file-box-helper/uuidify-file-box-grpc.js'
+import type { FileBoxStreamSaver } from '../file-box-helper/normalize-filebox.js'
 import {
   envVars,
   log,
@@ -241,7 +243,7 @@ class PuppetService extends PUPPET.Puppet {
     this.reconnectIndicator.value(false)
   }
 
-  protected async serializeFileBox (fileBox: FileBoxInterface): Promise<string> {
+  protected async serializeFileBox (fileBox: FileBoxInterface, saveStream?: FileBoxStreamSaver): Promise<string> {
     /**
      * 1. if the fileBox is one of type `Url`, `QRCode`, `Uuid`, etc,
      *  then it can be serialized by `fileBox.toString()`
@@ -249,7 +251,7 @@ class PuppetService extends PUPPET.Puppet {
      *  then it need to be convert to type `Uuid`
      *  before serialized by `fileBox.toString()`
      */
-    const normalizedFileBox = await normalizeFileBoxUuid(this.FileBoxUuid)(fileBox)
+    const normalizedFileBox = await normalizeFileBoxUuid(this.FileBoxUuid, saveStream)(fileBox)
     return JSON.stringify(normalizedFileBox)
   }
 
@@ -2326,17 +2328,22 @@ class PuppetService extends PUPPET.Puppet {
   ): Promise<MessageBatchSendResponse> {
     this.log.verbose('PuppetService', 'messageBatchSendFile(%s)', conversationIds.join(','))
 
+    const manager = this.grpcManager
+    const client = manager.client
+    const assertCurrent = (): void => {
+      if (this._grpcManager !== manager || manager.client !== client) {
+        throw new Error('File send interrupted by stop or client replacement')
+      }
+    }
     const request = new grpcPuppet.MessageBatchSendFileRequest()
     request.setConversationIdsList(conversationIds)
-    request.setFileBox(await this.serializeFileBox(fileBox))
+    request.setFileBox(await this.serializeFileBox(fileBox, stream => uploadFileBoxForRun(client, stream, assertCurrent)))
     if (batchTaskId) {
       request.setBatchTaskId(batchTaskId)
     }
 
-    const response = await this.grpcUnary<grpcPuppet.MessageBatchSendFileRequest, grpcPuppet.MessageBatchSendFileResponse>(
-      this.grpcManager.client.messageBatchSendFile,
-      request,
-    )
+    assertCurrent()
+    const response = await util.promisify(client.messageBatchSendFile.bind(client))(request)
 
     return grpcBatchResultsToPayload(response)
   }
@@ -2508,16 +2515,23 @@ class PuppetService extends PUPPET.Puppet {
   ): Promise<void | string> {
     this.log.verbose('PuppetService', 'messageSendFile(%s, %s)', conversationId, fileBox)
 
+    const manager = this.grpcManager
+    const client = manager.client
+    const assertCurrent = (): void => {
+      if (this._grpcManager !== manager || manager.client !== client) {
+        throw new Error('File send interrupted by stop or client replacement')
+      }
+    }
     const request = new grpcPuppet.MessageSendFileRequest()
     request.setConversationId(conversationId)
 
-    const serializedFileBox = await this.serializeFileBox(fileBox)
+    const serializedFileBox = await this.serializeFileBox(fileBox, stream => uploadFileBoxForRun(client, stream, assertCurrent))
     request.setFileBox(serializedFileBox)
 
     this.log.info('PuppetService', `messageSendFile(${conversationId}, ${fileBox}) about to call grpc`)
+    assertCurrent()
     const response = await util.promisify(
-      this.grpcManager.client.messageSendFile
-        .bind(this.grpcManager.client),
+      client.messageSendFile.bind(client),
     )(request)
 
     const messageId = response.getId()

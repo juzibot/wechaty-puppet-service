@@ -1,6 +1,7 @@
 import type {
   FileBox,
 }                     from 'file-box'
+import type { Readable } from 'stream'
 import {
   FileBoxType,
   FileBoxInterface,
@@ -64,16 +65,24 @@ const canPassthrough = (fileBox: FileBoxInterface) => {
 
 }
 
-const normalizeFileBoxUuid = (FileBoxUuid: typeof FileBox) => async (fileBox: FileBoxInterface) => {
+type FileBoxStreamSaver = (stream: Readable) => Promise<string>
+
+const normalizeFileBoxUuid = (FileBoxUuid: typeof FileBox, saveStream?: FileBoxStreamSaver) => async (fileBox: FileBoxInterface) => {
   if (canPassthrough(fileBox)) {
     return fileBox
   }
 
   const stream = await fileBox.toStream()
-
-  const uuid = await FileBoxUuid
-    .fromStream(stream, fileBox.name)
-    .toUuid()
+  let uuid: string
+  try {
+    uuid = saveStream
+      ? await saveStream(stream)
+      : await FileBoxUuid.fromStream(stream, fileBox.name).toUuid()
+  } finally {
+    // Buffer/File conversions create a stream for this read. A Stream FileBox
+    // borrows its caller's stream, which may also be used by another operation.
+    if (saveStream && fileBox.type !== FileBoxType.Stream) { stream.destroy() }
+  }
 
   const uuidFileBox = FileBoxUuid.fromUuid(uuid, {
     md5  : fileBox.md5,
@@ -88,3 +97,5 @@ export {
   canPassthrough,
   normalizeFileBoxUuid,
 }
+
+export type { FileBoxStreamSaver }
