@@ -81,6 +81,47 @@ class GrpcManager extends EventEmitter {
   private readonly _log: LoggerLike
   private readonly lifecycleCalls = new Set<grpc.ClientUnaryCall>()
   private lifecycleStopping = false
+  private activeCalls = 0
+  private retiring = false
+  private retired?: () => void
+  private readonly trackedCalls = new Set<grpc.InterceptingCallInterface>()
+
+  // A connection replacement retires only the Event subscription. Calls already
+  // submitted on this channel retain their original callback/deadline.
+  retire (): Promise<void> {
+    this.retiring = true
+    this.stopStream({ preventRestart: true })
+    const completed = new Promise<void>(resolve => { this.retired = resolve })
+    if (!this.activeCalls) { this.destroyClient() }
+    return completed
+  }
+
+  private readonly trackCalls: grpc.Interceptor = (options, nextCall) => {
+    if (options.method_definition.path.endsWith('/Event')) { return new grpc.InterceptingCall(nextCall(options)) }
+    this.activeCalls++
+    let finished = false
+    let tracked: grpc.InterceptingCallInterface | undefined
+    const finish = (): void => {
+      if (finished) { return }
+      finished = true
+      this.activeCalls--
+      if (tracked) { this.trackedCalls.delete(tracked) }
+      if (this.retiring && !this.activeCalls) { this.destroyClient() }
+    }
+    try {
+      tracked = nextCall(options)
+      this.trackedCalls.add(tracked)
+      return new grpc.InterceptingCall(tracked, {
+        start: (metadata, _listener, next): void => {
+          next(metadata, {
+            onReceiveStatus: (status, deliver): void => {
+              try { deliver(status) } finally { finish() }
+            },
+          })
+        },
+      })
+    } catch (error) { finish(); throw error }
+  }
 
   constructor (private options: PuppetServiceOptions, private readonly recovery?: RecoveryGate) {
     super()
@@ -215,6 +256,7 @@ class GrpcManager extends EventEmitter {
 
   abortStartup (): void {
     this.cancelLifecycleCalls()
+    for (const call of this.trackedCalls) { call.cancelWithStatus(grpc.status.CANCELLED, 'Transport closed') }
     try { this.stopStream({ preventRestart: true }) } finally { this.destroyClient() }
   }
 
@@ -238,7 +280,7 @@ class GrpcManager extends EventEmitter {
     }
   }
 
-  protected async initClient (): Promise<void> {
+  async initClient (): Promise<void> {
     this._log.verbose('GrpcManager', 'initClient()')
 
     /**
@@ -262,7 +304,8 @@ class GrpcManager extends EventEmitter {
     const clientOptions: grpc.ChannelOptions = {
       ...GRPC_OPTIONS,
       'grpc.ssl_target_name_override': this.serverName,
-      ...(this.recovery?.enabled ? { interceptors: [ this.recovery.interceptor ], 'grpc.enable_retries': 0 } : {}),
+      interceptors: [ this.trackCalls, ...(this.recovery?.enabled ? [ this.recovery.interceptor ] : []) ],
+      ...(this.recovery?.enabled ? { 'grpc.enable_retries': 0 } : {}),
     }
 
     {
@@ -293,6 +336,8 @@ class GrpcManager extends EventEmitter {
   }
 
   protected destroyClient (): void {
+    this.retired?.()
+    this.retired = undefined
     this._log.verbose('GrpcManager', 'destroyClient()')
 
     if (!this._client) {
