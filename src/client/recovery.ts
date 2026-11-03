@@ -29,6 +29,7 @@ interface RequestContext extends RecoveryRequestContext { readonly signals?: rea
 interface PendingMessage { readonly message: unknown, readonly next: (message: unknown) => void }
 interface AdmissionFence {
   readonly current: () => boolean
+  readonly owner: () => boolean
   readonly retrySignal?: AbortSignal
 }
 
@@ -242,7 +243,15 @@ export class RecoveryGate {
     })
   }
 
-  readonly interceptor: grpc.Interceptor = (options, nextCall) => {
+  readonly interceptor: grpc.Interceptor = (options, nextCall) => this.intercept(options, nextCall, () => true)
+
+  // A channel that may be replaced passes its own ownership: once it is retired, calls it has not
+  // submitted yet must end locally instead of being released onto it by the shared gate.
+  interceptorFor (owner: () => boolean): grpc.Interceptor {
+    return (options, nextCall) => this.intercept(options, nextCall, owner)
+  }
+
+  private intercept (options: grpc.InterceptorOptions, nextCall: grpc.NextCall, owner: () => boolean): grpc.InterceptingCall {
     const context = requests.getStore() ?? {}
     const event = events.getStore()
     const method = options.method_definition.path.split('/').pop() ?? ''
@@ -261,13 +270,13 @@ export class RecoveryGate {
       options.deadline instanceof Date ? options.deadline.getTime() : options.deadline ?? Infinity,
       event && replayReads.has(method) ? Date.now() + this.controlTimeout : Infinity,
     )
-    const current = (): boolean => epoch === this.admissionEpoch && (!event || event.current())
+    const current = (): boolean => epoch === this.admissionEpoch && (!event || event.current()) && owner()
     let attempts = 0
     let retryDeadline = deadline
     return new grpc.InterceptingCall(new AdmissionRetryCall({ ...options, deadline },
       (attemptOptions, notBefore) => {
         const retrySignal = attempts++ > 0 ? this.admissionRetries.signal : undefined
-        return this.interceptAttempt({ ...attemptOptions, deadline: retryDeadline }, nextCall, context, event, notBefore, { current, retrySignal })
+        return this.interceptAttempt({ ...attemptOptions, deadline: retryDeadline }, nextCall, context, event, notBefore, { current, owner, retrySignal })
       },
       (): boolean => {
         if (!current() || this.admissionRetries.signal.aborted || signalsOf(context).some(signal => signal.aborted) || Date.now() >= retryDeadline) { return false }
@@ -364,6 +373,7 @@ export class RecoveryGate {
           }
           if (!bypass && this.value.status === 'offline') { throw new Error(this.value.reason) }
           if (event && !event.current()) { throw new Error('Superseded event epoch') }
+          if (admission && !admission.owner()) { throw new Error('Transport replaced before submission') }
           if (admission && (!admission.current() || admission.retrySignal?.aborted)) { throw new Error('Superseded admission attempt') }
           if (controller.signal.aborted || Date.now() >= deadline) { throw new Error('Request cancelled or expired') }
           if (finished) { return }

@@ -24,6 +24,7 @@ import type {
   FileBoxInterface,
   FileBox,
 }                         from 'file-box'
+import { FileBoxType }    from 'file-box'
 import {
   StringValue,
   puppet as grpcPuppet,
@@ -154,8 +155,191 @@ class PuppetService extends PUPPET.Puppet {
   private inactivityTimer?: NodeJS.Timeout
   private recoveryStopped = true
   private recoveryProcessedSeq = 0
+  private endpointReplacement?: { old: GrpcManager, sealed: boolean, cancel: () => void, oldLost: boolean, oldError?: unknown }
+  private lastAuthenticatedAccount?: string
+  private readonly retiredManagers = new Set<GrpcManager>()
 
   get recoveryState (): RecoveryState { return this.recovery.state }
+
+  get replacingEndpoint (): boolean { return this.endpointReplacement !== undefined }
+
+  cancelEndpointReplacement (): void { this.endpointReplacement?.cancel() }
+
+  /** Replace only this running object's transport; never send remote Start/Stop. */
+  async replaceEndpoint (
+    endpoint: string,
+    options: { deadline: number, beforePublish?: () => Promise<void>, assertCurrent?: () => void, assertPublishable?: () => void },
+  ): Promise<void> {
+    if (!endpoint || !Number.isFinite(options.deadline) || options.deadline <= Date.now()) {
+      throw new Error('Invalid endpoint replacement deadline or address')
+    }
+    const old = this._grpcManager
+    const accountId = this.isLoggedIn ? this.currentUserId : this.lastAuthenticatedAccount
+    if (!old || this.stoppingTask || this.startInProgress || this.restartRequested || !accountId) {
+      throw new Error('Endpoint replacement requires an authenticated running transport')
+    }
+    if (this.endpointReplacement) { throw new Error('Endpoint replacement already pending') }
+    const generation = this.authenticationGeneration
+    const candidate = new GrpcManager({ ...this.options, endpoint }, this.recovery)
+    if (candidate.endpoint !== endpoint) { throw new Error('Endpoint is overridden by process configuration') }
+    let failure: Error | undefined
+    let rejectFailure!: (error: Error) => void
+    const failed = new Promise<never>((_resolve, reject): void => { rejectFailure = reject })
+    void failed.catch(() => undefined)
+    const fail = (error: Error): void => {
+      if (failure) { return }
+      failure = error
+      rejectFailure(error)
+      candidate.abortStartup()
+    }
+    const operation: NonNullable<PuppetService['endpointReplacement']> = { old, sealed: false, oldLost: false, cancel: (): void => { fail(new Error('Endpoint replacement cancelled')) } }
+    this.endpointReplacement = operation
+    const check = (): void => {
+      if (failure) { throw failure }
+      if (this.endpointReplacement !== operation || this._grpcManager !== old || this.stoppingTask || this.restartRequested) {
+        throw new Error('Endpoint replacement superseded')
+      }
+      if (generation !== this.authenticationGeneration) { throw new Error('Endpoint replacement superseded') }
+      if (Date.now() >= options.deadline) { throw new Error('Endpoint replacement deadline exceeded') }
+      options.assertCurrent?.()
+    }
+    const wait = async <T>(promise: Promise<T>): Promise<T> => {
+      const result = await Promise.race([ promise, failed ]); check(); return result
+    }
+    const buffer: grpcPuppet.EventResponse[] = []
+    let bytes = 0
+    let login = false
+    let ready = false
+    // A recovery-enabled consumer only trusts B after B's own same-account replay barrier.
+    let barrier = !this.recovery.enabled
+    let maxSeq = 0
+    const seen = new Set<number>()
+    let resolveReady!: () => void
+    const handshake = new Promise<void>(resolve => { resolveReady = resolve })
+    const onData = (event: grpcPuppet.EventResponse): void => {
+      if (failure) { return }
+      const seq = event.getSeq()
+      if (seq > 0 && seen.has(seq)) { return }
+      bytes += Buffer.byteLength(event.getPayload())
+      if (buffer.length >= 4096 || bytes > 8 * 1024 * 1024) { fail(new Error('Endpoint candidate buffer exceeded')); return }
+      if (seq > 0) { seen.add(seq); maxSeq = Math.max(maxSeq, seq) }
+      buffer.push(event)
+      try {
+        if (event.getType() === grpcPuppet.EventType.EVENT_TYPE_LOGIN) {
+          if ((JSON.parse(event.getPayload()) as { contactId?: string }).contactId !== accountId) {
+            fail(new Error('Endpoint candidate account mismatch')); return
+          }
+          login = true
+        }
+        if (event.getType() === grpcPuppet.EventType.EVENT_TYPE_READY) { ready = true }
+        if (event.getType() === grpcPuppet.EventType.EVENT_TYPE_LOGOUT) { fail(new Error('Endpoint candidate logged out')); return }
+        if (event.getType() === grpcPuppet.EventType.EVENT_TYPE_REPLAY_COMPLETE && this.recovery.enabled) {
+          const value = JSON.parse(event.getPayload()) as { accountId?: unknown, throughSeq?: unknown } | null
+          if (!login || seq !== 0 || value?.accountId !== accountId || typeof value.throughSeq !== 'number'
+            || !Number.isSafeInteger(value.throughSeq) || value.throughSeq < 0 || value.throughSeq > maxSeq) {
+            fail(new Error('Endpoint candidate replay barrier invalid')); return
+          }
+          barrier = true
+        }
+        if (login && ready && barrier) { resolveReady() }
+      } catch { fail(new Error('Invalid endpoint candidate login or replay barrier')) }
+    }
+    const onError = (): void => { fail(new Error('Endpoint candidate stream failed')) }
+    candidate.on('data', onData).on('error', onError).on('end', onError).on('cancel', onError)
+    const timer = setTimeout((): void => { fail(new Error('Endpoint replacement deadline exceeded')) }, options.deadline - Date.now())
+    let published = false
+    let rollbackStreamFailed = false
+    let previousCursor: ReadonlyMap<string, string | undefined> | undefined
+    try {
+      check()
+      if (old.endpoint === endpoint) {
+        await wait(options.beforePublish?.() ?? Promise.resolve())
+        return
+      }
+      await wait(candidate.initClient())
+      // Sequence numbers belong to one server. Never hand the source cursor to B.
+      await wait(candidate.startStream(undefined, accountId))
+      await wait(handshake)
+      operation.sealed = true
+      this.stopHealthCheck()
+      if (this.recoveryTimer) { operation.oldLost = true }
+      clearTimeout(this.recoveryTimer); clearTimeout(this.inactivityTimer); this.recoveryTimer = undefined
+      old.stopStream({ throwOnError: true })
+      // Do not suspend/increment epoch: already accepted workers must still run.
+      await wait(this.eventQueue)
+      do {
+        await wait(this.waitForSdkLifecycle())
+        await wait(this.waitForListeners(this.listenerDrain))
+      } while (this.sdkLifecycleTasks.size || this.listenerDrain.pending.size)
+      await wait(this.checkpointQueue)
+      if (this.eventDrainError) { throw this.eventDrainError }
+      previousCursor = new Map([
+        [ 'lastEventSeq', await wait(Promise.resolve(this._payloadStore.miscellaneous?.get('lastEventSeq'))) ],
+        [ 'lastEventTimestamp', await wait(Promise.resolve(this._payloadStore.miscellaneous?.get('lastEventTimestamp'))) ],
+      ])
+      await wait(this.withEventCheckpoint(async (): Promise<void> => {
+        await this.writeEventMetadata(new Map([ [ 'lastEventSeq', '0' ], [ 'lastEventTimestamp', String(Date.now()) ] ]), this.eventEpoch)
+      }))
+      await wait(options.beforePublish?.() ?? Promise.resolve())
+      check()
+      options.assertPublishable?.()
+      candidate.off('data', onData).off('error', onError).off('end', onError).off('cancel', onError)
+      this.eventEpoch++
+      this.eventsBlocked = false
+      this.failedEventSeq = undefined; this.pendingEventSeq = undefined; this.activeEventSeq = undefined
+      this.recoveryProcessedSeq = 0
+      this._grpcManager = candidate
+      this.options.endpoint = endpoint
+      this.fileBoxBinding.retired = true
+      this.retiredFileBoxes.add(this.FileBoxUuid)
+      this.FileBoxUuid = this.transportFileBox()
+      this.bridgeGrpcEventStream(candidate)
+      this.endpointReplacement = undefined
+      published = true
+      // Retire A before B's buffered LOGIN/READY/REPLAY_COMPLETE can open the shared recovery gate,
+      // so calls still queued for A end locally instead of being submitted to A.
+      this.retiredManagers.add(old)
+      void old.retire().finally((): void => { this.retiredManagers.delete(old) })
+      for (const event of buffer) { candidate.emit('data', event) }
+      this.startHealthCheck()
+      this.touchRecoveryStream()
+    } catch (error) {
+      candidate.abortStartup()
+      if (this._grpcManager === old && this.endpointReplacement === operation && generation === this.authenticationGeneration && !this.stoppingTask && !this.restartRequested) {
+        if (previousCursor) { await this.withEventCheckpoint(async (): Promise<void> => this.restoreEventMetadata(previousCursor!)) }
+        // With recovery, a stream lost before sealing is handed to requestRecovery in finally.
+        if (operation.sealed && !(operation.oldLost && this.recovery.enabled)) {
+          // Reopen the old stream only while the original running object still owns it.
+          const position = await this.eventResumePosition()
+          if (this._grpcManager === old && this.endpointReplacement === operation && generation === this.authenticationGeneration) {
+            try {
+              await old.startStream(position.lastEventSeq, position.accountId)
+            } catch (rollbackError) {
+              // A failed reopen belongs to recovery, not the refused replacement's result.
+              rollbackStreamFailed = true
+              operation.oldLost = true
+              operation.oldError = rollbackError
+            }
+          }
+        }
+      }
+      throw error
+    } finally {
+      clearTimeout(timer)
+      if (this.endpointReplacement === operation) {
+        this.endpointReplacement = undefined
+        if (!published && this._grpcManager === old && generation === this.authenticationGeneration && !this.stoppingTask && !this.restartRequested) {
+          if (operation.sealed) { this.startHealthCheck() }
+          // A failed replacement hands any old-stream loss seen meanwhile back to the normal path.
+          if (operation.oldLost && this.recovery.enabled) {
+            this.requestRecovery(old)
+          } else if (operation.oldLost && (!operation.sealed || rollbackStreamFailed) && operation.oldError !== undefined) {
+            this.emit('error', operation.oldError)
+          } else { this.touchRecoveryStream() }
+        }
+      }
+    }
+  }
 
   override emit = function (this: PuppetService, event: string | symbol, ...args: unknown[]): boolean {
     if (typeof event !== 'string' || !TRACKED_LISTENER_EVENTS.has(event)) { return PUPPET.Puppet.prototype.emit.call(this, event, ...args) }
@@ -214,6 +398,17 @@ class PuppetService extends PUPPET.Puppet {
    *  to set uuid loader/saver with this grpc client
    */
   protected FileBoxUuid: typeof FileBox
+  private fileBoxBinding = { retired: false }
+  private readonly retiredFileBoxes = new WeakSet<object>()
+
+  // UUIDs are server-local: a box minted before an endpoint replacement must not resolve on B.
+  private transportFileBox (): typeof FileBox {
+    const binding = this.fileBoxBinding = { retired: false }
+    return uuidifyFileBoxGrpc((): grpcPuppet.PuppetClient => {
+      if (binding.retired) { throw new Error('FileBox UUID belongs to a replaced transport') }
+      return this.grpcManager.client
+    })
+  }
 
   constructor (
     public override options: PuppetServiceOptions = {},
@@ -236,7 +431,7 @@ class PuppetService extends PUPPET.Puppet {
 
     this.hookPayloadStore()
 
-    this.FileBoxUuid = uuidifyFileBoxGrpc(() => this.grpcManager.client)
+    this.FileBoxUuid = this.transportFileBox()
     this.timeoutMilliseconds = (options.timeoutSeconds || 2) * 1000 * 60 // 2 hours default, 4 hours for xiaoju-bot
 
     this.reconnectIndicator = new BooleanIndicator()
@@ -251,8 +446,35 @@ class PuppetService extends PUPPET.Puppet {
      *  then it need to be convert to type `Uuid`
      *  before serialized by `fileBox.toString()`
      */
-    const normalizedFileBox = await normalizeFileBoxUuid(this.FileBoxUuid, saveStream)(fileBox)
-    return JSON.stringify(normalizedFileBox)
+    const files = this.fileBoxSerializer(saveStream)
+    const serialized = await files.serialize(fileBox)
+    files.assertCurrent()
+    return serialized
+  }
+
+  /**
+   * Server UUIDs belong to the server that issued them. One request serializes every box with the
+   * FileBox class current when it started and remembers whether any serialized box is a server UUID
+   * (uploaded now or passed through as is). `assertCurrent()` runs right before the send, so a request
+   * carrying UUIDs of a transport replaced meanwhile is refused instead of sending (or mixing) them.
+   * URL and QRCode boxes are portable and never bind the request.
+   */
+  private fileBoxSerializer (saveStream?: FileBoxStreamSaver): { serialize: (fileBox: FileBoxInterface) => Promise<string>, assertCurrent: () => void } {
+    const Box = this.FileBoxUuid
+    let owned = false
+    return {
+      serialize: async (fileBox: FileBoxInterface): Promise<string> => {
+        if (fileBox.type === FileBoxType.Uuid && this.retiredFileBoxes.has(fileBox.constructor)) {
+          throw new Error('FileBox UUID belongs to a replaced transport')
+        }
+        const normalizedFileBox = await normalizeFileBoxUuid(Box, saveStream)(fileBox)
+        if (normalizedFileBox.type === FileBoxType.Uuid) { owned = true }
+        return JSON.stringify(normalizedFileBox)
+      },
+      assertCurrent: (): void => {
+        if (owned && Box !== this.FileBoxUuid) { throw new Error('FileBox UUID belongs to a replaced transport') }
+      },
+    }
   }
 
   private async grpcUnary<Request, Response> (
@@ -314,6 +536,7 @@ class PuppetService extends PUPPET.Puppet {
 
   private async startService (attempt: TransportStartAttempt): Promise<void> {
     this.authenticationGeneration++
+    this.lastAuthenticatedAccount = undefined
     this.log.verbose('PuppetService', 'onStart()')
     this.startInProgress = true
 
@@ -417,6 +640,7 @@ class PuppetService extends PUPPET.Puppet {
   private isPreparingForRestart (): boolean { return this.restartRequested }
 
   override async onStop (): Promise<void> {
+    this.cancelEndpointReplacement()
     if (this.stoppingTask) { return this.stoppingTask }
     const task = this.stopService()
     this.stoppingTask = task
@@ -427,6 +651,9 @@ class PuppetService extends PUPPET.Puppet {
 
   private async stopService (): Promise<void> {
     this.authenticationGeneration++
+    this.lastAuthenticatedAccount = undefined
+    for (const retired of this.retiredManagers) { retired.abortStartup() }
+    this.retiredManagers.clear()
     this.log.info('PuppetService', 'onStop()')
     this.transportStart?.fail(new Error('Transport start interrupted by stop'))
     this.transportStart = undefined
@@ -501,6 +728,7 @@ class PuppetService extends PUPPET.Puppet {
         this.recovery.login(contactId)
         if (this.recovery.state.status === 'offline') { throw new Error('Account changed during recovery') }
       }
+      this.lastAuthenticatedAccount = contactId
       if (this.isLoggedIn) { return }
       if (this.eventMetadataEnabled) {
         const { accountId } = await this.getMiscellaneousStoreData()
@@ -516,6 +744,8 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   private async logoutLocally (reason: string | undefined, epoch: number, eventBound = true): Promise<void> {
+    this.lastAuthenticatedAccount = undefined
+    this.cancelEndpointReplacement()
     await this.enqueueAuthentication(epoch, async (): Promise<void> => {
       this.stopRecovery(reason ?? 'Account logged out', false)
       await super.logout(reason)
@@ -549,6 +779,7 @@ class PuppetService extends PUPPET.Puppet {
 
     client
       .on('data', (event: grpcPuppet.EventResponse): void => {
+        if (this.endpointReplacement?.old === client && this.endpointReplacement.sealed) { return }
         if (client !== this._grpcManager || this.eventsBlocked || this.restartRequested) { return }
         this.touchRecoveryStream()
         if (this.recovery.enabled && event.getType() === grpcPuppet.EventType.EVENT_TYPE_LOGIN) {
@@ -597,6 +828,7 @@ class PuppetService extends PUPPET.Puppet {
         })
       })
       .on('end', () => {
+        if (this.endpointReplacement?.old === client) { this.deferOldStreamLoss(); return }
         if (client !== this._grpcManager || this.restartRequested) { return }
         if (this.startInProgress) {
           this.transportStart?.fail(new Error('Initial transport stream ended'))
@@ -606,6 +838,7 @@ class PuppetService extends PUPPET.Puppet {
         this.log.verbose('PuppetService', 'bridgeGrpcEventStream() eventStream.on(end)')
       })
       .on('error', (e: unknown) => {
+        if (this.endpointReplacement?.old === client) { this.deferOldStreamLoss(e); return }
         if (client === this.stoppingManager && !this.restartRequested) { this.reportStreamError(e); return }
         if (client !== this._grpcManager || this.restartRequested) {
           this.log.verbose('PuppetService', 'inactive stream error: %s', e)
@@ -636,6 +869,7 @@ class PuppetService extends PUPPET.Puppet {
         // }
       })
       .on('cancel', (...args: unknown[]) => {
+        if (this.endpointReplacement?.old === client) { this.deferOldStreamLoss(); return }
         if (client !== this._grpcManager || this.restartRequested) { return }
         if (this.startInProgress) {
           this.transportStart?.fail(new Error('Initial transport stream cancelled'))
@@ -1220,9 +1454,10 @@ class PuppetService extends PUPPET.Puppet {
       const request = new grpcPuppet.ContactAvatarRequest()
       request.setId(contactId)
 
-      const serializedFileBox = await this.serializeFileBox(fileBox)
-      request.setFileBox(serializedFileBox)
+      const files = this.fileBoxSerializer()
+      request.setFileBox(await files.serialize(fileBox))
 
+      files.assertCurrent()
       await util.promisify(
         this.grpcManager.client.contactAvatar
           .bind(this.grpcManager.client),
@@ -1237,6 +1472,7 @@ class PuppetService extends PUPPET.Puppet {
     const request = new grpcPuppet.ContactAvatarRequest()
     request.setId(contactId)
 
+    const Box = this.FileBoxUuid
     const response = await util.promisify(
       this.grpcManager.client.contactAvatar
         .bind(this.grpcManager.client),
@@ -1259,7 +1495,7 @@ class PuppetService extends PUPPET.Puppet {
       }
     }
 
-    return this.FileBoxUuid.fromJSON(jsonText)
+    return Box.fromJSON(jsonText)
   }
 
   override async contactRawPayload (id: string): Promise<PUPPET.payloads.Contact> {
@@ -1588,6 +1824,7 @@ class PuppetService extends PUPPET.Puppet {
     request.setId(messageId)
     request.setType(imageType)
 
+    const Box = this.FileBoxUuid
     const response = await util.promisify(
       this.grpcManager.client.messageImage
         .bind(this.grpcManager.client),
@@ -1596,7 +1833,7 @@ class PuppetService extends PUPPET.Puppet {
     const jsonText = response.getFileBox()
 
     if (jsonText) {
-      return this.FileBoxUuid.fromJSON(jsonText)
+      return Box.fromJSON(jsonText)
     }
 
     throw new Error(`failed to get image filebox for message ${messageId}`)
@@ -1709,12 +1946,14 @@ class PuppetService extends PUPPET.Puppet {
 
     const request = new grpcPuppet.CallInviteWithMediaRequest()
     request.setContactIdsList(contactIds)
+    const files = this.fileBoxSerializer()
     if (file) {
-      request.setFileBox(await this.serializeFileBox(file))
+      request.setFileBox(await files.serialize(file))
     }
     request.setHangupOnFinish(options?.hangupOnFinish ?? false)
     request.setHangupDelayMs(options?.hangupDelayMs ?? 0)
 
+    files.assertCurrent()
     const response = await util.promisify(
       this.grpcManager.client.callInviteWithMedia
         .bind(this.grpcManager.client),
@@ -1900,12 +2139,13 @@ class PuppetService extends PUPPET.Puppet {
     const request = new grpcPuppet.MessageChatHistoryRequest()
     request.setId(messageId)
 
+    const Box = this.FileBoxUuid
     const response = await util.promisify(
       this.grpcManager.client.messageChatHistory
         .bind(this.grpcManager.client),
     )(request)
 
-    const payload = chatHistoryPbToPayload(this.FileBoxUuid, response.getChatHistoryListList()!)
+    const payload = chatHistoryPbToPayload(Box, response.getChatHistoryListList()!)
 
     return payload
   }
@@ -2067,6 +2307,7 @@ class PuppetService extends PUPPET.Puppet {
 
     const request = new grpcPuppet.MessageFileRequest()
     request.setId(id)
+    const Box = this.FileBoxUuid
     const response = await util.promisify(
       this.grpcManager.client.messageFile
         .bind(this.grpcManager.client),
@@ -2074,7 +2315,7 @@ class PuppetService extends PUPPET.Puppet {
 
     const jsonText = response.getFileBox()
     if (jsonText) {
-      return this.FileBoxUuid.fromJSON(jsonText)
+      return Box.fromJSON(jsonText)
     }
 
     throw new Error(`failed to get filebox for message ${id}`)
@@ -2085,6 +2326,7 @@ class PuppetService extends PUPPET.Puppet {
 
     const request = new grpcPuppet.MessageVoiceRequest()
     request.setId(id)
+    const Box = this.FileBoxUuid
     const response = await util.promisify(
       this.grpcManager.client.messageVoice
         .bind(this.grpcManager.client),
@@ -2092,7 +2334,7 @@ class PuppetService extends PUPPET.Puppet {
 
     const jsonText = response.getFileBox()
     if (jsonText) {
-      return this.FileBoxUuid.fromJSON(jsonText)
+      return Box.fromJSON(jsonText)
     }
 
     throw new Error(`failed to get voice filebox for message ${id}`)
@@ -2119,6 +2361,7 @@ class PuppetService extends PUPPET.Puppet {
 
     const request = new grpcPuppet.MessagePreviewRequest()
     request.setId(id)
+    const Box = this.FileBoxUuid
     const response = await util.promisify(
       this.grpcManager.client.messagePreview
         .bind(this.grpcManager.client),
@@ -2126,7 +2369,7 @@ class PuppetService extends PUPPET.Puppet {
 
     const jsonText = response.getFileBox()
     if (jsonText) {
-      return this.FileBoxUuid.fromJSON(jsonText)
+      return Box.fromJSON(jsonText)
     }
     return undefined
   }
@@ -2337,11 +2580,13 @@ class PuppetService extends PUPPET.Puppet {
     }
     const request = new grpcPuppet.MessageBatchSendFileRequest()
     request.setConversationIdsList(conversationIds)
-    request.setFileBox(await this.serializeFileBox(fileBox, stream => uploadFileBoxForRun(client, stream, assertCurrent)))
+    const files = this.fileBoxSerializer(stream => uploadFileBoxForRun(client, stream, assertCurrent))
+    request.setFileBox(await files.serialize(fileBox))
     if (batchTaskId) {
       request.setBatchTaskId(batchTaskId)
     }
 
+    files.assertCurrent()
     assertCurrent()
     const response = await util.promisify(client.messageBatchSendFile.bind(client))(request)
 
@@ -2525,10 +2770,11 @@ class PuppetService extends PUPPET.Puppet {
     const request = new grpcPuppet.MessageSendFileRequest()
     request.setConversationId(conversationId)
 
-    const serializedFileBox = await this.serializeFileBox(fileBox, stream => uploadFileBoxForRun(client, stream, assertCurrent))
-    request.setFileBox(serializedFileBox)
+    const files = this.fileBoxSerializer(stream => uploadFileBoxForRun(client, stream, assertCurrent))
+    request.setFileBox(await files.serialize(fileBox))
 
     this.log.info('PuppetService', `messageSendFile(${conversationId}, ${fileBox}) about to call grpc`)
+    files.assertCurrent()
     assertCurrent()
     const response = await util.promisify(
       client.messageSendFile.bind(client),
@@ -2636,11 +2882,13 @@ class PuppetService extends PUPPET.Puppet {
     this.log.verbose('PuppetService', 'messageSendPost("%s", %s)', conversationId, JSON.stringify(postPayload))
 
     const request = new grpcPuppet.MessageSendPostRequest()
-    const post = await postPayloadToPb(grpcPuppet, postPayload, this.serializeFileBox.bind(this))
+    const files = this.fileBoxSerializer()
+    const post = await postPayloadToPb(grpcPuppet, postPayload, files.serialize)
     request.setContent(post)
     request.setConversationId(conversationId)
 
     this.log.info('PuppetService', `messageSendPost(${conversationId}, ${postPayload}) about to call grpc`)
+    files.assertCurrent()
     const response = await util.promisify(
       this.grpcManager.client.messageSendPost
         .bind(this.grpcManager.client),
@@ -2703,10 +2951,12 @@ class PuppetService extends PUPPET.Puppet {
     }
 
     const request = new grpcPuppet.CreateMessageBroadcastRequest()
-    const post = await postPayloadToPb(grpcPuppet, content, this.serializeFileBox.bind(this))
+    const files = this.fileBoxSerializer()
+    const post = await postPayloadToPb(grpcPuppet, content, files.serialize)
     request.setContent(post)
     request.setTargetIdsList(targets)
 
+    files.assertCurrent()
     const response = await util.promisify(
       this.grpcManager.client.createMessageBroadcast.bind(this.grpcManager.client),
     )(request)
@@ -2908,13 +3158,14 @@ class PuppetService extends PUPPET.Puppet {
     const request = new grpcPuppet.RoomAvatarRequest()
     request.setId(roomId)
 
+    const Box = this.FileBoxUuid
     const response = await util.promisify(
       this.grpcManager.client.roomAvatar
         .bind(this.grpcManager.client),
     )(request)
 
     const jsonText = response.getFileBox()
-    return this.FileBoxUuid.fromJSON(jsonText)
+    return Box.fromJSON(jsonText)
   }
 
   override async roomAdd (
@@ -3923,9 +4174,11 @@ class PuppetService extends PUPPET.Puppet {
       throw new Error('can only publish client post now')
     }
     const request = new grpcPuppet.MomentPublishRequest()
-    const post = await postPayloadToPb(grpcPuppet, payload, this.serializeFileBox.bind(this))
+    const files = this.fileBoxSerializer()
+    const post = await postPayloadToPb(grpcPuppet, payload, files.serialize)
     request.setPost(post)
 
+    files.assertCurrent()
     const result = await util.promisify(
       this.grpcManager.client.momentPublish
         .bind(this.grpcManager.client),
@@ -3969,11 +4222,13 @@ class PuppetService extends PUPPET.Puppet {
     this.log.verbose('PuppetService', 'momentCoverage(%s)', JSON.stringify(cover))
 
     const request = new grpcPuppet.MomentCoverageRequest()
+    const files = this.fileBoxSerializer()
     if (cover) {
-      const serializedFileBox = await this.serializeFileBox(cover)
-      request.setFileBox(serializedFileBox)
+      request.setFileBox(await files.serialize(cover))
     }
 
+    files.assertCurrent()
+    const Box = this.FileBoxUuid
     const response = await util.promisify(
       this.grpcManager.client.momentCoverage
         .bind(this.grpcManager.client),
@@ -3981,7 +4236,7 @@ class PuppetService extends PUPPET.Puppet {
 
     const jsonText = response.getFileBox()
     if (jsonText) {
-      return this.FileBoxUuid.fromJSON(jsonText)
+      return Box.fromJSON(jsonText)
     }
   }
 
@@ -3992,6 +4247,7 @@ class PuppetService extends PUPPET.Puppet {
     request.setPostId(postId)
     request.setSayableId(sayableId)
 
+    const Box = this.FileBoxUuid
     const response = await util.promisify(
       this.grpcManager.client.postPayloadSayable
         .bind(this.grpcManager.client),
@@ -4010,7 +4266,7 @@ class PuppetService extends PUPPET.Puppet {
           if (!fileJsonStr) {
             break
           }
-          const file = this.FileBoxUuid.fromJSON(fileJsonStr)
+          const file = Box.fromJSON(fileJsonStr)
           sayablePayload = PUPPET.payloads.sayable.attachment(file)
           break
         }
@@ -4303,6 +4559,7 @@ class PuppetService extends PUPPET.Puppet {
   private waitingForReady = false
   private reconnectIndicator: BooleanIndicator
   override async reset (): Promise<void> {
+    if (this.endpointReplacement) { return }
     if (this.restartRequested) { return }
     if (this.recovery.enabled) {
       if (this._grpcManager) { this.requestRecovery(this._grpcManager) }
@@ -4318,7 +4575,7 @@ class PuppetService extends PUPPET.Puppet {
     const manager = this._grpcManager
     try {
       await this.checkpointQueue
-      if (epoch !== this.eventEpoch || this.isPreparingForRestart()) { return }
+      if (epoch !== this.eventEpoch || this.isPreparingForRestart() || this.endpointReplacement) { return }
       if (!manager || !this.isLoggedIn) {
         this.log.warn('PuppetService', 'grpc manager unavailable or puppet logged out, perform regular reset')
         return await super.reset()
@@ -4329,7 +4586,16 @@ class PuppetService extends PUPPET.Puppet {
     }
   }
 
+  // Until sealing, the old stream is still the live one: losses are kept for a failed replacement.
+  private deferOldStreamLoss (error?: unknown): void {
+    const operation = this.endpointReplacement
+    if (!operation || operation.sealed) { return }
+    operation.oldLost = true
+    if (error !== undefined) { operation.oldError ??= error }
+  }
+
   private touchRecoveryStream (): void {
+    if (this.endpointReplacement?.sealed) { return }
     if (!this.recovery.enabled || this.recoveryStopped) { return }
     clearTimeout(this.inactivityTimer)
     this.inactivityTimer = setTimeout((): void => {
@@ -4351,6 +4617,10 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   private requestRecovery (manager: GrpcManager): void {
+    if (this.endpointReplacement) {
+      if (manager === this.endpointReplacement.old) { this.deferOldStreamLoss() }
+      return
+    }
     if (this.restartRequested || this.recoveryStopped || manager !== this._grpcManager || this.recoveryTimer) { return }
     if (this.startInProgress) {
       this.transportStart?.fail(new Error('Initial transport stream interrupted'))
@@ -4373,13 +4643,18 @@ class PuppetService extends PUPPET.Puppet {
 
   private async connectRecoveryStream (manager: GrpcManager, epoch: number): Promise<void> {
     const { lastEventSeq, accountId } = await this.eventResumePosition(epoch)
-    if (epoch !== this.eventEpoch || this.recoveryStopped || manager !== this._grpcManager) { return }
+    if (this.endpointReplacement?.old === manager) { this.deferOldStreamLoss(); return }
+    if (epoch !== this.eventEpoch || this.recoveryStopped || manager !== this._grpcManager || this.endpointReplacement) { return }
     this.recovery.begin(accountId)
     this.recoveryProcessedSeq = Number(lastEventSeq ?? 0)
     this.eventsBlocked = false
     this.touchRecoveryStream()
     await manager.startStream(lastEventSeq, accountId)
-    if (this.restartRequested) { manager.stopStream(); return }
+    const replacement = this.endpointReplacement as PuppetService['endpointReplacement']
+    if (this.restartRequested || replacement) {
+      if (replacement?.old === manager) { this.deferOldStreamLoss() }
+      manager.stopStream(); return
+    }
     if (!this.ownsEventWorker(manager, epoch)) { return }
     await util.promisify(manager.client.start.bind(manager.client))(new grpcPuppet.StartRequest())
   }
@@ -4387,7 +4662,7 @@ class PuppetService extends PUPPET.Puppet {
   private async resetEventStream (manager: GrpcManager, epoch: number): Promise<void> {
     manager.stopStream()
     const { lastEventSeq, accountId } = await this.eventResumePosition(epoch)
-    if (epoch !== this.eventEpoch || manager !== this._grpcManager || this.restartRequested) { return }
+    if (epoch !== this.eventEpoch || manager !== this._grpcManager || this.restartRequested || this.endpointReplacement) { return }
 
     const onLoginResolve = (resolve: () => void) => {
       const onLogin = (event: grpcPuppet.EventResponse) => {
@@ -4437,13 +4712,13 @@ class PuppetService extends PUPPET.Puppet {
     try {
       while (true) {
         try {
-          if (!this.ownsEventWorker(manager, epoch) || this.isPreparingForRestart()) { return }
+          if (!this.ownsEventWorker(manager, epoch) || this.isPreparingForRestart() || this.endpointReplacement) { return }
           await timeoutPromise(manager.startStream(lastEventSeq, accountId), 30 * 1000)
-          if (this.isPreparingForRestart()) { manager.stopStream(); return }
+          if (this.isPreparingForRestart() || this.endpointReplacement) { manager.stopStream(); return }
           if (!this.ownsEventWorker(manager, epoch)) { return }
           break
         } catch (e) {
-          if (!this.ownsEventWorker(manager, epoch) || this.isPreparingForRestart()) { return }
+          if (!this.ownsEventWorker(manager, epoch) || this.isPreparingForRestart() || this.endpointReplacement) { return }
           if (Date.now() - startTime < timeoutMilliseconds) {
             this.log.warn('failed to start stream, will try again in 15 seconds')
             await new Promise(resolve => {
@@ -4462,7 +4737,7 @@ class PuppetService extends PUPPET.Puppet {
             if (epoch === this.eventEpoch) { this.waitingForLogin = false }
           })
       } catch (e) {
-        if (!this.ownsEventWorker(manager, epoch) || this.isPreparingForRestart()) { return }
+        if (!this.ownsEventWorker(manager, epoch) || this.isPreparingForRestart() || this.endpointReplacement) { return }
         this.log.warn('PuppetService', 'waiting for event reset login error, will perform regular reset')
         return super.reset()
       }
