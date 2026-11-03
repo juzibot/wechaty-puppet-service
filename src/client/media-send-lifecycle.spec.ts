@@ -11,6 +11,8 @@ import { GrpcManager } from './grpc-manager.js'
 import { PuppetService } from './puppet-service.js'
 
 const UPLOAD_ID = '12345678-1234-4234-8234-123456789abc'
+// npm test runs from the package root in both source and compiled test modes.
+const UTF8_FILE_FIXTURE = 'src/client/media-send-lifecycle.spec.ts'
 type Callback<T> = (error: Error | null, response?: T) => void
 type Mode = 'single' | 'batch'
 
@@ -187,7 +189,7 @@ for (const mode of [ 'single', 'batch' ] as const) {
     { name: 'ASCII string chunks', stream: (): Readable => Readable.from([ 'hel', 'lo' ]), expected: Buffer.from('hello') },
     { name: 'base64-looking string chunk', stream: (): Readable => Readable.from([ 'YWJj' ]), expected: Buffer.from('YWJj') },
     { name: 'Unicode string chunks', stream: (): Readable => Readable.from([ '你', '好，SDK 👋' ]), expected: Buffer.from('你好，SDK 👋') },
-    { name: 'UTF-8 encoded file stream', stream: (): Readable => createReadStream(new URL(import.meta.url), { encoding: 'utf8', highWaterMark: 127 }), expected: readFileSync(new URL(import.meta.url)) },
+    { name: 'UTF-8 encoded file stream', stream: (): Readable => createReadStream(UTF8_FILE_FIXTURE, { encoding: 'utf8', highWaterMark: 127 }), expected: readFileSync(UTF8_FILE_FIXTURE) },
     { name: 'binary Buffer chunks', stream: (): Readable => Readable.from([ Buffer.from([ 0, 255, 254, 195, 40 ]), Buffer.from('YWJj') ]), expected: Buffer.concat([ Buffer.from([ 0, 255, 254, 195, 40 ]), Buffer.from('YWJj') ]) },
   ]) {
     test(`${mode}: protobuf upload preserves bytes for ${sample.name}`, async t => {
