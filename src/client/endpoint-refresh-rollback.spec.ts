@@ -15,9 +15,9 @@ class RefreshService extends PuppetService {
 }
 
 function deferred<T = void> () {
-  let resolve!: (value: T | PromiseLike<T>) => void
-  const promise = new Promise<T>(done => { resolve = done })
-  return { promise, resolve }
+  let resolveDeferred!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>(resolve => { resolveDeferred = resolve })
+  return { promise, resolve: resolveDeferred }
 }
 
 async function bounded<T> (promise: Promise<T>, milliseconds = 4000): Promise<T> {
@@ -92,8 +92,12 @@ async function withFixture (recovery: boolean, body: (a: Endpoint, b: Endpoint, 
   let service: RefreshService | undefined
   try {
     a = await endpoint('A'); b = await endpoint('B')
-    service = new RefreshService({ token: `insecure_${randomUUID()}`, endpoint: a.address,
-      tls: { disable: true }, recovery: { enabled: recovery, inactivityMilliseconds: 45_000 } })
+    service = new RefreshService({
+      token: `insecure_${randomUUID()}`,
+      endpoint: a.address,
+      tls: { disable: true },
+      recovery: { enabled: recovery, inactivityMilliseconds: 45_000 },
+    })
     sinon.stub(service.store, 'start').resolves(); sinon.stub(service.store, 'stop').resolves()
     const errors: unknown[] = []
     service.on('error', (error): void => { errors.push(error) })
@@ -111,10 +115,13 @@ async function withFixture (recovery: boolean, body: (a: Endpoint, b: Endpoint, 
 test('failed rollback preserves the final-check error and promptly hands A to recovery', async t => {
   await withFixture(true, async (a, b, service) => {
     const refused = new Error('final route check refused')
-    const refreshing = service.replaceEndpoint(b.address, { deadline: Date.now() + 5000, beforePublish: async () => {
-      a.server.forceShutdown()
-      throw refused
-    } })
+    const refreshing = service.replaceEndpoint(b.address, {
+      deadline: Date.now() + 5000,
+      beforePublish: async () => {
+        a.server.forceShutdown()
+        throw refused
+      },
+    })
     await assert.rejects(bounded(refreshing, 8000), (error: unknown) => error === refused)
     await waitUntil(() => service.recoveryState.status === 'recovering', 'A recovery was not requested')
     assert.equal(service.options.endpoint, a.address)
@@ -126,8 +133,10 @@ test('failed rollback preserves the final-check error and promptly hands A to re
 test('healthy rollback retains the original error and A still sends normally', async t => {
   await withFixture(true, async (a, b, service) => {
     const refused = new Error('final route check refused')
-    await assert.rejects(bounded(service.replaceEndpoint(b.address, { deadline: Date.now() + 5000,
-      beforePublish: async () => { throw refused } })), (error: unknown) => error === refused)
+    await assert.rejects(bounded(service.replaceEndpoint(b.address, {
+      deadline: Date.now() + 5000,
+      beforePublish: async () => { throw refused },
+    })), (error: unknown) => error === refused)
     await bounded(a.reopened)
     await waitUntil(() => service.recoveryState.status === 'ready', 'healthy A ready')
     assert.equal(await bounded(service.messageSendText('peer', 'after-rollback')), 'A')
@@ -141,8 +150,10 @@ test('stop during the real rollback connection wait cannot revive A', async t =>
   await withFixture(true, async (a, b, service) => {
     const refused = new Error('final route check refused')
     a.state.holdReopen = true
-    const refreshing = service.replaceEndpoint(b.address, { deadline: Date.now() + 5000,
-      beforePublish: async () => { throw refused } })
+    const refreshing = service.replaceEndpoint(b.address, {
+      deadline: Date.now() + 5000,
+      beforePublish: async () => { throw refused },
+    })
     void refreshing.catch(() => undefined)
     await bounded(a.reopened)
     await bounded(service.onStop())
@@ -159,8 +170,10 @@ test('stop during the real rollback connection wait cannot revive A', async t =>
 test('without recovery, failed rollback reports one stream error and keeps the original refusal', async t => {
   await withFixture(false, async (a, b, service, errors) => {
     const refused = new Error('final route check refused')
-    await assert.rejects(bounded(service.replaceEndpoint(b.address, { deadline: Date.now() + 5000,
-      beforePublish: async () => { a.server.forceShutdown(); throw refused } }), 8000),
+    await assert.rejects(bounded(service.replaceEndpoint(b.address, {
+      deadline: Date.now() + 5000,
+      beforePublish: async () => { a.server.forceShutdown(); throw refused },
+    }), 8000),
     (error: unknown) => error === refused)
     assert.equal(errors.length, 1)
     // Puppet's public error event carries serialized GError, not the raw Error.
@@ -180,8 +193,10 @@ test('without recovery, successful rollback does not newly report an error defer
   await withFixture(false, async (a, b, service, errors) => {
     const refused = new Error('final route check refused')
     b.state.holdReady = true
-    const refreshing = service.replaceEndpoint(b.address, { deadline: Date.now() + 5000,
-      beforePublish: async () => { throw refused } })
+    const refreshing = service.replaceEndpoint(b.address, {
+      deadline: Date.now() + 5000,
+      beforePublish: async () => { throw refused },
+    })
     void refreshing.catch(() => undefined)
     const candidateStream = await bounded(b.connected)
     // Inject at the manager's real error bridge; this test concerns deferred notification ownership,
