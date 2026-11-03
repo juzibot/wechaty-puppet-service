@@ -84,7 +84,7 @@ class GrpcManager extends EventEmitter {
   private activeCalls = 0
   private retiring = false
   private retired?: () => void
-  private readonly trackedCalls = new Set<grpc.InterceptingCallInterface>()
+  private readonly trackedCalls = new Set<ReturnType<Parameters<grpc.Interceptor>[1]>>()
 
   // A connection replacement retires only the Event subscription. Calls already
   // submitted on this channel retain their original callback/deadline.
@@ -100,7 +100,7 @@ class GrpcManager extends EventEmitter {
     if (options.method_definition.path.endsWith('/Event')) { return new grpc.InterceptingCall(nextCall(options)) }
     this.activeCalls++
     let finished = false
-    let tracked: grpc.InterceptingCallInterface | undefined
+    let tracked: ReturnType<Parameters<grpc.Interceptor>[1]> | undefined
     const finish = (): void => {
       if (finished) { return }
       finished = true
@@ -304,7 +304,7 @@ class GrpcManager extends EventEmitter {
     const clientOptions: grpc.ChannelOptions = {
       ...GRPC_OPTIONS,
       'grpc.ssl_target_name_override': this.serverName,
-      interceptors: [ this.trackCalls, ...(this.recovery?.enabled ? [ this.recovery.interceptor ] : []) ],
+      interceptors: [ this.trackCalls, ...(this.recovery?.enabled ? [ this.recovery.interceptorFor((): boolean => !this.retiring) ] : []) ],
       ...(this.recovery?.enabled ? { 'grpc.enable_retries': 0 } : {}),
     }
 
