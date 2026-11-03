@@ -15,9 +15,9 @@ class RefreshService extends PuppetService {
 }
 
 function deferred<T = void> () {
-  let resolve!: (value: T | PromiseLike<T>) => void
-  const promise = new Promise<T>(done => { resolve = done })
-  return { promise, resolve }
+  let resolveDeferred!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>(resolve => { resolveDeferred = resolve })
+  return { promise, resolve: resolveDeferred }
 }
 
 async function bounded<T> (promise: Promise<T>, milliseconds = 4000): Promise<T> {
@@ -211,7 +211,7 @@ test('refresh preserves an accepted old listener and its real in-flight RPC', as
     void inFlight.catch(() => undefined)
     finish = await bounded(a.sent)
     let switched = false
-    const refreshing = replace(service, b.address).then((): void => { switched = true })
+    const refreshing = replace(service, b.address).then((): void => { switched = true; return undefined })
     await new Promise<void>(resolve => setImmediate(resolve))
     assert.equal(switched, false)
     a.state.holdSend = false

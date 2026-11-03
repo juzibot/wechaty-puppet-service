@@ -17,9 +17,9 @@ class RefreshService extends PuppetService {
 }
 
 function deferred<T = void> () {
-  let resolve!: (value: T | PromiseLike<T>) => void
-  const promise = new Promise<T>(done => { resolve = done })
-  return { promise, resolve }
+  let resolveDeferred!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>(resolve => { resolveDeferred = resolve })
+  return { promise, resolve: resolveDeferred }
 }
 
 async function bounded<T> (promise: Promise<T>, milliseconds = 4000): Promise<T> {
@@ -162,103 +162,103 @@ function replace (service: RefreshService, address: string, beforePublish?: () =
 
 test('SDK M1: a business RPC queued during A recovery is not submitted to A after B is published', async t => {
   await withFixture({ holdB: true, recovery: true }, async ({ a, b, service }) => {
-      // A's recovery stream reconnects but never reaches READY, so admission keeps the call queued.
-      const recoveryStream = deferred<grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>>()
-      const original = a.latest()!
-      a.state.holdRecovery = recoveryStream.resolve
-      await waitUntil(() => service.recoveryState.status === 'ready', 'startup gate ready')
-      original.end()
-      await waitUntil(() => service.recoveryState.status === 'recovering', 'A recovering')
-      const queued = service.messageSendText('peer', 'queued-during-recovery')
-      void queued.catch(() => undefined)
-      t.comment(`at send: recovery=${service.recoveryState.status} A.cursors=${a.state.cursors.length}`)
-      await bounded(recoveryStream.promise)
-      t.comment(`recovery stream opened: recovery=${service.recoveryState.status} A.sends=${JSON.stringify(a.state.sends)} A.cursors=${a.state.cursors.length}`)
-      t.comment(`A sends at cursor counts: ${JSON.stringify(a.state.sendCursors)}`)
-      assert.equal(a.state.sends.length, 0, 'still queued before replacement')
-      const refreshing = replace(service, b.address)
-      b.ready(await bounded(b.connected))
-      await bounded(refreshing)
-      const outcome = await bounded(queued.then(id => ({ id }), (error: Error) => ({ error: error.message })))
-      t.comment(`queued outcome: ${JSON.stringify(outcome)} A.sends=${JSON.stringify(a.state.sends)} B.sends=${JSON.stringify(b.state.sends)}`)
-      assert.equal(a.state.sends.includes('queued-during-recovery'), false, 'the unsubmitted call must not reach A')
-      assert.equal(await bounded(service.messageSendText('peer', 'after-publish')), 'B')
-      t.pass('queued admission does not leak to the retired endpoint')
+    // A's recovery stream reconnects but never reaches READY, so admission keeps the call queued.
+    const recoveryStream = deferred<grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>>()
+    const original = a.latest()!
+    a.state.holdRecovery = recoveryStream.resolve
+    await waitUntil(() => service.recoveryState.status === 'ready', 'startup gate ready')
+    original.end()
+    await waitUntil(() => service.recoveryState.status === 'recovering', 'A recovering')
+    const queued = service.messageSendText('peer', 'queued-during-recovery')
+    void queued.catch(() => undefined)
+    t.comment(`at send: recovery=${service.recoveryState.status} A.cursors=${a.state.cursors.length}`)
+    await bounded(recoveryStream.promise)
+    t.comment(`recovery stream opened: recovery=${service.recoveryState.status} A.sends=${JSON.stringify(a.state.sends)} A.cursors=${a.state.cursors.length}`)
+    t.comment(`A sends at cursor counts: ${JSON.stringify(a.state.sendCursors)}`)
+    assert.equal(a.state.sends.length, 0, 'still queued before replacement')
+    const refreshing = replace(service, b.address)
+    b.ready(await bounded(b.connected))
+    await bounded(refreshing)
+    const outcome = await bounded(queued.then(id => ({ id }), (error: Error) => ({ error: error.message })))
+    t.comment(`queued outcome: ${JSON.stringify(outcome)} A.sends=${JSON.stringify(a.state.sends)} B.sends=${JSON.stringify(b.state.sends)}`)
+    assert.equal(a.state.sends.includes('queued-during-recovery'), false, 'the unsubmitted call must not reach A')
+    assert.equal(await bounded(service.messageSendText('peer', 'after-publish')), 'B')
+    t.pass('queued admission does not leak to the retired endpoint')
   })
 })
 
 test('SDK M1 control: an RPC already submitted to A before publication still completes', async t => {
   await withFixture({ holdB: true, recovery: true }, async ({ a, b, service }) => {
-      a.state.holdFile = true
-      const submitted = service.messageFile('msg-on-A')
-      const held = await bounded(a.heldFile)
-      const refreshing = replace(service, b.address)
-      b.ready(await bounded(b.connected))
-      await bounded(refreshing)
-      const response = new puppet.MessageFileResponse()
-      response.setFileBox(JSON.stringify(FileBox.fromUuid('A-uuid', 'f.jpg')))
-      held.callback(null, response)
-      const box = await bounded(submitted).catch((error: Error) => error)
-      assert.equal(a.state.files.length, 1)
-      assert.equal(b.state.files.length, 0)
-      t.ok(!(box instanceof Error) || /replaced transport/.test(box.message), 'submitted A call settles (not stuck, not resent to B)')
+    a.state.holdFile = true
+    const submitted = service.messageFile('msg-on-A')
+    const held = await bounded(a.heldFile)
+    const refreshing = replace(service, b.address)
+    b.ready(await bounded(b.connected))
+    await bounded(refreshing)
+    const response = new puppet.MessageFileResponse()
+    response.setFileBox(JSON.stringify(FileBox.fromUuid('A-uuid', 'f.jpg')))
+    held.callback(null, response)
+    const box = await bounded(submitted).catch((error: Error) => error)
+    assert.equal(a.state.files.length, 1)
+    assert.equal(b.state.files.length, 0)
+    t.ok(!(box instanceof Error) || /replaced transport/.test(box.message), 'submitted A call settles (not stuck, not resent to B)')
   })
 })
 
 test('SDK M2: an A messageFile response that arrives after B is published never resolves on B', async t => {
   await withFixture({ holdB: true }, async ({ a, b, service }) => {
-      a.state.holdFile = true
-      const pending = service.messageFile('msg-on-A')
-      const held = await bounded(a.heldFile)
-      const refreshing = replace(service, b.address)
-      b.ready(await bounded(b.connected))
-      await bounded(refreshing)
-      const response = new puppet.MessageFileResponse()
-      response.setFileBox(JSON.stringify(FileBox.fromUuid('A-uuid', 'f.jpg')))
-      held.callback(null, response)
-      const box = await bounded(pending).catch((error: Error) => error)
-      const downloadError = box instanceof Error ? box.message : await drain(box)
-      t.comment(`late A box: ${box instanceof Error ? 'refused: ' + box.message : 'resolved'}; download error: ${downloadError}; A.downloads=${JSON.stringify(a.state.downloads)} B.downloads=${JSON.stringify(b.state.downloads)}`)
-      assert.deepEqual(b.state.downloads, [], 'an A UUID must never be downloaded from B')
-      t.pass('late A media responses keep A ownership or are refused')
+    a.state.holdFile = true
+    const pending = service.messageFile('msg-on-A')
+    const held = await bounded(a.heldFile)
+    const refreshing = replace(service, b.address)
+    b.ready(await bounded(b.connected))
+    await bounded(refreshing)
+    const response = new puppet.MessageFileResponse()
+    response.setFileBox(JSON.stringify(FileBox.fromUuid('A-uuid', 'f.jpg')))
+    held.callback(null, response)
+    const box = await bounded(pending).catch((error: Error) => error)
+    const downloadError = box instanceof Error ? box.message : await drain(box)
+    t.comment(`late A box: ${box instanceof Error ? 'refused: ' + box.message : 'resolved'}; download error: ${downloadError}; A.downloads=${JSON.stringify(a.state.downloads)} B.downloads=${JSON.stringify(b.state.downloads)}`)
+    assert.deepEqual(b.state.downloads, [], 'an A UUID must never be downloaded from B')
+    t.pass('late A media responses keep A ownership or are refused')
   })
 })
 
 test('SDK M2 control: messageFile issued after publication resolves and downloads on B', async t => {
   await withFixture({  }, async ({ a, b, service }) => {
-      await bounded(replace(service, b.address))
-      const box = await bounded(service.messageFile('msg-on-B'))
-      assert.equal(await drain(box), undefined)
-      assert.deepEqual(b.state.downloads, [ 'B-uuid' ])
-      assert.deepEqual(a.state.downloads, [])
-      t.pass('normal media on the current endpoint is unaffected')
+    await bounded(replace(service, b.address))
+    const box = await bounded(service.messageFile('msg-on-B'))
+    assert.equal(await drain(box), undefined)
+    assert.deepEqual(b.state.downloads, [ 'B-uuid' ])
+    assert.deepEqual(a.state.downloads, [])
+    t.pass('normal media on the current endpoint is unaffected')
   })
 })
 
 test('SDK m1: rollback whose old-stream reconnect fails hands recovery back immediately', async t => {
   await withFixture({ recovery: true }, async ({ a, b, service }) => {
-      const before = a.state.cursors.length
-      const refreshing = replace(service, b.address, async (): Promise<void> => {
-        // Final check refuses publication while A is unreachable, so the rollback reconnect fails.
-        a.server.forceShutdown()
-        throw new Error('final route check refused')
-      })
-      await assert.rejects(bounded(refreshing, 8000), /final route check refused|reconnect|Event stream|UNAVAILABLE|No connection/)
-      // Default inactivity is 45 s; the normal error path reschedules in about 1 s.
-      await waitUntil(() => service.recoveryState.status === 'recovering', 'recovery requested after failed rollback', 3000)
-      t.comment(`A event subscriptions before/after: ${before}/${a.state.cursors.length}`)
-      t.pass('rollback failure is handed to normal recovery without waiting for inactivity')
+    const before = a.state.cursors.length
+    const refreshing = replace(service, b.address, async (): Promise<void> => {
+      // Final check refuses publication while A is unreachable, so the rollback reconnect fails.
+      a.server.forceShutdown()
+      throw new Error('final route check refused')
+    })
+    await assert.rejects(bounded(refreshing, 8000), /final route check refused|reconnect|Event stream|UNAVAILABLE|No connection/)
+    // Default inactivity is 45 s; the normal error path reschedules in about 1 s.
+    await waitUntil(() => service.recoveryState.status === 'recovering', 'recovery requested after failed rollback', 3000)
+    t.comment(`A event subscriptions before/after: ${before}/${a.state.cursors.length}`)
+    t.pass('rollback failure is handed to normal recovery without waiting for inactivity')
   })
 })
 
 test('SDK m1 control: a rollback whose old-stream reconnect succeeds stays ready on A', async t => {
   await withFixture({ recovery: true }, async ({ a, b, service }) => {
-      const before = a.state.cursors.length
-      await assert.rejects(bounded(replace(service, b.address, async (): Promise<void> => { throw new Error('final route check refused') })), /final route check refused/)
-      await waitUntil(() => a.state.cursors.length > before, 'A stream reopened')
-      assert.equal(service.options.endpoint, a.address)
-      assert.equal(await bounded(service.messageSendText('peer', 'after-rollback')), 'A')
-      t.pass('healthy rollback is unchanged')
+    const before = a.state.cursors.length
+    await assert.rejects(bounded(replace(service, b.address, async (): Promise<void> => { throw new Error('final route check refused') })), /final route check refused/)
+    await waitUntil(() => a.state.cursors.length > before, 'A stream reopened')
+    assert.equal(service.options.endpoint, a.address)
+    assert.equal(await bounded(service.messageSendText('peer', 'after-rollback')), 'A')
+    t.pass('healthy rollback is unchanged')
   })
 })
 
@@ -303,35 +303,35 @@ test('SDK M2 upload: a post attachment uploaded on A across the switch is never 
 
 test('SDK M2 upload control: a URL FileBox has no server UUID and is still sent after the switch', async t => {
   await withFixture({  }, async ({ a, b, service }) => {
-      await bounded(replace(service, b.address))
-      assert.equal(await bounded(service.messageSendFile('peer', FileBox.fromUrl('https://example.invalid/a.jpg', { name: 'a.jpg' }))), 'B-file')
-      assert.equal(b.state.uploads + a.state.uploads, 0)
-      assert.equal(b.state.sentFiles.length, 1)
-      t.pass('portable payloads are not refused')
+    await bounded(replace(service, b.address))
+    assert.equal(await bounded(service.messageSendFile('peer', FileBox.fromUrl('https://example.invalid/a.jpg', { name: 'a.jpg' }))), 'B-file')
+    assert.equal(b.state.uploads + a.state.uploads, 0)
+    assert.equal(b.state.sentFiles.length, 1)
+    t.pass('portable payloads are not refused')
   })
 })
 
 test('SDK M1 control: a text RPC already submitted to A keeps its A success across publication', async t => {
   await withFixture({ holdB: true, recovery: true }, async ({ a, b, service }) => {
-      a.state.holdText = true
-      const submitted = service.messageSendText('peer', 'submitted-on-A')
-      const answer = await bounded(a.heldText)
-      const refreshing = replace(service, b.address)
-      b.ready(await bounded(b.connected))
-      await bounded(refreshing)
-      const response = new puppet.MessageSendTextResponse(); response.setId('A-ok'); answer(null, response)
-      assert.equal(await bounded(submitted), 'A-ok')
-      assert.deepEqual(a.state.sends, [ 'submitted-on-A' ])
-      assert.deepEqual(b.state.sends, [])
-      t.pass('submitted business RPC keeps its original callback')
+    a.state.holdText = true
+    const submitted = service.messageSendText('peer', 'submitted-on-A')
+    const answer = await bounded(a.heldText)
+    const refreshing = replace(service, b.address)
+    b.ready(await bounded(b.connected))
+    await bounded(refreshing)
+    const response = new puppet.MessageSendTextResponse(); response.setId('A-ok'); answer(null, response)
+    assert.equal(await bounded(submitted), 'A-ok')
+    assert.deepEqual(a.state.sends, [ 'submitted-on-A' ])
+    assert.deepEqual(b.state.sends, [])
+    t.pass('submitted business RPC keeps its original callback')
   })
 })
 
 test('SDK M1 control: when the candidate fails, a call queued during A recovery completes on A once A recovers', async t => {
   await withFixture({ holdB: true, recovery: true }, async ({ a, b, service }) => {
-      const recoveryStream = deferred<grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>>()
-      a.state.holdRecovery = recoveryStream.resolve
-      await waitUntil(() => service.recoveryState.status === 'ready', 'startup gate ready')
+    const recoveryStream = deferred<grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>>()
+    a.state.holdRecovery = recoveryStream.resolve
+    await waitUntil(() => service.recoveryState.status === 'ready', 'startup gate ready')
       a.latest()!.end()
       await waitUntil(() => service.recoveryState.status === 'recovering', 'A recovering')
       const held = await bounded(recoveryStream.promise)
@@ -354,18 +354,18 @@ test('SDK M1 control: when the candidate fails, a call queued during A recovery 
 
 test('SDK m1 control: an ordinary stop during the rollback reconnect does not restart A', async t => {
   await withFixture({ recovery: true, keepService: true }, async ({ a, b, service }) => {
-      let stopping: Promise<void> | undefined
-      const refreshing = replace(service, b.address, async (): Promise<void> => {
-        stopping = service.onStop()
-        throw new Error('final route check refused')
-      })
-      await assert.rejects(bounded(refreshing), /final route check refused|superseded/)
-      await bounded(stopping!)
-      const subscriptions = a.state.cursors.length
-      await new Promise(resolve => setTimeout(resolve, 1500))
-      assert.equal(a.state.cursors.length, subscriptions, 'no A resubscription after stop')
-      assert.notEqual(service.recoveryState.status, 'recovering')
-      t.pass('stop wins over rollback recovery')
+    let stopping: Promise<void> | undefined
+    const refreshing = replace(service, b.address, async (): Promise<void> => {
+      stopping = service.onStop()
+      throw new Error('final route check refused')
+    })
+    await assert.rejects(bounded(refreshing), /final route check refused|superseded/)
+    await bounded(stopping!)
+    const subscriptions = a.state.cursors.length
+    await new Promise(resolve => setTimeout(resolve, 1500))
+    assert.equal(a.state.cursors.length, subscriptions, 'no A resubscription after stop')
+    assert.notEqual(service.recoveryState.status, 'recovering')
+    t.pass('stop wins over rollback recovery')
   })
 })
 
@@ -395,10 +395,13 @@ test('SDK M2 UUID: an existing A UUID serialized before the switch is not sent t
     const existing = OldBox.fromUuid('A-existing-uuid', 'e.jpg')
     a.state.holdUpload = true
     // The upload is the second attachment, so the existing UUID is already serialized when the switch happens.
-    const post = { type: 0, sayableList: [
-      { type: PUPPET.types.Sayable.Attachment, payload: { filebox: existing } },
-      { type: PUPPET.types.Sayable.Attachment, payload: { filebox: FileBox.fromBase64(Buffer.from('payload').toString('base64'), 'p.txt') } },
-    ] } as unknown as PUPPET.payloads.PostClient
+    const post = {
+      type: 0,
+      sayableList: [
+        { type: PUPPET.types.Sayable.Attachment, payload: { filebox: existing } },
+        { type: PUPPET.types.Sayable.Attachment, payload: { filebox: FileBox.fromBase64(Buffer.from('payload').toString('base64'), 'p.txt') } },
+      ],
+    } as unknown as PUPPET.payloads.PostClient
     const sending = service.messageSendPost('peer', post).then(() => 'sent', (error: Error) => `refused: ${error.message}`)
     const early = await bounded(Promise.race([ a.heldUpload.then(() => undefined), sending ]), 6000)
     if (early !== undefined) { throw new assert.AssertionError({ message: `send settled before the upload: ${early}` }) }
@@ -457,4 +460,3 @@ test('SDK M2 serializer: an existing UUID binds the request to its transport; UR
   })
   t.pass('request-level ownership covers uploaded and existing UUIDs and leaves portable boxes free')
 })
-
