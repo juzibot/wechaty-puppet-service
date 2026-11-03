@@ -305,6 +305,7 @@ class PuppetService extends PUPPET.Puppet {
       this.touchRecoveryStream()
     } catch (error) {
       candidate.abortStartup()
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- Stop and restart state can change while the awaited replacement is pending.
       if (this._grpcManager === old && this.endpointReplacement === operation && generation === this.authenticationGeneration && !this.stoppingTask && !this.restartRequested) {
         if (previousCursor) { await this.withEventCheckpoint(async (): Promise<void> => this.restoreEventMetadata(previousCursor!)) }
         // With recovery, a stream lost before sealing is handed to requestRecovery in finally.
@@ -328,11 +329,13 @@ class PuppetService extends PUPPET.Puppet {
       clearTimeout(timer)
       if (this.endpointReplacement === operation) {
         this.endpointReplacement = undefined
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- Stop and restart state can change while rollback awaits the old stream.
         if (!published && this._grpcManager === old && generation === this.authenticationGeneration && !this.stoppingTask && !this.restartRequested) {
           if (operation.sealed) { this.startHealthCheck() }
           // A failed replacement hands any old-stream loss seen meanwhile back to the normal path.
           if (operation.oldLost && this.recovery.enabled) {
             this.requestRecovery(old)
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- The awaited rollback can set rollbackStreamFailed.
           } else if (operation.oldLost && (!operation.sealed || rollbackStreamFailed) && operation.oldError !== undefined) {
             this.emit('error', operation.oldError)
           } else { this.touchRecoveryStream() }
@@ -405,6 +408,7 @@ class PuppetService extends PUPPET.Puppet {
   private transportFileBox (): typeof FileBox {
     const binding = this.fileBoxBinding = { retired: false }
     return uuidifyFileBoxGrpc((): grpcPuppet.PuppetClient => {
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- The retained binding can be retired through fileBoxBinding before this callback runs.
       if (binding.retired) { throw new Error('FileBox UUID belongs to a replaced transport') }
       return this.grpcManager.client
     })
@@ -4575,6 +4579,7 @@ class PuppetService extends PUPPET.Puppet {
     const manager = this._grpcManager
     try {
       await this.checkpointQueue
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- Endpoint replacement can begin while the checkpoint queue is awaited.
       if (epoch !== this.eventEpoch || this.isPreparingForRestart() || this.endpointReplacement) { return }
       if (!manager || !this.isLoggedIn) {
         this.log.warn('PuppetService', 'grpc manager unavailable or puppet logged out, perform regular reset')
@@ -4712,12 +4717,15 @@ class PuppetService extends PUPPET.Puppet {
     try {
       while (true) {
         try {
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- Endpoint replacement can begin during an earlier retry await.
           if (!this.ownsEventWorker(manager, epoch) || this.isPreparingForRestart() || this.endpointReplacement) { return }
           await timeoutPromise(manager.startStream(lastEventSeq, accountId), 30 * 1000)
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- Endpoint replacement can begin while startStream is awaited.
           if (this.isPreparingForRestart() || this.endpointReplacement) { manager.stopStream(); return }
           if (!this.ownsEventWorker(manager, epoch)) { return }
           break
         } catch (e) {
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- Endpoint replacement can begin before an awaited stream error is caught.
           if (!this.ownsEventWorker(manager, epoch) || this.isPreparingForRestart() || this.endpointReplacement) { return }
           if (Date.now() - startTime < timeoutMilliseconds) {
             this.log.warn('failed to start stream, will try again in 15 seconds')
@@ -4737,6 +4745,7 @@ class PuppetService extends PUPPET.Puppet {
             if (epoch === this.eventEpoch) { this.waitingForLogin = false }
           })
       } catch (e) {
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- Endpoint replacement can begin while loginFuture is awaited.
         if (!this.ownsEventWorker(manager, epoch) || this.isPreparingForRestart() || this.endpointReplacement) { return }
         this.log.warn('PuppetService', 'waiting for event reset login error, will perform regular reset')
         return super.reset()
