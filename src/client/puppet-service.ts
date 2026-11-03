@@ -246,6 +246,7 @@ class PuppetService extends PUPPET.Puppet {
     candidate.on('data', onData).on('error', onError).on('end', onError).on('cancel', onError)
     const timer = setTimeout((): void => { fail(new Error('Endpoint replacement deadline exceeded')) }, options.deadline - Date.now())
     let published = false
+    let rollbackStreamFailed = false
     let previousCursor: ReadonlyMap<string, string | undefined> | undefined
     try {
       check()
@@ -293,9 +294,11 @@ class PuppetService extends PUPPET.Puppet {
       this.bridgeGrpcEventStream(candidate)
       this.endpointReplacement = undefined
       published = true
-      for (const event of buffer) { candidate.emit('data', event) }
+      // Retire A before B's buffered LOGIN/READY/REPLAY_COMPLETE can open the shared recovery gate,
+      // so calls still queued for A end locally instead of being submitted to A.
       this.retiredManagers.add(old)
       void old.retire().finally((): void => { this.retiredManagers.delete(old) })
+      for (const event of buffer) { candidate.emit('data', event) }
       this.startHealthCheck()
       this.touchRecoveryStream()
     } catch (error) {
@@ -307,7 +310,14 @@ class PuppetService extends PUPPET.Puppet {
           // Reopen the old stream only while the original running object still owns it.
           const position = await this.eventResumePosition()
           if (this._grpcManager === old && this.endpointReplacement === operation && generation === this.authenticationGeneration) {
-            await old.startStream(position.lastEventSeq, position.accountId)
+            try {
+              await old.startStream(position.lastEventSeq, position.accountId)
+            } catch (rollbackError) {
+              // A failed reopen belongs to recovery, not the refused replacement's result.
+              rollbackStreamFailed = true
+              operation.oldLost = true
+              operation.oldError = rollbackError
+            }
           }
         }
       }
@@ -321,7 +331,7 @@ class PuppetService extends PUPPET.Puppet {
           // A failed replacement hands any old-stream loss seen meanwhile back to the normal path.
           if (operation.oldLost && this.recovery.enabled) {
             this.requestRecovery(old)
-          } else if (operation.oldLost && !operation.sealed && operation.oldError !== undefined) {
+          } else if (operation.oldLost && (!operation.sealed || rollbackStreamFailed) && operation.oldError !== undefined) {
             this.emit('error', operation.oldError)
           } else { this.touchRecoveryStream() }
         }
@@ -434,11 +444,35 @@ class PuppetService extends PUPPET.Puppet {
      *  then it need to be convert to type `Uuid`
      *  before serialized by `fileBox.toString()`
      */
-    if (fileBox.type === FileBoxType.Uuid && this.retiredFileBoxes.has(fileBox.constructor)) {
-      throw new Error('FileBox UUID belongs to a replaced transport')
+    const files = this.fileBoxSerializer()
+    const serialized = await files.serialize(fileBox)
+    files.assertCurrent()
+    return serialized
+  }
+
+  /**
+   * Server UUIDs belong to the server that issued them. One request serializes every box with the
+   * FileBox class current when it started and remembers whether any serialized box is a server UUID
+   * (uploaded now or passed through as is). `assertCurrent()` runs right before the send, so a request
+   * carrying UUIDs of a transport replaced meanwhile is refused instead of sending (or mixing) them.
+   * URL and QRCode boxes are portable and never bind the request.
+   */
+  private fileBoxSerializer (): { serialize: (fileBox: FileBoxInterface) => Promise<string>, assertCurrent: () => void } {
+    const Box = this.FileBoxUuid
+    let owned = false
+    return {
+      serialize: async (fileBox: FileBoxInterface): Promise<string> => {
+        if (fileBox.type === FileBoxType.Uuid && this.retiredFileBoxes.has(fileBox.constructor)) {
+          throw new Error('FileBox UUID belongs to a replaced transport')
+        }
+        const normalizedFileBox = await normalizeFileBoxUuid(Box)(fileBox)
+        if (normalizedFileBox.type === FileBoxType.Uuid) { owned = true }
+        return JSON.stringify(normalizedFileBox)
+      },
+      assertCurrent: (): void => {
+        if (owned && Box !== this.FileBoxUuid) { throw new Error('FileBox UUID belongs to a replaced transport') }
+      },
     }
-    const normalizedFileBox = await normalizeFileBoxUuid(this.FileBoxUuid)(fileBox)
-    return JSON.stringify(normalizedFileBox)
   }
 
   private async grpcUnary<Request, Response> (
@@ -1418,9 +1452,10 @@ class PuppetService extends PUPPET.Puppet {
       const request = new grpcPuppet.ContactAvatarRequest()
       request.setId(contactId)
 
-      const serializedFileBox = await this.serializeFileBox(fileBox)
-      request.setFileBox(serializedFileBox)
+      const files = this.fileBoxSerializer()
+      request.setFileBox(await files.serialize(fileBox))
 
+      files.assertCurrent()
       await util.promisify(
         this.grpcManager.client.contactAvatar
           .bind(this.grpcManager.client),
@@ -1435,6 +1470,7 @@ class PuppetService extends PUPPET.Puppet {
     const request = new grpcPuppet.ContactAvatarRequest()
     request.setId(contactId)
 
+    const Box = this.FileBoxUuid
     const response = await util.promisify(
       this.grpcManager.client.contactAvatar
         .bind(this.grpcManager.client),
@@ -1457,7 +1493,7 @@ class PuppetService extends PUPPET.Puppet {
       }
     }
 
-    return this.FileBoxUuid.fromJSON(jsonText)
+    return Box.fromJSON(jsonText)
   }
 
   override async contactRawPayload (id: string): Promise<PUPPET.payloads.Contact> {
@@ -1786,6 +1822,7 @@ class PuppetService extends PUPPET.Puppet {
     request.setId(messageId)
     request.setType(imageType)
 
+    const Box = this.FileBoxUuid
     const response = await util.promisify(
       this.grpcManager.client.messageImage
         .bind(this.grpcManager.client),
@@ -1794,7 +1831,7 @@ class PuppetService extends PUPPET.Puppet {
     const jsonText = response.getFileBox()
 
     if (jsonText) {
-      return this.FileBoxUuid.fromJSON(jsonText)
+      return Box.fromJSON(jsonText)
     }
 
     throw new Error(`failed to get image filebox for message ${messageId}`)
@@ -1907,12 +1944,14 @@ class PuppetService extends PUPPET.Puppet {
 
     const request = new grpcPuppet.CallInviteWithMediaRequest()
     request.setContactIdsList(contactIds)
+    const files = this.fileBoxSerializer()
     if (file) {
-      request.setFileBox(await this.serializeFileBox(file))
+      request.setFileBox(await files.serialize(file))
     }
     request.setHangupOnFinish(options?.hangupOnFinish ?? false)
     request.setHangupDelayMs(options?.hangupDelayMs ?? 0)
 
+    files.assertCurrent()
     const response = await util.promisify(
       this.grpcManager.client.callInviteWithMedia
         .bind(this.grpcManager.client),
@@ -2098,12 +2137,13 @@ class PuppetService extends PUPPET.Puppet {
     const request = new grpcPuppet.MessageChatHistoryRequest()
     request.setId(messageId)
 
+    const Box = this.FileBoxUuid
     const response = await util.promisify(
       this.grpcManager.client.messageChatHistory
         .bind(this.grpcManager.client),
     )(request)
 
-    const payload = chatHistoryPbToPayload(this.FileBoxUuid, response.getChatHistoryListList()!)
+    const payload = chatHistoryPbToPayload(Box, response.getChatHistoryListList()!)
 
     return payload
   }
@@ -2265,6 +2305,7 @@ class PuppetService extends PUPPET.Puppet {
 
     const request = new grpcPuppet.MessageFileRequest()
     request.setId(id)
+    const Box = this.FileBoxUuid
     const response = await util.promisify(
       this.grpcManager.client.messageFile
         .bind(this.grpcManager.client),
@@ -2272,7 +2313,7 @@ class PuppetService extends PUPPET.Puppet {
 
     const jsonText = response.getFileBox()
     if (jsonText) {
-      return this.FileBoxUuid.fromJSON(jsonText)
+      return Box.fromJSON(jsonText)
     }
 
     throw new Error(`failed to get filebox for message ${id}`)
@@ -2283,6 +2324,7 @@ class PuppetService extends PUPPET.Puppet {
 
     const request = new grpcPuppet.MessageVoiceRequest()
     request.setId(id)
+    const Box = this.FileBoxUuid
     const response = await util.promisify(
       this.grpcManager.client.messageVoice
         .bind(this.grpcManager.client),
@@ -2290,7 +2332,7 @@ class PuppetService extends PUPPET.Puppet {
 
     const jsonText = response.getFileBox()
     if (jsonText) {
-      return this.FileBoxUuid.fromJSON(jsonText)
+      return Box.fromJSON(jsonText)
     }
 
     throw new Error(`failed to get voice filebox for message ${id}`)
@@ -2317,6 +2359,7 @@ class PuppetService extends PUPPET.Puppet {
 
     const request = new grpcPuppet.MessagePreviewRequest()
     request.setId(id)
+    const Box = this.FileBoxUuid
     const response = await util.promisify(
       this.grpcManager.client.messagePreview
         .bind(this.grpcManager.client),
@@ -2324,7 +2367,7 @@ class PuppetService extends PUPPET.Puppet {
 
     const jsonText = response.getFileBox()
     if (jsonText) {
-      return this.FileBoxUuid.fromJSON(jsonText)
+      return Box.fromJSON(jsonText)
     }
     return undefined
   }
@@ -2528,11 +2571,13 @@ class PuppetService extends PUPPET.Puppet {
 
     const request = new grpcPuppet.MessageBatchSendFileRequest()
     request.setConversationIdsList(conversationIds)
-    request.setFileBox(await this.serializeFileBox(fileBox))
+    const files = this.fileBoxSerializer()
+    request.setFileBox(await files.serialize(fileBox))
     if (batchTaskId) {
       request.setBatchTaskId(batchTaskId)
     }
 
+    files.assertCurrent()
     const response = await this.grpcUnary<grpcPuppet.MessageBatchSendFileRequest, grpcPuppet.MessageBatchSendFileResponse>(
       this.grpcManager.client.messageBatchSendFile,
       request,
@@ -2711,10 +2756,11 @@ class PuppetService extends PUPPET.Puppet {
     const request = new grpcPuppet.MessageSendFileRequest()
     request.setConversationId(conversationId)
 
-    const serializedFileBox = await this.serializeFileBox(fileBox)
-    request.setFileBox(serializedFileBox)
+    const files = this.fileBoxSerializer()
+    request.setFileBox(await files.serialize(fileBox))
 
     this.log.info('PuppetService', `messageSendFile(${conversationId}, ${fileBox}) about to call grpc`)
+    files.assertCurrent()
     const response = await util.promisify(
       this.grpcManager.client.messageSendFile
         .bind(this.grpcManager.client),
@@ -2822,11 +2868,13 @@ class PuppetService extends PUPPET.Puppet {
     this.log.verbose('PuppetService', 'messageSendPost("%s", %s)', conversationId, JSON.stringify(postPayload))
 
     const request = new grpcPuppet.MessageSendPostRequest()
-    const post = await postPayloadToPb(grpcPuppet, postPayload, this.serializeFileBox.bind(this))
+    const files = this.fileBoxSerializer()
+    const post = await postPayloadToPb(grpcPuppet, postPayload, files.serialize)
     request.setContent(post)
     request.setConversationId(conversationId)
 
     this.log.info('PuppetService', `messageSendPost(${conversationId}, ${postPayload}) about to call grpc`)
+    files.assertCurrent()
     const response = await util.promisify(
       this.grpcManager.client.messageSendPost
         .bind(this.grpcManager.client),
@@ -2889,10 +2937,12 @@ class PuppetService extends PUPPET.Puppet {
     }
 
     const request = new grpcPuppet.CreateMessageBroadcastRequest()
-    const post = await postPayloadToPb(grpcPuppet, content, this.serializeFileBox.bind(this))
+    const files = this.fileBoxSerializer()
+    const post = await postPayloadToPb(grpcPuppet, content, files.serialize)
     request.setContent(post)
     request.setTargetIdsList(targets)
 
+    files.assertCurrent()
     const response = await util.promisify(
       this.grpcManager.client.createMessageBroadcast.bind(this.grpcManager.client),
     )(request)
@@ -3094,13 +3144,14 @@ class PuppetService extends PUPPET.Puppet {
     const request = new grpcPuppet.RoomAvatarRequest()
     request.setId(roomId)
 
+    const Box = this.FileBoxUuid
     const response = await util.promisify(
       this.grpcManager.client.roomAvatar
         .bind(this.grpcManager.client),
     )(request)
 
     const jsonText = response.getFileBox()
-    return this.FileBoxUuid.fromJSON(jsonText)
+    return Box.fromJSON(jsonText)
   }
 
   override async roomAdd (
@@ -4109,9 +4160,11 @@ class PuppetService extends PUPPET.Puppet {
       throw new Error('can only publish client post now')
     }
     const request = new grpcPuppet.MomentPublishRequest()
-    const post = await postPayloadToPb(grpcPuppet, payload, this.serializeFileBox.bind(this))
+    const files = this.fileBoxSerializer()
+    const post = await postPayloadToPb(grpcPuppet, payload, files.serialize)
     request.setPost(post)
 
+    files.assertCurrent()
     const result = await util.promisify(
       this.grpcManager.client.momentPublish
         .bind(this.grpcManager.client),
@@ -4155,11 +4208,13 @@ class PuppetService extends PUPPET.Puppet {
     this.log.verbose('PuppetService', 'momentCoverage(%s)', JSON.stringify(cover))
 
     const request = new grpcPuppet.MomentCoverageRequest()
+    const files = this.fileBoxSerializer()
     if (cover) {
-      const serializedFileBox = await this.serializeFileBox(cover)
-      request.setFileBox(serializedFileBox)
+      request.setFileBox(await files.serialize(cover))
     }
 
+    files.assertCurrent()
+    const Box = this.FileBoxUuid
     const response = await util.promisify(
       this.grpcManager.client.momentCoverage
         .bind(this.grpcManager.client),
@@ -4167,7 +4222,7 @@ class PuppetService extends PUPPET.Puppet {
 
     const jsonText = response.getFileBox()
     if (jsonText) {
-      return this.FileBoxUuid.fromJSON(jsonText)
+      return Box.fromJSON(jsonText)
     }
   }
 
@@ -4178,6 +4233,7 @@ class PuppetService extends PUPPET.Puppet {
     request.setPostId(postId)
     request.setSayableId(sayableId)
 
+    const Box = this.FileBoxUuid
     const response = await util.promisify(
       this.grpcManager.client.postPayloadSayable
         .bind(this.grpcManager.client),
@@ -4196,7 +4252,7 @@ class PuppetService extends PUPPET.Puppet {
           if (!fileJsonStr) {
             break
           }
-          const file = this.FileBoxUuid.fromJSON(fileJsonStr)
+          const file = Box.fromJSON(fileJsonStr)
           sayablePayload = PUPPET.payloads.sayable.attachment(file)
           break
         }
