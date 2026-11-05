@@ -109,7 +109,7 @@ export class RecoveryGate {
   get state (): RecoveryState { return this.value }
   get enabled (): boolean { return this.options?.enabled === true }
   get account (): string | undefined { return this.accountId }
-  /** Advances whenever a session ends (logout, switch, failure); never when the next one opens. */
+  /** Advances whenever a session ends (each logout, switch or failure); never when the next one opens. */
   get session (): number { return this.sessionId }
 
   begin (accountId?: string, newSession = false): void {
@@ -129,15 +129,13 @@ export class RecoveryGate {
 
   /**
    * A LOGIN outside a replay (after LOGOUT, or replacing a ready account) is a live session:
-   * the stream will not send another barrier, so the gate opens now. A ready gate is fenced
-   * first; an offline one was already fenced when its session ended.
+   * the stream will not send another barrier, so the gate opens now.
    */
   resume (accountId: string): void {
     if (!this.enabled) { return }
     if (this.value.status === 'ready' && this.accountId === accountId) { return }
-    // An offline gate was already fenced when the previous session ended; fencing again would
-    // also reject the new account's own LOGIN and the events that follow it.
-    if (this.value.status !== 'offline') { this.fenceSession(false) }
+    // Session boundaries are applied when LOGOUT or a switching LOGIN arrives, never here: the
+    // new session's own LOGIN and the events after it must keep their session.
     clearTimeout(this.timer)
     this.accountId = accountId
     this.loggedIn = true
@@ -155,11 +153,8 @@ export class RecoveryGate {
   /** The account logged out on a live stream: reject its requests, keep the stream for SCAN/LOGIN. */
   endSession (reason: string): void {
     if (!this.enabled) { return }
-    if (this.value.status === 'offline') {
-      this.value = { status: 'offline', reason }
-    } else {
-      this.fenceSession(false, reason)
-    }
+    // Always a new boundary, even when already offline: two logouts must never merge into one.
+    this.fenceSession(false, reason)
     // No account is current after a logout or switch; the next LOGIN names it.
     this.accountId = undefined
     this.loggedIn = false

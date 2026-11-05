@@ -768,28 +768,13 @@ class PuppetService extends PUPPET.Puppet {
         }
         if (!this.isEventEpochCurrent(epoch)) { return }
       }
+      // Also re-run when already logged in: a store that failed to record this account earlier
+      // would otherwise make every reconnect look like an account switch.
+      if (!await this.storeLoginAccount(contactId, epoch)) { return }
       if (this.isLoggedIn) {
         if (this.recovery.enabled) { this.admitRecoveryLogin(contactId) }
         this.lastAuthenticatedAccount = contactId
         return
-      }
-      if (this.eventMetadataEnabled) {
-        try {
-          await this.retryEventWrite(epoch, async (): Promise<void> => {
-            const { accountId } = await this.getMiscellaneousStoreData()
-            if (accountId === contactId || !this.isEventEpochCurrent(epoch)) { return }
-            await this.resetMiscellaneousStoreData(epoch)
-            if (!this.isEventEpochCurrent(epoch)) { return }
-            await this.setMiscellaneousStoreData({ accountId: contactId }, epoch)
-          })
-        } catch (error) {
-          // Logging in matters more than the cursor. The store may still name the previous account;
-          // the next reconnect then sends its cursor and Work's LOGIN switches the session again.
-          if (!this.isEventEpochCurrent(epoch)) { return }
-          this.log.error('PuppetService', 'LOGIN %s metadata write failed, logging in anyway: %s', contactId, error)
-          this.reportStreamError(error)
-        }
-        if (!this.isEventEpochCurrent(epoch)) { return }
       }
       if (this.recovery.enabled) { this.admitRecoveryLogin(contactId) }
       this.lastAuthenticatedAccount = contactId
@@ -836,6 +821,27 @@ class PuppetService extends PUPPET.Puppet {
     this.arrivedAccount = { epoch: this.eventEpoch, contactId }
   }
 
+  /** Records the account in the cursor store. False when the event was superseded meanwhile. */
+  private async storeLoginAccount (contactId: string, epoch: number): Promise<boolean> {
+    if (!this.eventMetadataEnabled) { return true }
+    try {
+      await this.retryEventWrite(epoch, async (): Promise<void> => {
+        const { accountId } = await this.getMiscellaneousStoreData()
+        if (accountId === contactId || !this.isEventEpochCurrent(epoch)) { return }
+        await this.resetMiscellaneousStoreData(epoch)
+        if (!this.isEventEpochCurrent(epoch)) { return }
+        await this.setMiscellaneousStoreData({ accountId: contactId }, epoch)
+      })
+    } catch (error) {
+      // Logging in matters more than the cursor. The store may still name the previous account;
+      // the next LOGIN of this account retries the write.
+      if (!this.isEventEpochCurrent(epoch)) { return false }
+      this.log.error('PuppetService', 'LOGIN %s metadata write failed, logging in anyway: %s', contactId, error)
+      this.reportStreamError(error)
+    }
+    return this.isEventEpochCurrent(epoch)
+  }
+
   /**
    * During a replay (same account, or a switch decided on arrival) the barrier completes the gate.
    * Otherwise (after LOGOUT, or a ready account replaced) no barrier follows on this stream, so
@@ -869,12 +875,16 @@ class PuppetService extends PUPPET.Puppet {
     }
   }
 
-  private async logoutLocally (reason: string | undefined, epoch: number, eventBound = true): Promise<void> {
+  /**
+   * `fence` ends the gate session: true for a public logout(). A LOGOUT event already ended it on
+   * arrival, and must not end the next session if one opened since.
+   */
+  private async logoutLocally (reason: string | undefined, epoch: number, eventBound = true, fence = true): Promise<void> {
     this.lastAuthenticatedAccount = undefined
     this.cancelEndpointReplacement()
     await this.enqueueAuthentication(epoch, async (): Promise<void> => {
       // Ends the session's requests but keeps the stream recoverable for SCAN and the next LOGIN.
-      this.recovery.endSession(reason ?? 'Account logged out')
+      if (fence) { this.recovery.endSession(reason ?? 'Account logged out') }
       await this.logoutBase(reason)
     }, eventBound)
   }
@@ -925,8 +935,19 @@ class PuppetService extends PUPPET.Puppet {
         // that opens the next session (and everything after it) is never fenced again.
         const session = this.recovery.session
         const current = (): boolean => this.ownsEventWorker(client, epoch) && this.recovery.session === session
+        // Session boundaries are applied on arrival only. A LOGOUT or LOGIN worker therefore never
+        // fences again, and an event received in a session that has since ended (e.g. a duplicate
+        // LOGIN queued before a LOGOUT) is discarded instead of reopening the ended session. In a
+        // backlog LOGOUT A, LOGIN B, LOGOUT B, the first two are discarded and the local logout runs
+        // once, for B's LOGOUT. Without recovery there is no gate and no session isolation.
+        const lifecycle = event.getType() === grpcPuppet.EventType.EVENT_TYPE_LOGIN
+          || event.getType() === grpcPuppet.EventType.EVENT_TYPE_LOGOUT
         this.eventQueue = this.eventQueue.then(async (): Promise<void> => {
           if (!this.ownsEventWorker(client, epoch)) { return undefined }
+          if (lifecycle && this.recovery.enabled && this.recovery.session !== session) {
+            this.log.warn('PuppetService', 'discarding %s received before the session ended', EVENT_TYPE_NAMES.get(event.getType()))
+            return undefined
+          }
           try {
             await this.recovery.runEvent(current, async (): Promise<void> => this.onGrpcStreamEvent(event, epoch))
           } catch (error) {
@@ -1185,7 +1206,7 @@ class PuppetService extends PUPPET.Puppet {
             }
           }
           const manager = this._grpcManager
-          await this.logoutLocally(logoutPayload.data, epoch)
+          await this.logoutLocally(logoutPayload.data, epoch, true, false)
           if (manager && this.ownsEventWorker(manager, epoch)) {
             // The server already ended this session, so it may reject the echo (e.g. "vid not
             // signed"). That says nothing about the next session or about undelivered events.
