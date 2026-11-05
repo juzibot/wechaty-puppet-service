@@ -108,10 +108,11 @@ test('real logout RPC remains pending in prepare and its delayed rejection is no
     const loggedIn = new Promise<void>((resolve): void => { service.once('login', (): void => { resolve() }) })
     service.grpcManager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'account' }))
     await loggedIn
-    service.grpcManager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'account', data: 'logout' }, 2))
+    const publicLogout = assert.rejects(service.logout('user logout'), /logout rejected late/)
     await acceptance
     await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 20 }), /deadline/)
     rejectLogout({ code: grpc.status.UNAVAILABLE, details: 'logout rejected late' })
+    await publicLogout
     await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 1000 }), /logout rejected late/)
     t.pass('both SDK lifecycle completion and the real RPC failure are part of preparation')
   } finally { await service.cleanup(); sinon.restore(); server.forceShutdown() }

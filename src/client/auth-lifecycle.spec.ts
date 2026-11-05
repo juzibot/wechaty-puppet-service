@@ -426,3 +426,60 @@ test('public logout RPC is also drained and retains a delayed rejection', async 
     t.pass('external authentication RPCs cannot escape the SDK drain')
   } finally { rejectRpc(new Error('cleanup')); await bounded(service.cleanup()); sinon.restore() }
 })
+
+for (const target of [ 'A', 'B' ]) {
+  test(`server LOGOUT whose echoed logout RPC fails still admits the next LOGIN ${target}`, async t => {
+    let rejected!: () => void
+    const rpcRejected = new Promise<void>((resolve): void => { rejected = resolve })
+    const { service, manager } = fixture(async (): Promise<void> => {
+      rejected()
+      throw new Error('13 INTERNAL: vid not signed')
+    })
+    const logins: string[] = []
+    service.on('login', ({ contactId }): void => { logins.push(contactId) })
+    try {
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'A', data: 'kicked by server' }))
+      await bounded(rpcRejected)
+      await new Promise<void>((resolve): void => { setImmediate(resolve) })
+      const loggedIn = new Promise<void>((resolve): void => { service.once('login', (): void => { resolve() }) })
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: target }))
+      await bounded(loggedIn)
+      assert.deepEqual(logins, [ 'A', target ])
+      assert.equal(service.isLoggedIn, true)
+      assert.equal(service.currentUserId, target)
+      t.pass('a rejected echo of an already-ended session does not block re-login')
+    } finally { await bounded(service.cleanup()); sinon.restore() }
+  })
+}
+
+test('server LOGOUT whose echoed logout RPC fails does not fail restart preparation', async t => {
+  let rejected!: () => void
+  const rpcRejected = new Promise<void>((resolve): void => { rejected = resolve })
+  const { service, manager } = fixture(async (): Promise<void> => {
+    rejected()
+    throw new Error('13 INTERNAL: vid not signed')
+  })
+  try {
+    manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+    manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'A', data: 'kicked by server' }))
+    await bounded(rpcRejected)
+    await bounded(service.prepareForRestart({ deadline: Date.now() + 2000 }))
+    assert.equal(service.isLoggedIn, false)
+    t.pass('the echo is drained, logged and not mistaken for lost work')
+  } finally { await bounded(service.cleanup()); sinon.restore() }
+})
+
+test('public logout RPC failure is returned to the caller without rejecting the next LOGIN', async t => {
+  const { service, manager } = fixture(async (): Promise<void> => { throw new Error('public logout failure') })
+  try {
+    service.login('A')
+    await assert.rejects(bounded(service.logout('user logout')), /public logout failure/)
+    const loggedIn = new Promise<void>((resolve): void => { service.once('login', (): void => { resolve() }) })
+    manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+    await bounded(loggedIn)
+    assert.equal(service.currentUserId, 'A')
+    await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 2000 }), /public logout failure/)
+    t.pass('caller-visible logout failure stays sticky for drain, not authentication')
+  } finally { await bounded(service.cleanup()); sinon.restore() }
+})
