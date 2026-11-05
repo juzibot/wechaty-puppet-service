@@ -30,6 +30,14 @@ function response (type: ReturnType<puppet.EventResponse['getType']>, payload: u
   return event
 }
 
+async function until (condition: () => boolean, label = 'condition'): Promise<void> {
+  const deadline = Date.now() + 3000
+  while (!condition()) {
+    if (Date.now() > deadline) { throw new Error(`timed out waiting for ${label}`) }
+    await new Promise<void>((resolve): void => { setTimeout(resolve, 5) })
+  }
+}
+
 async function snapshotLoginTest (recoveryEnabled: boolean): Promise<void> {
   const server = new grpc.Server()
   let stream!: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>
@@ -75,7 +83,7 @@ async function snapshotLoginTest (recoveryEnabled: boolean): Promise<void> {
 }
 
 for (const recoveryEnabled of [ false, true ]) {
-  test(`cache failure replays after same-account LOGIN, recovery=${recoveryEnabled}`, async t => {
+  test(`transient cache failure is retried in place without reconnecting, recovery=${recoveryEnabled}`, async t => {
     const server = new grpc.Server()
     let stream!: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>
     let connections = 0
@@ -106,6 +114,7 @@ for (const recoveryEnabled of [ false, true ]) {
       server.bindAsync('127.0.0.1:0', grpc.ServerCredentials.createInsecure(), (error, value): void => { error ? reject(error) : resolve(value) })
     }))
     const service = new AuthService({ token: `insecure_${randomUUID()}`, endpoint: `127.0.0.1:${port}`, tls: { disable: true }, recovery: { enabled: recoveryEnabled } })
+    Object.defineProperty(service, 'eventWriteRetryDelays', { value: [ 1, 1, 1 ] })
     sinon.stub(service.store, 'start').resolves(); sinon.stub(service.store, 'stop').resolves()
     const remove = sinon.stub().onFirstCall().rejects(new Error('transient cache delete failure'))
     remove.onSecondCall().resolves()
@@ -120,27 +129,24 @@ for (const recoveryEnabled of [ false, true ]) {
       await bounded(service.onStart())
       await bounded(initial)
       assert.equal(service.currentUserId, 'A')
-      const failed = new Promise<void>((resolve): void => {
-        if (recoveryEnabled) { stream.once('cancelled', (): void => { resolve() }) } else { service.once('error', (): void => { resolve() }) }
-      })
+      const errors = sinon.spy()
+      service.on('error', errors)
+      const after = new Promise<void>((resolve): void => { service.once('dong', (): void => { resolve() }) })
       stream.write(response(puppet.EventType.EVENT_TYPE_ROOM_MEMBER_LOAD, { roomId: 'room' }, 2))
-      await bounded(failed)
-      assert.equal(await service.store.miscellaneous!.get('lastEventSeq'), '1')
-      assert.equal(loaded, 0)
-      const replayed = new Promise<void>((resolve): void => { service.once('dong', (): void => { resolve() }) })
-      if (!recoveryEnabled) { await bounded(service.reset()) }
-      await bounded(replayed)
-      assert.equal(connections, 2)
-      assert.equal(cursors[1], 1)
+      stream.write(response(puppet.EventType.EVENT_TYPE_DONG, { data: 'after' }, 3))
+      await bounded(after)
+      assert.equal(connections, 1, 'no reconnect')
       assert.equal(logins, 1)
-      assert.equal(loaded, 1)
+      assert.equal(loaded, 1, 'the listener ran exactly once')
       assert.equal(remove.callCount, 2)
-      assert.equal(await service.store.miscellaneous!.get('lastEventSeq'), '2')
+      assert.equal(errors.callCount, 0)
       if (recoveryEnabled) { assert.equal(service.recoveryState.status, 'ready') }
-      assert.equal(await bounded(service.messageSendText('recipient', 'after replay')), 'sent')
+      assert.equal(await bounded(service.messageSendText('recipient', 'after retry')), 'sent')
       assert.equal(sends, 1)
-      await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 2000 }), /transient cache delete failure/)
-      t.pass('replay restores delivery without erasing the sticky restart-drain failure')
+      await service.prepareForRestart({ deadline: Date.now() + 2000 })
+      assert.equal(await service.store.miscellaneous!.get('lastEventSeq'), '3')
+      assert.deepEqual(cursors, [ 0 ])
+      t.pass('the stream keeps flowing through a transient write failure')
     } finally { server.forceShutdown(); await bounded(service.cleanup()); sinon.restore() }
   })
 
@@ -260,31 +266,65 @@ for (const target of [ 'A', 'B' ]) {
   })
 }
 
-for (const failure of [ 'conflict', 'sync-listener', 'async-listener', 'store' ] as const) {
-  test(`duplicate LOGIN cannot hide ${failure}`, async t => {
+for (const failure of [ 'sync-listener', 'async-listener', 'store' ] as const) {
+  test(`a failed ${failure} never blocks a later LOGIN or the stream`, async t => {
     let rejectDelayed!: (error: Error) => void
     const delayed = new Promise<void>((_resolve, reject): void => { rejectDelayed = reject })
     const observed = delayed.catch((): void => {})
     const { service, manager } = fixture(undefined, failure === 'store' ? async (): Promise<void> => delayed : undefined)
-    if (failure === 'sync-listener') { service.on('login', (): never => { throw new Error('sync-listener failed') }) }
-    if (failure === 'async-listener') { service.on('login', async (): Promise<void> => delayed) }
+    service.on('error', (): void => {})
+    let throwOnce = failure === 'sync-listener'
+    if (failure === 'sync-listener') { service.on('login', (): void => { if (throwOnce) { throwOnce = false; throw new Error('sync-listener failed') } }) }
+    if (failure === 'async-listener') { service.once('login', async (): Promise<void> => delayed) }
     try {
       manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }, 1))
-      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: failure === 'conflict' ? 'B' : 'A' }, 2))
-      if (failure === 'store' || failure === 'async-listener') {
-        const received = new Promise<void>((resolve): void => { service.once('dong', (): void => { resolve() }) })
-        manager.emit('data', response(puppet.EventType.EVENT_TYPE_DONG, { data: 'after-duplicate' }, 3))
-        await bounded(received)
-      }
-      const draining = service.prepareForRestart({ deadline: Date.now() + 2000 })
+      const received = new Promise<void>((resolve): void => { service.once('dong', (): void => { resolve() }) })
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_DONG, { data: 'after-failure' }, 2))
+      await bounded(received)
       rejectDelayed(new Error(`${failure} failed`))
-      await assert.rejects(draining, failure === 'conflict' ? /Conflicting LOGIN/ : new RegExp(`${failure} failed`))
-      if (failure === 'sync-listener' || failure === 'conflict') {
-        assert.equal(await service.store.miscellaneous!.get('lastEventSeq'), failure === 'conflict' ? '1' : undefined)
+      await bounded(observed)
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'A', data: 'kicked' }))
+      const relogin = new Promise<void>((resolve): void => { service.once('login', (): void => { resolve() }) })
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }, 3))
+      await bounded(relogin)
+      assert.equal(service.currentUserId, 'A')
+      if (failure === 'store') {
+        await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 2000 }), /store failed/)
+      } else {
+        await service.prepareForRestart({ deadline: Date.now() + 2000 })
       }
-      await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 2000 }))
-      t.pass('failure remains sticky across duplicate notifications and repeated drains')
+      t.pass('only SDK lifecycle (store) failures reach restart preparation; none refuses LOGIN')
     } finally { rejectDelayed(new Error('cleanup')); await observed; await bounded(service.cleanup()); sinon.restore() }
+  })
+}
+
+for (const recoveryEnabled of [ false, true ]) {
+  test(`LOGIN B without LOGOUT logs A out locally first, recovery=${recoveryEnabled}`, async t => {
+    const service = new AuthService({ token: `insecure_${randomUUID()}`, recovery: { enabled: recoveryEnabled } })
+    sinon.stub(GrpcManager.prototype, 'start').resolves(); sinon.stub(GrpcManager.prototype, 'stop').resolves(); sinon.stub(GrpcManager.prototype, 'stopStream')
+    const stores: string[] = []
+    sinon.stub(service.store, 'start').callsFake(async (id: string): Promise<void> => { stores.push(`start:${id}`) })
+    sinon.stub(service.store, 'stop').callsFake(async (): Promise<void> => { stores.push('stop') })
+    const events: string[] = []
+    service.on('login', ({ contactId }): void => { events.push(`login:${contactId}`) })
+    service.on('logout', ({ contactId }): void => { events.push(`logout:${contactId}`) })
+    try {
+      await bounded(service.onStart())
+      const manager = service.grpcManager
+      const loggedInB = new Promise<void>((resolve): void => { service.on('login', ({ contactId }): void => { if (contactId === 'B') { resolve() } }) })
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_READY, {}))
+      if (recoveryEnabled) { manager.emit('data', response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'A', throughSeq: 0 })) }
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'B' }))
+      await bounded(loggedInB)
+      assert.deepEqual(events, [ 'login:A', 'logout:A', 'login:B' ])
+      assert.equal(service.currentUserId, 'B')
+      await service.prepareForRestart({ deadline: Date.now() + 2000 })
+      assert.deepEqual(stores, [ 'start:A', 'stop', 'start:B' ])
+      assert.equal(await service.store.miscellaneous!.get('accountId'), 'B')
+      if (recoveryEnabled) { assert.equal(service.recoveryState.status, 'ready') }
+      t.pass('the account switch is applied, never refused')
+    } finally { await bounded(service.cleanup()); sinon.restore() }
   })
 }
 
@@ -305,7 +345,7 @@ test('positive-sequence duplicate LOGIN commits in event order without duplicate
 })
 
 for (const conflict of [ false, true ]) {
-  test(`recovery already logged in validates account, conflict=${conflict}`, async t => {
+  test(`recovery replay switches to a new session on another account, conflict=${conflict}`, async t => {
     const service = new AuthService({ token: `insecure_${randomUUID()}`, recovery: { enabled: true } })
     sinon.stub(GrpcManager.prototype, 'start').resolves(); sinon.stub(GrpcManager.prototype, 'stop').resolves(); sinon.stub(GrpcManager.prototype, 'stopStream')
     sinon.stub(service.store, 'start').resolves(); sinon.stub(service.store, 'stop').resolves()
@@ -317,27 +357,24 @@ for (const conflict of [ false, true ]) {
       const loggedIn = new Promise<void>((resolve): void => { service.once('login', (): void => { resolve() }) })
       manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
       await bounded(loggedIn)
-      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: conflict ? 'B' : 'A' }, 1))
+      const account = conflict ? 'B' : 'A'
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: account }, 1))
       manager.emit('data', response(puppet.EventType.EVENT_TYPE_READY, {}))
-      manager.emit('data', response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'A', throughSeq: 1 }))
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: account, throughSeq: 1 }))
       const dong = new Promise<void>((resolve): void => { service.once('dong', (): void => { resolve() }) })
       manager.emit('data', response(puppet.EventType.EVENT_TYPE_DONG, { data: 'barrier' }))
-      if (conflict) {
-        await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 2000 }))
-        assert.equal(await service.store.miscellaneous!.get('lastEventSeq'), undefined)
-      } else {
-        await bounded(dong)
-        await service.prepareForRestart({ deadline: Date.now() + 2000 })
-        assert.equal(await service.store.miscellaneous!.get('lastEventSeq'), '1')
-      }
-      assert.equal(logins, 1); assert.equal(service.currentUserId, 'A')
-      t.pass('already logged in never means ignore another account')
+      await bounded(dong)
+      assert.equal(service.recoveryState.status, 'ready')
+      await service.prepareForRestart({ deadline: Date.now() + 2000 })
+      assert.equal(await service.store.miscellaneous!.get('lastEventSeq'), '1')
+      assert.equal(logins, conflict ? 2 : 1); assert.equal(service.currentUserId, account)
+      t.pass('another account becomes a new session instead of being refused')
     } finally { await bounded(service.cleanup()); sinon.restore() }
   })
 }
 
 for (const account of [ 'A', 'B' ]) {
-  test(`legacy reconnect validates ${account} on the same manager`, async t => {
+  test(`legacy reconnect accepts ${account} on the same manager`, async t => {
     const { service, manager } = fixture()
     let logins = 0
     service.on('login', (): void => { logins++ })
@@ -349,10 +386,12 @@ for (const account of [ 'A', 'B' ]) {
     })
     try {
       await bounded(service.reset())
-      const preparing = service.prepareForRestart({ deadline: Date.now() + 2000 })
-      if (account === 'A') { await preparing } else { await assert.rejects(preparing, /Conflicting LOGIN|suspended event processing/) }
-      assert.equal(service.grpcManager, manager); assert.equal(logins, 1)
-      t.pass('stream epoch changes never bypass account validation')
+      await new Promise<void>((resolve): void => { setImmediate(resolve) })
+      await service.prepareForRestart({ deadline: Date.now() + 2000 })
+      assert.equal(service.grpcManager, manager)
+      assert.equal(logins, account === 'A' ? 1 : 2)
+      assert.equal(service.currentUserId, account)
+      t.pass('a reconnect that reports another account switches to it')
     } finally { await bounded(service.cleanup()); sinon.restore() }
   })
 }
@@ -481,5 +520,144 @@ test('public logout RPC failure is returned to the caller without rejecting the 
     assert.equal(service.currentUserId, 'A')
     await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 2000 }), /public logout failure/)
     t.pass('caller-visible logout failure stays sticky for drain, not authentication')
+  } finally { await bounded(service.cleanup()); sinon.restore() }
+})
+
+test('recovery=true: LOGOUT then LOGIN A or B on the same stream opens a live session', async t => {
+  for (const next of [ 'A', 'B' ]) {
+    const service = new AuthService({ token: `insecure_${randomUUID()}`, recovery: { enabled: true } })
+    sinon.stub(GrpcManager.prototype, 'start').resolves(); sinon.stub(GrpcManager.prototype, 'stop').resolves()
+    const stopStream = sinon.stub(GrpcManager.prototype, 'stopStream')
+    sinon.stub(GrpcManager.prototype, 'logout').rejects(new Error('13 INTERNAL: vid not signed'))
+    sinon.stub(service.store, 'start').resolves(); sinon.stub(service.store, 'stop').resolves()
+    const scans: unknown[] = []
+    service.on('scan', (payload): void => { scans.push(payload) })
+    try {
+      await bounded(service.onStart())
+      const manager = service.grpcManager
+      const ready = new Promise<void>((resolve): void => { service.once('ready', (): void => { resolve() }) })
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_READY, {}))
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'A', throughSeq: 0 }))
+      await bounded(ready)
+      await until((): boolean => service.recoveryState.status === 'ready', 'initial barrier')
+      const queuedForA = service.withRecoveryRequestContext({ deadline: Date.now() + 2000 }, async (): Promise<void> => {
+        await new Promise<void>((resolve): void => { setImmediate(resolve) })
+      })
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'A', data: 'kicked' }))
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_SCAN, { status: 2, qrcode: 'qr' }))
+      const relogin = new Promise<void>((resolve): void => { service.once('login', (): void => { resolve() }) })
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: next }))
+      await bounded(relogin)
+      await queuedForA
+      await until((): boolean => service.recoveryState.status === 'ready', 'live session')
+      assert.equal(scans.length, 1, 'SCAN after LOGOUT is delivered')
+      assert.equal(service.currentUserId, next)
+      assert.equal(service.recoveryState.status, 'ready', 'no barrier follows on this stream')
+      assert.equal(stopStream.callCount, 0, 'the stream is never halted')
+      await service.prepareForRestart({ deadline: Date.now() + 2000 })
+      t.pass(`re-login as ${next} is accepted`)
+    } finally { await bounded(service.cleanup()); sinon.restore() }
+  }
+})
+
+test('recovery=true: a request queued before LOGOUT is never sent for the next session', async t => {
+  const service = new AuthService({ token: `insecure_${randomUUID()}`, recovery: { enabled: true } })
+  sinon.stub(GrpcManager.prototype, 'start').resolves(); sinon.stub(GrpcManager.prototype, 'stop').resolves(); sinon.stub(GrpcManager.prototype, 'stopStream')
+  sinon.stub(GrpcManager.prototype, 'logout').resolves()
+  sinon.stub(service.store, 'start').resolves(); sinon.stub(service.store, 'stop').resolves()
+  try {
+    await bounded(service.onStart())
+    const manager = service.grpcManager
+    // Recovering: requests wait for the gate.
+    manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+    await until((): boolean => service.isLoggedIn, 'login A')
+    assert.equal(service.recoveryState.status, 'recovering')
+    const waiting = (service as unknown as { recovery: { wait: () => Promise<void> } }).recovery.wait()
+    manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'A', data: 'kicked' }))
+    await assert.rejects(bounded(waiting), /logged out/)
+    manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'B' }))
+    await until((): boolean => service.isLoggedIn && service.currentUserId === 'B', 'login B')
+    await until((): boolean => service.recoveryState.status === 'ready', 'live session')
+    t.pass('requests admitted for A are rejected, B starts clean')
+  } finally { await bounded(service.cleanup()); sinon.restore() }
+})
+
+test('recovery=true: a mismatched or invalid barrier reconnects instead of going offline', async t => {
+  for (const barrier of [ { accountId: 'B', throughSeq: 0 }, { accountId: 'A', throughSeq: 99 }, { bad: true } ]) {
+    const service = new AuthService({ token: `insecure_${randomUUID()}`, recovery: { enabled: true } })
+    sinon.stub(GrpcManager.prototype, 'start').resolves(); sinon.stub(GrpcManager.prototype, 'stop').resolves()
+    const stopStream = sinon.stub(GrpcManager.prototype, 'stopStream')
+    const startStream = sinon.stub(GrpcManager.prototype, 'startStream').resolves()
+    sinon.stub(service.store, 'start').resolves(); sinon.stub(service.store, 'stop').resolves()
+    try {
+      await bounded(service.onStart())
+      const manager = service.grpcManager
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_READY, {}))
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, barrier))
+      await new Promise<void>((resolve): void => { setTimeout(resolve, 1300) })
+      assert.equal(service.recoveryState.status, 'recovering', JSON.stringify(barrier))
+      assert.ok(stopStream.callCount >= 1)
+      assert.ok(startStream.callCount >= 1, 'a reconnect was requested')
+    } finally { await bounded(service.cleanup()); sinon.restore() }
+  }
+  t.pass('barrier problems retry within the recovery budget')
+})
+
+test('LOGIN still logs in when its metadata write keeps failing', async t => {
+  for (const recoveryEnabled of [ false, true ]) {
+    const service = new AuthService({ token: `insecure_${randomUUID()}`, recovery: { enabled: recoveryEnabled } })
+    Object.defineProperty(service, 'eventWriteRetryDelays', { value: [ 1, 1, 1 ] })
+    sinon.stub(GrpcManager.prototype, 'start').resolves(); sinon.stub(GrpcManager.prototype, 'stop').resolves(); sinon.stub(GrpcManager.prototype, 'stopStream')
+    sinon.stub(service.store, 'start').resolves(); sinon.stub(service.store, 'stop').resolves()
+    service.on('error', (): void => {})
+    try {
+      await bounded(service.onStart())
+      const set = sinon.stub(service.store.miscellaneous!, 'set').rejects(new Error('metadata write failed'))
+      const manager = service.grpcManager
+      const loggedIn = new Promise<void>((resolve): void => { service.once('login', (): void => { resolve() }) })
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+      await bounded(loggedIn)
+      assert.equal(service.currentUserId, 'A')
+      assert.ok(set.callCount >= 4, 'the metadata write was retried')
+      if (recoveryEnabled) { assert.equal(service.recoveryState.status, 'recovering', 'the gate still waits for the barrier') }
+    } finally { await bounded(service.cleanup()); sinon.restore() }
+  }
+  t.pass('a cursor write failure never refuses a login')
+})
+
+test('a throwing logout listener still ends the local session and the next LOGIN is accepted', async t => {
+  const { service, manager } = fixture()
+  service.on('error', (): void => {})
+  let throwing = true
+  service.on('logout', (): void => { if (throwing) { throwing = false; throw new Error('logout listener failed') } })
+  try {
+    const loggedIn = new Promise<void>((resolve): void => { service.once('login', (): void => { resolve() }) })
+    manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+    await bounded(loggedIn)
+    manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'A', data: 'kicked' }))
+    const relogin = new Promise<void>((resolve): void => { service.on('login', ({ contactId }): void => { if (contactId === 'B') { resolve() } }) })
+    manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'B' }))
+    await bounded(relogin)
+    assert.equal(service.currentUserId, 'B')
+    await service.prepareForRestart({ deadline: Date.now() + 2000 })
+    t.pass('a listener failure cannot leave the account logged in')
+  } finally { await bounded(service.cleanup()); sinon.restore() }
+})
+
+test('LOGIN B replacing A still logs in when a logout listener throws', async t => {
+  const { service, manager } = fixture()
+  service.on('error', (): void => {})
+  service.once('logout', (): never => { throw new Error('logout listener failed') })
+  try {
+    const loggedIn = new Promise<void>((resolve): void => { service.once('login', (): void => { resolve() }) })
+    manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+    await bounded(loggedIn)
+    const loggedInB = new Promise<void>((resolve): void => { service.on('login', ({ contactId }): void => { if (contactId === 'B') { resolve() } }) })
+    manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'B' }))
+    await bounded(loggedInB)
+    assert.equal(service.currentUserId, 'B')
+    t.pass('the switch completes despite the listener failure')
   } finally { await bounded(service.cleanup()); sinon.restore() }
 })
