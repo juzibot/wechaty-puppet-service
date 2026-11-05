@@ -863,3 +863,41 @@ test('restart with stored A, snapshot LOGIN B: requests wait for B READY and bar
   } finally { await service.onStop(); await service.destroyTestStore(); server.forceShutdown() }
   t.pass(`a switch during replay still waits for the new account barrier (${starts})`)
 })
+
+test('a reply of A delayed across LOGOUT A and LOGIN B is rejected; B works', async t => {
+  let stream!: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>
+  const { server, state, address } = await switchServer((call): void => {
+    stream = call
+    call.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+    call.write(response(puppet.EventType.EVENT_TYPE_READY, {}))
+    call.write(response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'A', throughSeq: 0 }))
+  })
+  const service = new RealLoginRecoveryService({ token: `insecure_logout-reply-${Date.now()}`, endpoint: address, tls: { disable: true }, recovery: { enabled: true } })
+  service.on('error', (): void => {})
+  const results: string[] = []
+  try {
+    await service.onStart()
+    await until((): boolean => service.recoveryState.status === 'ready')
+    let started!: () => void
+    const listenerStarted = new Promise<void>((resolve): void => { started = resolve })
+    let release!: () => void
+    const released = new Promise<void>((resolve): void => { release = resolve })
+    service.once('message', async (): Promise<void> => {
+      started()
+      await released
+      settled(results, 'A-reply', service.messageSendText('c', 'A reply'))
+    })
+    stream.write(response(puppet.EventType.EVENT_TYPE_MESSAGE, { messageId: 'from-A' }))
+    await listenerStarted
+    stream.write(response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'A', data: 'kicked' }))
+    stream.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'B' }))
+    await until((): boolean => service.isLoggedIn && service.currentUserId === 'B' && service.recoveryState.status === 'ready')
+    release()
+    await until((): boolean => results.length === 1)
+    assert.deepEqual(results, [ 'A-reply:rejected' ])
+    assert.deepEqual(state.sends, [], 'nothing was sent as B on behalf of A')
+    await service.messageSendText('c', 'as B')
+    assert.deepEqual(state.sends, [ 'as B' ])
+  } finally { await service.onStop(); await service.destroyTestStore(); server.forceShutdown() }
+  t.pass('a logout ends the old session for every listener, not only queued events')
+})
