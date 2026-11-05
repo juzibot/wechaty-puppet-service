@@ -84,6 +84,9 @@ export class RecoveryGate {
   private pendingRequests = 0
   private pendingBytes = 0
   private controls = new AbortController()
+  // Aborted on every session fence: replay reads of an ended session never run as the next one.
+  private sessionReads = new AbortController()
+  private sessionId = 0
   private admissionEpoch = 0
   private admissionRetries = new AbortController()
 
@@ -105,18 +108,13 @@ export class RecoveryGate {
 
   get state (): RecoveryState { return this.value }
   get enabled (): boolean { return this.options?.enabled === true }
+  get account (): string | undefined { return this.accountId }
+  /** Changes on every session fence; events and their requests belong to the session they arrived in. */
+  get session (): number { return this.sessionId }
 
   begin (accountId?: string, newSession = false): void {
     if (!this.enabled) { return }
-    if (newSession) {
-      this.admissionEpoch++
-      this.admissionRetries.abort()
-      this.admissionRetries = new AbortController()
-      this.replaceControls()
-      clearTimeout(this.timer)
-      this.value = { status: 'offline', reason: 'New session' }
-      this.notify()
-    }
+    if (newSession) { this.fenceSession(true) }
     this.accountId = newSession ? accountId : this.accountId ?? accountId
     this.loggedIn = false
     this.isReady = false
@@ -127,6 +125,73 @@ export class RecoveryGate {
       this.fail('Recovery budget exhausted')
       this.onExpired?.()
     }, this.budget)
+  }
+
+  /**
+   * Another account logged in while a replay is still pending: requests queued for the previous
+   * account are rejected and the new account waits for its own READY and barrier.
+   */
+  switchAccount (accountId: string): void {
+    if (!this.enabled || this.value.status !== 'recovering') { return }
+    this.fenceSession(false)
+    this.begin(accountId)
+    this.accountId = accountId
+  }
+
+  /**
+   * A LOGIN outside a replay (after LOGOUT, or replacing a ready account) is a live session:
+   * the stream will not send another barrier, so the gate opens now. Anything queued or awaiting
+   * admission for an earlier session is rejected first.
+   */
+  resume (accountId: string): void {
+    if (!this.enabled) { return }
+    if (this.value.status === 'ready' && this.accountId === accountId) { return }
+    // An offline gate was already fenced when the previous session ended; fencing again would
+    // also reject the new account's own LOGIN and the events that follow it.
+    if (this.value.status !== 'offline') { this.fenceSession(false) }
+    clearTimeout(this.timer)
+    this.accountId = accountId
+    this.loggedIn = true
+    this.isReady = true
+    this.replayComplete = true
+    this.value = { status: 'ready' }
+    this.notify()
+  }
+
+  /** True when a barrier for `accountId` can complete the current replay. */
+  acceptsBarrier (accountId: string): boolean {
+    return this.loggedIn && accountId === this.accountId
+  }
+
+  /** The account logged out on a live stream: reject its requests, keep the stream for SCAN/LOGIN. */
+  endSession (reason: string): void {
+    if (!this.enabled) { return }
+    if (this.value.status === 'offline') {
+      this.value = { status: 'offline', reason }
+    } else {
+      this.fenceSession(false, reason)
+    }
+    this.loggedIn = false
+    this.replayComplete = false
+  }
+
+  /**
+   * Rejects everything queued or retrying for the previous session, including its replay reads.
+   * `cancelControls` also aborts control calls such as the Event stream itself: right for a new
+   * transport, wrong for an account switch on a live stream.
+   */
+  private fenceSession (cancelControls: boolean, reason = 'New session'): void {
+    this.admissionEpoch++
+    this.admissionRetries.abort()
+    this.admissionRetries = new AbortController()
+    this.sessionId++
+    const reads = this.sessionReads
+    this.sessionReads = new AbortController()
+    reads.abort()
+    if (cancelControls) { this.replaceControls() }
+    clearTimeout(this.timer)
+    this.value = { status: 'offline', reason }
+    this.notify()
   }
 
   login (accountId: string): void {
@@ -173,6 +238,11 @@ export class RecoveryGate {
   fail (reason: string): void {
     if (!this.enabled) { return }
     this.admissionEpoch++
+    // Any offline state counts as fenced (resume relies on it), so end the session's reads too.
+    this.sessionId++
+    const reads = this.sessionReads
+    this.sessionReads = new AbortController()
+    reads.abort()
     clearTimeout(this.timer)
     this.value = { status: 'offline', reason }
     this.notify()
@@ -299,7 +369,11 @@ export class RecoveryGate {
   ): grpc.InterceptingCall {
     const method = options.method_definition.path.split('/').pop() ?? ''
     const bypass = controls.has(method) || (event !== undefined && replayReads.has(method) && !admission?.retrySignal)
-    const signals = signalsOf({ signals: signalsOf(context), signal: bypass ? this.controls.signal : undefined })
+    const sessionRead = bypass && !controls.has(method)
+    const signals = signalsOf({
+      signals: [ ...signalsOf(context), ...(sessionRead ? [ this.sessionReads.signal ] : []) ],
+      signal: bypass ? this.controls.signal : undefined,
+    })
     const deadline = Math.min(
       context.deadline ?? Infinity,
       options.deadline instanceof Date ? options.deadline.getTime() : options.deadline ?? Infinity,
