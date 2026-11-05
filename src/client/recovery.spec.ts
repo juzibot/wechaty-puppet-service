@@ -902,6 +902,10 @@ test('a reply of A delayed across LOGOUT A and LOGIN B is rejected; B works', as
   t.pass('a logout ends the old session for every listener, not only queued events')
 })
 
+function storeOf (service: RealLoginRecoveryService): { miscellaneous?: { get: (key: string) => Promise<string | undefined> }, room?: { delete: (id: string) => Promise<void> } } {
+  return Reflect.get(service, '_payloadStore') as ReturnType<typeof storeOf>
+}
+
 test('a backlog of duplicate LOGIN, LOGOUT and the next LOGIN keeps the new session usable', async t => {
   for (const chain of [ [ 'B' ], [ 'B', 'C' ] ]) {
     let stream!: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>
@@ -918,33 +922,43 @@ test('a backlog of duplicate LOGIN, LOGOUT and the next LOGIN keeps the new sess
     try {
       await service.onStart()
       await until((): boolean => service.recoveryState.status === 'ready')
-      // Hold the queue with a slow event so the whole backlog arrives before any of it runs.
-      let release!: () => void
-      const held = new Promise<void>((resolve): void => { release = resolve })
-      service.once('dong', async (): Promise<void> => held)
+      // A's message listener starts now and replies only after the last account is ready.
+      let started!: () => void
+      const listenerStarted = new Promise<void>((resolve): void => { started = resolve })
       let replyA: Promise<unknown> | undefined
       service.once('message', async (): Promise<void> => {
+        started()
         await until((): boolean => service.isLoggedIn && service.currentUserId === last && service.recoveryState.status === 'ready')
         replyA = service.messageSendText('c', 'A reply'); replyA.catch((): void => {})
       })
       stream.write(response(puppet.EventType.EVENT_TYPE_MESSAGE, { messageId: 'from-A' }, 1))
-      await until((): boolean => replyA === undefined)
-      service.prependListener('dong', (): void => {})
-      stream.write(response(puppet.EventType.EVENT_TYPE_DONG, { data: 'hold' }))
-      await new Promise<void>((resolve): void => { setTimeout(resolve, 20) })
+      await listenerStarted
+      // Hold the queue inside a worker that really awaits: the room cache delete.
+      let entered!: () => void
+      const deleting = new Promise<void>((resolve): void => { entered = resolve })
+      let release!: () => void
+      const held = new Promise<void>((resolve): void => { release = resolve })
+      const store = storeOf(service) as Record<string, unknown>
+      Object.defineProperty(store, 'room', { configurable: true, value: { delete: async (): Promise<void> => { entered(); await held } } })
+      Object.defineProperty(store, 'roomMember', { configurable: true, value: { delete: async (): Promise<void> => {} } })
+      stream.write(response(puppet.EventType.EVENT_TYPE_ROOM_MEMBER_LOAD, { roomId: 'room' }, 2))
+      await deleting
       service.on('login', ({ contactId }): void => {
         if (contactId === last) { settled(results, 'login', service.messageSendText('c', `${last} login`)) }
       })
+      service.on('message', (): void => { settled(results, 'message', service.messageSendText('c', `${last} message`)) })
+      const sessionBefore = (service as unknown as { recovery: { session: number } }).recovery.session
       stream.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
       let previous = 'A'
-      let seq = 2
       for (const next of chain) {
         stream.write(response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: previous, data: 'kicked' }))
         stream.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: next }))
         previous = next
       }
-      service.on('message', (): void => { settled(results, 'message', service.messageSendText('c', `${last} message`)) })
-      stream.write(response(puppet.EventType.EVENT_TYPE_MESSAGE, { messageId: `from-${last}` }, seq++))
+      stream.write(response(puppet.EventType.EVENT_TYPE_MESSAGE, { messageId: `from-${last}` }, 3))
+      // Every event of the backlog has arrived (each LOGOUT advanced the session) before release.
+      await until((): boolean => (service as unknown as { recovery: { session: number } }).recovery.session >= sessionBefore + chain.length)
+      await new Promise<void>((resolve): void => { setTimeout(resolve, 20) })
       release()
       await until((): boolean => results.length === 2 && replyA !== undefined)
       assert.deepEqual(results.sort(), [ 'login:ok', 'message:ok' ], chain.join('>'))
@@ -955,4 +969,42 @@ test('a backlog of duplicate LOGIN, LOGOUT and the next LOGIN keeps the new sess
     } finally { await service.onStop(); await service.destroyTestStore(); server.forceShutdown() }
   }
   t.pass('session boundaries are applied once, on arrival')
+})
+
+test('a duplicate LOGIN paused in its store read cannot reopen the gate after LOGOUT', async t => {
+  let stream!: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>
+  const { server, state, address } = await switchServer((call): void => {
+    stream = call
+    call.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+    call.write(response(puppet.EventType.EVENT_TYPE_READY, {}))
+    call.write(response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'A', throughSeq: 0 }))
+  })
+  const service = new RealLoginRecoveryService({ token: `insecure_paused-login-${Date.now()}`, endpoint: address, tls: { disable: true }, recovery: { enabled: true } })
+  service.on('error', (): void => {})
+  try {
+    await service.onStart()
+    await until((): boolean => service.recoveryState.status === 'ready')
+    const misc = storeOf(service).miscellaneous!
+    const get = misc.get.bind(misc)
+    let entered!: () => void
+    const reading = new Promise<void>((resolve): void => { entered = resolve })
+    let release!: () => void
+    const held = new Promise<void>((resolve): void => { release = resolve })
+    let armed = true
+    misc.get = async (key: string): Promise<string | undefined> => {
+      if (armed && key === 'accountId') { armed = false; entered(); await held }
+      return get(key)
+    }
+    stream.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+    await reading
+    stream.write(response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'A', data: 'kicked' }))
+    await until((): boolean => service.recoveryState.status === 'offline')
+    release()
+    await until((): boolean => !service.isLoggedIn)
+    await new Promise<void>((resolve): void => { setTimeout(resolve, 50) })
+    assert.equal(service.recoveryState.status, 'offline', 'the ended session stays closed')
+    await assert.rejects(service.messageSendText('c', 'after logout'))
+    assert.deepEqual(state.sends, [])
+  } finally { await service.onStop(); await service.destroyTestStore(); server.forceShutdown() }
+  t.pass('a LOGIN superseded while awaiting never opens the gate')
 })
