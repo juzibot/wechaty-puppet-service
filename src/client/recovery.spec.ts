@@ -901,3 +901,58 @@ test('a reply of A delayed across LOGOUT A and LOGIN B is rejected; B works', as
   } finally { await service.onStop(); await service.destroyTestStore(); server.forceShutdown() }
   t.pass('a logout ends the old session for every listener, not only queued events')
 })
+
+test('a backlog of duplicate LOGIN, LOGOUT and the next LOGIN keeps the new session usable', async t => {
+  for (const chain of [ [ 'B' ], [ 'B', 'C' ] ]) {
+    let stream!: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>
+    const { server, state, address } = await switchServer((call): void => {
+      stream = call
+      call.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+      call.write(response(puppet.EventType.EVENT_TYPE_READY, {}))
+      call.write(response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'A', throughSeq: 0 }))
+    })
+    const service = new RealLoginRecoveryService({ token: `insecure_backlog-${chain.length}-${Date.now()}`, endpoint: address, tls: { disable: true }, recovery: { enabled: true } })
+    service.on('error', (): void => {})
+    const last = chain[chain.length - 1]!
+    const results: string[] = []
+    try {
+      await service.onStart()
+      await until((): boolean => service.recoveryState.status === 'ready')
+      // Hold the queue with a slow event so the whole backlog arrives before any of it runs.
+      let release!: () => void
+      const held = new Promise<void>((resolve): void => { release = resolve })
+      service.once('dong', async (): Promise<void> => held)
+      let replyA: Promise<unknown> | undefined
+      service.once('message', async (): Promise<void> => {
+        await until((): boolean => service.isLoggedIn && service.currentUserId === last && service.recoveryState.status === 'ready')
+        replyA = service.messageSendText('c', 'A reply'); replyA.catch((): void => {})
+      })
+      stream.write(response(puppet.EventType.EVENT_TYPE_MESSAGE, { messageId: 'from-A' }, 1))
+      await until((): boolean => replyA === undefined)
+      service.prependListener('dong', (): void => {})
+      stream.write(response(puppet.EventType.EVENT_TYPE_DONG, { data: 'hold' }))
+      await new Promise<void>((resolve): void => { setTimeout(resolve, 20) })
+      service.on('login', ({ contactId }): void => {
+        if (contactId === last) { settled(results, 'login', service.messageSendText('c', `${last} login`)) }
+      })
+      stream.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+      let previous = 'A'
+      let seq = 2
+      for (const next of chain) {
+        stream.write(response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: previous, data: 'kicked' }))
+        stream.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: next }))
+        previous = next
+      }
+      service.on('message', (): void => { settled(results, 'message', service.messageSendText('c', `${last} message`)) })
+      stream.write(response(puppet.EventType.EVENT_TYPE_MESSAGE, { messageId: `from-${last}` }, seq++))
+      release()
+      await until((): boolean => results.length === 2 && replyA !== undefined)
+      assert.deepEqual(results.sort(), [ 'login:ok', 'message:ok' ], chain.join('>'))
+      await assert.rejects(replyA!)
+      assert.ok(!state.sends.includes('A reply'))
+      assert.equal(service.currentUserId, last)
+      assert.equal(service.recoveryState.status, 'ready')
+    } finally { await service.onStop(); await service.destroyTestStore(); server.forceShutdown() }
+  }
+  t.pass('session boundaries are applied once, on arrival')
+})
