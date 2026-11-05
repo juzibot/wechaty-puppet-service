@@ -42,7 +42,7 @@ test('tracked emission retains once, removal, order, this binding and boolean re
   } finally { release(); await service.cleanup(); sinon.restore() }
 })
 
-test('sync throws and async rejections remain sticky without unhandled rejection', async t => {
+test('sync throws and async rejections are logged, drained and do not fail preparation', async t => {
   for (const asyncFailure of [ false, true ]) {
     const service = new ListenerService({ token: `insecure_${randomUUID()}` })
     const manager = new GrpcManager({ token: `insecure_${randomUUID()}` })
@@ -59,13 +59,12 @@ test('sync throws and async rejections remain sticky without unhandled rejection
         service.on('message', (): never => { throw new Error('sync bridge failed') })
         assert.throws((): void => { service.emit('message', { messageId: 'id' }) }, /sync bridge failed/)
       }
-      await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 1000 }), /bridge failed/)
-      await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 1000 }), /bridge failed/)
+      await service.prepareForRestart({ deadline: Date.now() + 1000 })
       await new Promise<void>((resolve): void => { setImmediate(resolve) })
       assert.deepEqual(unhandled, [])
     } finally { process.off('unhandledRejection', observe); await service.cleanup(); sinon.restore() }
   }
-  t.pass('listeners fail visibly at the restart barrier without process-level rejection leaks')
+  t.pass('a failed listener skips its event; restart is not blocked and nothing leaks')
 })
 
 test('old listener failures cannot poison the next start or its preparation task', async t => {

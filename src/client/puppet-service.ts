@@ -86,10 +86,15 @@ export type PuppetServiceOptions = PUPPET.PuppetOptions & {
 const ResetLoginTimeout = 30 * 1000
 const ResetReadyTimeout = 20 * 1000 // normally ready comes 15 seconds after login
 const TRACKED_LISTENER_EVENTS = new Set([ ...Object.keys(PUPPET.types.CHAT_EVENT_DICT), 'ready', 'dong' ])
+// Backoff for retrying an SDK-owned write of one event; length is the retry count.
+const EVENT_WRITE_RETRY_DELAYS_MS: readonly number[] = [ 100, 500, 2000 ]
+// After this many consecutive exhausted writes the store is treated as down: later events get a
+// single attempt each until one write succeeds, so a dead store cannot stall the stream.
+const EVENT_WRITE_BREAKER_THRESHOLD = 3
+const EVENT_TYPE_NAMES = new Map<number, string>(Object.entries(grpcPuppet.EventType).map(([ name, value ]) => [ value as number, name ]))
 
 interface ListenerDrain {
   readonly pending: Set<Promise<void>>
-  error?: Error
 }
 type PuppetEventName = Parameters<PUPPET.Puppet['rawListeners']>[0]
 
@@ -130,16 +135,12 @@ class PuppetService extends PUPPET.Puppet {
   private eventQueue: Promise<void> = Promise.resolve()
   private eventEpoch = 0
   private eventsBlocked = false
-  private failedEventSeq?: number
-  private activeEventSeq?: number
-  private pendingEventSeq?: number
   private checkpointQueue: Promise<void> = Promise.resolve()
   private pendingCheckpointRollback?: ReadonlyMap<string, string | undefined>
   private restartRequested = false
   private startInProgress = false
   private restartPreparation?: Promise<void>
   private eventDrainError?: Error
-  private sdkLifecycleError?: Error
   private stoppingManager?: GrpcManager
   private startingTask?: Promise<void>
   private transportStart?: TransportStartAttempt
@@ -155,6 +156,14 @@ class PuppetService extends PUPPET.Puppet {
   private inactivityTimer?: NodeJS.Timeout
   private recoveryStopped = true
   private recoveryProcessedSeq = 0
+  // A skipped event whose cursor could not be written; restart preparation must commit it.
+  private uncommittedCheckpoint?: { seq: number, timestamp: string, manager: GrpcManager }
+  // Account state last received on the current event epoch (null after LOGOUT); a new epoch
+  // (reconnect, reset, switch) starts unknown and falls back to the processed state.
+  private arrivedAccount?: { epoch: number, contactId: string | null }
+  // Epoch in which this stream's replay barrier arrived (Work sends one per stream). A switch
+  // carries it into the new epoch; a new stream starts a new epoch without it.
+  private barrierArrivedEpoch?: number
   private endpointReplacement?: { old: GrpcManager, sealed: boolean, cancel: () => void, oldLost: boolean, oldError?: unknown }
   private lastAuthenticatedAccount?: string
   private readonly retiredManagers = new Set<GrpcManager>()
@@ -286,8 +295,9 @@ class PuppetService extends PUPPET.Puppet {
       candidate.off('data', onData).off('error', onError).off('end', onError).off('cancel', onError)
       this.eventEpoch++
       this.eventsBlocked = false
-      this.failedEventSeq = undefined; this.pendingEventSeq = undefined; this.activeEventSeq = undefined
       this.recoveryProcessedSeq = 0
+      // Sequences belong to each server: a cursor still owed to the old one must not be written now.
+      this.uncommittedCheckpoint = undefined
       this._grpcManager = candidate
       this.options.endpoint = endpoint
       this.fileBoxBinding.retired = true
@@ -349,6 +359,10 @@ class PuppetService extends PUPPET.Puppet {
     const drain = this.listenerDrain
     // rawListeners preserves once wrappers, registration order and EventEmitter's snapshot semantics.
     const listeners = this.rawListeners(event as PuppetEventName)
+    // Every listener runs even if an earlier one throws (SDK store hooks come first and must not
+    // be skipped by a Bot listener). The first throw then propagates: the event worker skips the
+    // event and reports it.
+    let failure: { error: unknown } | undefined
     for (const listener of listeners) {
       try {
         const result: unknown = Reflect.apply(listener, this, args)
@@ -356,17 +370,14 @@ class PuppetService extends PUPPET.Puppet {
           && typeof Reflect.get(result, 'then') === 'function') {
           this.trackListenerPromise(Promise.resolve(result), drain)
         }
-      } catch (error) {
-        drain.error ??= error instanceof Error ? error : new Error(String(error))
-        throw error
-      }
+      } catch (error) { failure ??= { error } }
     }
+    if (failure) { throw failure.error }
     return listeners.length > 0
   }
 
   private trackListenerPromise (promise: Promise<unknown>, drain: ListenerDrain): void {
     const task = promise.then((): undefined => undefined, (error: unknown): undefined => {
-      drain.error ??= error instanceof Error ? error : new Error(String(error))
       this.log.error('PuppetService', 'async puppet listener failed: %s', error)
       return undefined
     }).finally((): void => { drain.pending.delete(task) })
@@ -375,7 +386,6 @@ class PuppetService extends PUPPET.Puppet {
 
   private async waitForListeners (drain: ListenerDrain): Promise<void> {
     while (drain.pending.size) { await Promise.all([ ...drain.pending ]) }
-    if (drain.error) { throw drain.error }
   }
 
   private get eventMetadataEnabled (): boolean {
@@ -550,7 +560,7 @@ class PuppetService extends PUPPET.Puppet {
     this.restartRequested = false
     this.restartPreparation = undefined
     this.eventDrainError = undefined
-    this.sdkLifecycleError = undefined
+    this.uncommittedCheckpoint = undefined
     this.listenerDrain = { pending: new Set() }
     this.eventsBlocked = false
 
@@ -635,10 +645,31 @@ class PuppetService extends PUPPET.Puppet {
       await this.waitForListeners(listeners)
     } while (this.sdkLifecycleTasks.size || listeners.pending.size)
     await this.checkpointQueue
+    // Settles a rollback left by a failed write; failing here fails preparation below.
+    await this.withEventCheckpoint(async (): Promise<void> => {}).catch((): void => {})
+    await this.commitSkippedCheckpoint()
     if (this.eventDrainError) { throw this.eventDrainError }
     if (epoch !== this.eventEpoch || manager !== this._grpcManager) { throw new Error('Restart preparation superseded') }
     if (this.eventMetadataEnabled && !this._payloadStore.miscellaneous) { throw new Error('Event cursor storage is unavailable') }
     if (this.pendingCheckpointRollback) { throw new Error('Event checkpoint rollback is incomplete') }
+  }
+
+  /**
+   * A skipped event's cursor must be durable before handing over, or the next process would
+   * replay events this one already delivered. Listener failures never reach here.
+   */
+  private async commitSkippedCheckpoint (): Promise<void> {
+    const pending = this.uncommittedCheckpoint
+    if (!pending) { return }
+    if (pending.manager !== this._grpcManager) { this.uncommittedCheckpoint = undefined; return }
+    await this.withEventCheckpoint(async (): Promise<void> => {
+      const lastEventSeq = await this._payloadStore.miscellaneous?.get('lastEventSeq')
+      if (lastEventSeq && pending.seq <= Number(lastEventSeq)) { return }
+      await this.writeEventMetadata(new Map([
+        [ 'lastEventTimestamp', pending.timestamp ], [ 'lastEventSeq', String(pending.seq) ],
+      ]))
+    })
+    if (this.uncommittedCheckpoint === pending) { this.uncommittedCheckpoint = undefined }
   }
 
   private isPreparingForRestart (): boolean { return this.restartRequested }
@@ -689,14 +720,14 @@ class PuppetService extends PUPPET.Puppet {
     this.log.info('PuppetService', 'onStop() ... done')
   }
 
-  private trackSdkLifecycle (operation: () => void | Promise<void>): Promise<void> {
+  /** Every task is drained; a failure fails restart preparation unless `retainForDrain` is false. */
+  private trackSdkLifecycle (operation: () => void | Promise<void>, retainForDrain = true): Promise<void> {
     const drain = this.listenerDrain
     // Keep the event worker free to process READY/barriers required by lifecycle RPCs.
     const result = Promise.resolve().then(operation)
     const task = result.catch((error: unknown): void => {
-      if (drain === this.listenerDrain) {
-        this.sdkLifecycleError ??= error instanceof Error ? error : new Error(String(error))
-        this.eventDrainError ??= this.sdkLifecycleError
+      if (drain === this.listenerDrain && retainForDrain) {
+        this.eventDrainError ??= error instanceof Error ? error : new Error(String(error))
       }
       this.log.error('PuppetService', 'SDK lifecycle task failed: %s', error)
     }).finally((): void => { this.sdkLifecycleTasks.delete(task) })
@@ -713,46 +744,152 @@ class PuppetService extends PUPPET.Puppet {
       await operation()
       return undefined
     })
-    void this.trackSdkLifecycle((): Promise<void> => task)
-    // Failure is retained by trackSdkLifecycle; only local transitions serialize here.
+    // The awaiting caller handles the failure: the event worker skips the event, a public
+    // logout() rejects. Only local transitions serialize here.
+    void this.trackSdkLifecycle((): Promise<void> => task, false)
     // Store hooks and RPCs may need later events and must not join this queue.
     this.authenticationQueue = task.catch((): void => {})
     return task
   }
 
-  private async acceptLogin (contactId: string, epoch: number): Promise<void> {
+  private async acceptLogin (contactId: string, epoch: number, session: number): Promise<void> {
+    // A LOGOUT (or switch) that arrived meanwhile ended the session this LOGIN belongs to; it must
+    // not then open the gate or log in. Checked again after every await.
+    const current = (): boolean => this.isEventEpochCurrent(epoch) && (!this.recovery.enabled || this.recovery.session === session)
     await this.enqueueAuthentication(epoch, async (): Promise<void> => {
-      // Replayable event failures stay sticky for restart drain, not authentication.
-      if (this.sdkLifecycleError) { throw this.sdkLifecycleError }
-      if (this.listenerDrain.error) { throw this.listenerDrain.error }
+      if (!current()) { return }
+      // A LOGIN is never refused: earlier failures belong to restart preparation, and an account
+      // change ends the previous session locally before this one starts.
+      if (typeof contactId !== 'string' || !contactId) { throw new Error('Invalid LOGIN account') }
       if (this.isLoggedIn && this.currentUserId !== contactId) {
-        throw new Error('Conflicting LOGIN account: must logout first before login again')
-      }
-      if (this.recovery.enabled) {
-        this.recovery.login(contactId)
-        if (this.recovery.state.status === 'offline') { throw new Error('Account changed during recovery') }
-      }
-      this.lastAuthenticatedAccount = contactId
-      if (this.isLoggedIn) { return }
-      if (this.eventMetadataEnabled) {
-        const { accountId } = await this.getMiscellaneousStoreData()
-        if (!this.isEventEpochCurrent(epoch)) { return }
-        if (accountId !== contactId) {
-          await this.resetMiscellaneousStoreData(epoch)
-          if (!this.isEventEpochCurrent(epoch)) { return }
-          await this.setMiscellaneousStoreData({ accountId: contactId }, epoch)
+        this.log.warn('PuppetService', 'LOGIN %s replaces %s without LOGOUT; logging out locally first', contactId, this.currentUserId)
+        this.cancelEndpointReplacement()
+        try {
+          await this.logoutBase(`Replaced by ${contactId}`)
+        } catch (error) {
+          // A's session is over locally either way; B must still log in.
+          this.reportStreamError(error)
         }
+        if (!current()) { return }
       }
-      if (this.isEventEpochCurrent(epoch)) { this.login(contactId) }
+      // Also re-run when already logged in: a store that failed to record this account earlier
+      // would otherwise make every reconnect look like an account switch.
+      if (!await this.storeLoginAccount(contactId, epoch) || !current()) { return }
+      if (this.isLoggedIn) {
+        if (this.recovery.enabled) { this.admitRecoveryLogin(contactId) }
+        this.lastAuthenticatedAccount = contactId
+        return
+      }
+      if (this.recovery.enabled) { this.admitRecoveryLogin(contactId) }
+      this.lastAuthenticatedAccount = contactId
+      this.login(contactId)
     })
   }
 
-  private async logoutLocally (reason: string | undefined, epoch: number, eventBound = true): Promise<void> {
+  /**
+   * An account switch discards everything still pending for the previous account (product rule:
+   * its unreported events may be dropped). On arrival of a LOGIN naming another account than the
+   * last one seen, the event epoch advances: queued events of the old account never run, its
+   * listeners' later requests are superseded, and its gate session is fenced. The LOGIN itself
+   * starts the new epoch, so it and everything after it belong to the new account only.
+   * LOGOUT then LOGIN is not a switch: the server ended the session, and the LOGOUT (with its
+   * reason) is still delivered in order.
+   */
+  private switchOnArrival (payload: string): void {
+    let contactId: unknown
+    try { contactId = (JSON.parse(payload) as { contactId?: unknown }).contactId } catch { return }
+    if (typeof contactId !== 'string' || !contactId) { return }
+    // After a LOGOUT (seen here, or already processed) no account is current: never a switch.
+    const seen = this.arrivedAccount?.epoch === this.eventEpoch ? this.arrivedAccount : undefined
+    // A replay compares with the account it is replaying (it may lag the login if the cursor store
+    // failed); otherwise with the logged-in account.
+    const replayAccount = this.recovery.state.status === 'recovering' ? this.recovery.account : undefined
+    const previous = seen ? seen.contactId : replayAccount ?? (this.isLoggedIn ? this.currentUserId : undefined)
+    if (previous && previous !== contactId) {
+      this.log.warn('PuppetService', 'LOGIN %s replaces %s: discarding events still pending for %s', contactId, previous, previous)
+      // Queued old-account workers stay chained (restart drain still awaits them) but see a
+      // stale epoch and return without running.
+      const barrierArrived = this.barrierArrivedEpoch === this.eventEpoch
+      this.eventEpoch++
+      if (barrierArrived) { this.barrierArrivedEpoch = this.eventEpoch }
+      // A reconnect waiting for its handshake follows the new account's LOGIN/READY instead.
+      this.waitingForLogin = false
+      this.waitingForReady = false
+      const replaying = this.recovery.state.status === 'recovering' && !barrierArrived
+      this.recovery.endSession('Account changed')
+      // Before this stream's barrier, it still sends the new account's READY and barrier: keep
+      // waiting (with a fresh budget; switches are rare). After it, none follows and the new
+      // account opens as a live session.
+      if (replaying) { this.recovery.begin(contactId) }
+    }
+    this.arrivedAccount = { epoch: this.eventEpoch, contactId }
+  }
+
+  /** Records the account in the cursor store. False when the event was superseded meanwhile. */
+  private async storeLoginAccount (contactId: string, epoch: number): Promise<boolean> {
+    if (!this.eventMetadataEnabled) { return true }
+    try {
+      await this.retryEventWrite(epoch, async (): Promise<void> => {
+        const { accountId } = await this.getMiscellaneousStoreData()
+        if (accountId === contactId || !this.isEventEpochCurrent(epoch)) { return }
+        await this.resetMiscellaneousStoreData(epoch)
+        if (!this.isEventEpochCurrent(epoch)) { return }
+        await this.setMiscellaneousStoreData({ accountId: contactId }, epoch)
+      })
+    } catch (error) {
+      // Logging in matters more than the cursor. The store may still name the previous account;
+      // the next LOGIN of this account retries the write.
+      if (!this.isEventEpochCurrent(epoch)) { return false }
+      this.log.error('PuppetService', 'LOGIN %s metadata write failed, logging in anyway: %s', contactId, error)
+      this.reportStreamError(error)
+    }
+    return this.isEventEpochCurrent(epoch)
+  }
+
+  /**
+   * During a replay (same account, or a switch decided on arrival) the barrier completes the gate.
+   * Otherwise (after LOGOUT, or a ready account replaced) no barrier follows on this stream, so
+   * the gate opens as a live session. Earlier requests were already fenced on arrival.
+   */
+  private admitRecoveryLogin (contactId: string): void {
+    // A replay of this account (or a first start with no stored account) still ends with a barrier.
+    const account = this.recovery.account
+    if (this.recovery.state.status === 'recovering' && (!account || account === contactId)) {
+      this.recovery.login(contactId)
+      return
+    }
+    this.recovery.resume(contactId)
+    if (this.restartRequested) { return }
+    this.recoveryStopped = false
+    this.touchRecoveryStream()
+  }
+
+  /**
+   * Base logout that always ends the local session, even if a logout listener throws: the
+   * account must never stay logged in locally after the server ended it.
+   */
+  private async logoutBase (reason?: string): Promise<void> {
+    try {
+      await super.logout(reason)
+    } catch (error) {
+      // The base mixin throws from emit before clearing the account; finish its job without
+      // emitting again (every listener already ran, see emit()).
+      Reflect.set(this, '__currentUserId', undefined)
+      throw error
+    }
+  }
+
+  /**
+   * `fence` ends the gate session: true for a public logout(). A LOGOUT event already ended it on
+   * arrival, and must not end the next session if one opened since.
+   */
+  private async logoutLocally (reason: string | undefined, epoch: number, eventBound = true, fence = true): Promise<void> {
     this.lastAuthenticatedAccount = undefined
     this.cancelEndpointReplacement()
     await this.enqueueAuthentication(epoch, async (): Promise<void> => {
-      this.stopRecovery(reason ?? 'Account logged out', false)
-      await super.logout(reason)
+      // Ends the session's requests but keeps the stream recoverable for SCAN and the next LOGIN.
+      if (fence) { this.recovery.endSession(reason ?? 'Account logged out') }
+      await this.logoutBase(reason)
     }, eventBound)
   }
 
@@ -784,47 +921,48 @@ class PuppetService extends PUPPET.Puppet {
     client
       .on('data', (event: grpcPuppet.EventResponse): void => {
         if (this.endpointReplacement?.old === client && this.endpointReplacement.sealed) { return }
+        // Only two cases drop events: a stream that is no longer current (its replacement
+        // re-sends state: Work snapshots LOGIN/SCAN on connect, sequenced events replay from the
+        // cursor) and restart preparation. LOGOUT has no snapshot and can be lost in either case.
         if (client !== this._grpcManager || this.eventsBlocked || this.restartRequested) { return }
         this.touchRecoveryStream()
-        if (this.recovery.enabled && event.getType() === grpcPuppet.EventType.EVENT_TYPE_LOGIN) {
-          try {
-            const payload = JSON.parse(event.getPayload()) as { contactId: string }
-            if (!this.recovery.checkAccount(payload.contactId)) {
-              this.stopRecovery('Account changed or invalid login')
-              this.haltEventStream(client, event, new Error('Account changed or invalid login'))
-              return
-            }
-          } catch (error) {
-            this.stopRecovery('Invalid login payload')
-            this.haltEventStream(client, event, error)
-            return
-          }
-        }
-        if (this.recovery.enabled && event.getType() === grpcPuppet.EventType.EVENT_TYPE_LOGOUT) {
-          this.stopRecovery('Account logged out', false)
+        if (event.getType() === grpcPuppet.EventType.EVENT_TYPE_LOGIN) { this.switchOnArrival(event.getPayload()) }
+        if (event.getType() === grpcPuppet.EventType.EVENT_TYPE_REPLAY_COMPLETE) { this.barrierArrivedEpoch = this.eventEpoch }
+        if (event.getType() === grpcPuppet.EventType.EVENT_TYPE_LOGOUT) {
+          this.arrivedAccount = { epoch: this.eventEpoch, contactId: null }
+          // Reject requests for the ended session now, but keep the stream so SCAN keeps flowing.
+          if (this.recovery.enabled) { this.recovery.endSession('Account logged out') }
         }
         const epoch = this.eventEpoch
+        // Captured after this event's own fence: an event received before a LOGOUT or switch keeps
+        // the ended session, so requests its listeners make later are rejected, while the LOGIN
+        // that opens the next session (and everything after it) is never fenced again.
+        const session = this.recovery.session
+        const current = (): boolean => this.ownsEventWorker(client, epoch) && this.recovery.session === session
+        // Session boundaries are applied on arrival only. A LOGOUT or LOGIN worker therefore never
+        // fences again, and an event received in a session that has since ended (e.g. a duplicate
+        // LOGIN queued before a LOGOUT) is discarded instead of reopening the ended session. In a
+        // backlog LOGOUT A, LOGIN B, LOGOUT B, the first two are discarded and the local logout runs
+        // once, for B's LOGOUT. Without recovery there is no gate and no session isolation.
+        const lifecycle = event.getType() === grpcPuppet.EventType.EVENT_TYPE_LOGIN
+          || event.getType() === grpcPuppet.EventType.EVENT_TYPE_LOGOUT
         this.eventQueue = this.eventQueue.then(async (): Promise<void> => {
           if (!this.ownsEventWorker(client, epoch)) { return undefined }
-          this.activeEventSeq = event.getSeq()
+          if (lifecycle && this.recovery.enabled && this.recovery.session !== session) {
+            this.log.warn('PuppetService', 'discarding %s received before the session ended', EVENT_TYPE_NAMES.get(event.getType()))
+            return undefined
+          }
           try {
-            if (this.failedEventSeq !== undefined && event.getSeq() > this.failedEventSeq) {
-              throw new Error(`Replay skipped failed event ${this.failedEventSeq}; stream halted until reset`)
-            }
-            await this.recovery.runEvent((): boolean => this.ownsEventWorker(client, epoch), async (): Promise<void> => this.onGrpcStreamEvent(event, epoch))
-            if (!this.ownsEventWorker(client, epoch)) { return undefined }
-            if (event.getSeq()) { this.recoveryProcessedSeq = event.getSeq() }
-            if (event.getSeq() === this.failedEventSeq) {
-              this.failedEventSeq = undefined
-            }
+            await this.recovery.runEvent(current, async (): Promise<void> => this.onGrpcStreamEvent(event, epoch, session))
           } catch (error) {
             if (!this.ownsEventWorker(client, epoch)) {
               this.log.error('PuppetService', 'superseded event worker failed: %s', error)
               return undefined
             }
-            this.haltEventStream(client, event, error)
+            // A single event never stops the stream: skip it, alert, and keep processing.
+            await this.skipEvent(event, error, epoch, client)
           }
-          if (epoch === this.eventEpoch) { this.activeEventSeq = undefined }
+          if (event.getSeq() && this.ownsEventWorker(client, epoch)) { this.recoveryProcessedSeq = event.getSeq() }
           return undefined
         }).catch((error: unknown): void => {
           this.eventDrainError ??= error instanceof Error ? error : new Error(String(error))
@@ -885,10 +1023,8 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   private suspendEventProcessing (): void {
-    if (this.activeEventSeq) { this.pendingEventSeq ??= this.activeEventSeq }
     this.eventEpoch++
     this.eventsBlocked = true
-    this.activeEventSeq = undefined
     this.eventQueue = Promise.resolve()
   }
 
@@ -905,26 +1041,23 @@ class PuppetService extends PUPPET.Puppet {
       if (this.recovery.enabled && !this._payloadStore.miscellaneous) {
         throw new Error('Recovery cursor storage is unavailable')
       }
-      if (this.pendingCheckpointRollback) {
-        await this.restoreEventMetadata(this.pendingCheckpointRollback)
-        this.pendingCheckpointRollback = undefined
-      }
       const lastEventSeq = await this._payloadStore.miscellaneous?.get('lastEventSeq')
       if (epoch !== this.eventEpoch) { return { lastEventSeq } }
-      if (this.pendingEventSeq !== undefined && this.pendingEventSeq > Number(lastEventSeq ?? 0)) {
-        this.failedEventSeq ??= this.pendingEventSeq
-      }
-      this.pendingEventSeq = undefined
       return { lastEventSeq, accountId: await this._payloadStore.miscellaneous?.get('accountId') }
     })
   }
 
   private async withEventCheckpoint<Result> (operation: () => Promise<Result>): Promise<Result> {
-    const result = this.checkpointQueue.then(operation)
-    this.checkpointQueue = result.then((): undefined => undefined, (error: unknown): undefined => {
-      this.eventDrainError ??= error instanceof Error ? error : new Error(String(error))
-      return undefined
+    // Every caller awaits and handles its own result; the queue only serializes writes. A rollback
+    // left by an earlier failed write is restored first, so it can never cross a later success.
+    const result = this.checkpointQueue.then(async (): Promise<Result> => {
+      if (this.pendingCheckpointRollback) {
+        await this.restoreEventMetadata(this.pendingCheckpointRollback)
+        this.pendingCheckpointRollback = undefined
+      }
+      return operation()
     })
+    this.checkpointQueue = result.then((): undefined => undefined, (): undefined => undefined)
     return result
   }
 
@@ -962,6 +1095,9 @@ class PuppetService extends PUPPET.Puppet {
       await this.writeEventMetadata(new Map([
         [ 'lastEventTimestamp', timestamp ], [ 'lastEventSeq', String(seq) ],
       ]), epoch)
+      if (this.isEventEpochCurrent(epoch) && this.uncommittedCheckpoint && seq >= this.uncommittedCheckpoint.seq) {
+        this.uncommittedCheckpoint = undefined
+      }
     })
   }
 
@@ -974,23 +1110,50 @@ class PuppetService extends PUPPET.Puppet {
     }
   }
 
-  private haltEventStream (manager: GrpcManager, event: grpcPuppet.EventResponse, error: unknown): void {
-    this.eventDrainError ??= error instanceof Error ? error : new Error(String(error))
-    this.failedEventSeq ??= event.getSeq()
-    if (this.restartRequested) { return }
-    this.suspendEventProcessing()
-    try {
-      manager.stopStream()
-    } catch (stopError) {
-      this.log.error('PuppetService', 'stopping failed event stream failed: %s', stopError)
+  protected eventWriteRetryDelays: readonly number[] = EVENT_WRITE_RETRY_DELAYS_MS
+  private exhaustedEventWrites = 0
+
+  /** Retries an SDK-owned write of the current event; listeners are never re-invoked. */
+  private async retryEventWrite<Result> (epoch: number, write: () => Promise<Result>): Promise<Result> {
+    const retries = this.exhaustedEventWrites >= EVENT_WRITE_BREAKER_THRESHOLD ? 0 : this.eventWriteRetryDelays.length
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const result = await write()
+        this.exhaustedEventWrites = 0
+        return result
+      } catch (error) {
+        if (attempt >= retries || !this.isEventEpochCurrent(epoch)) {
+          if (this.isEventEpochCurrent(epoch) && ++this.exhaustedEventWrites === EVENT_WRITE_BREAKER_THRESHOLD) {
+            this.log.error('PuppetService', 'EVENT_STORE_DEGRADED: %s consecutive event writes failed, retries suspended until a write succeeds', EVENT_WRITE_BREAKER_THRESHOLD)
+          }
+          throw error
+        }
+        this.log.warn('PuppetService', 'event write failed (attempt %s), retrying: %s', attempt + 1, error)
+        await new Promise<void>((resolve): void => { setTimeout(resolve, this.eventWriteRetryDelays[attempt]) })
+        if (!this.isEventEpochCurrent(epoch)) { throw new Error('Event superseded during write retry') }
+      }
     }
-    if (this.recovery.enabled) {
-      this.log.error('PuppetService', 'recovering after event processing failure: %s', error)
-      this.requestRecovery(manager)
-    } else { this.reportStreamError(error) }
   }
 
-  private async onGrpcStreamEvent (event: grpcPuppet.EventResponse, epoch = this.eventEpoch): Promise<void> {
+  private async skipEvent (event: grpcPuppet.EventResponse, error: unknown, epoch: number, manager: GrpcManager): Promise<void> {
+    const seq = event.getSeq()
+    const type = EVENT_TYPE_NAMES.get(event.getType()) ?? String(event.getType())
+    this.log.error('PuppetService', 'EVENT_SKIPPED seq=%s type=%s reason=%s', seq, type, error instanceof Error ? error.message : String(error))
+    // Advance past the skipped event before notifying: an error listener may reset the stream,
+    // and must not get the same event replayed. A failure here is overwritten by the next commit.
+    if (seq && this.eventMetadataEnabled && this.isEventEpochCurrent(epoch)) {
+      const timestamp = String(Date.now())
+      try {
+        await this.commitEventCheckpoint(seq, timestamp, epoch)
+      } catch (checkpointError) {
+        this.uncommittedCheckpoint = { seq, timestamp, manager }
+        this.log.warn('PuppetService', 'checkpoint after skipped event %s failed: %s', seq, checkpointError)
+      }
+    }
+    this.reportStreamError(error)
+  }
+
+  private async onGrpcStreamEvent (event: grpcPuppet.EventResponse, epoch = this.eventEpoch, session = this.recovery.session): Promise<void> {
     if (!this.isEventEpochCurrent(epoch)) { return }
 
     const type    = event.getType()
@@ -1031,19 +1194,27 @@ class PuppetService extends PUPPET.Puppet {
       case grpcPuppet.EventType.EVENT_TYPE_LOGIN:
         {
           const loginPayload = JSON.parse(payload) as PUPPET.payloads.EventLogin
-          await this.acceptLogin(loginPayload.contactId, epoch)
+          await this.acceptLogin(loginPayload.contactId, epoch, session)
         }
         break
       case grpcPuppet.EventType.EVENT_TYPE_LOGOUT:
         {
           const logoutPayload = JSON.parse(payload) as PUPPET.payloads.EventLogout
           if (this.eventMetadataEnabled) {
-            await this.resetMiscellaneousStoreData(epoch)
+            try {
+              await this.retryEventWrite(epoch, async (): Promise<void> => this.resetMiscellaneousStoreData(epoch))
+            } catch (error) {
+              // The account is logged out either way; a stale cursor only costs a replay.
+              if (!this.isEventEpochCurrent(epoch)) { throw error }
+              this.reportStreamError(error)
+            }
           }
           const manager = this._grpcManager
-          await this.logoutLocally(logoutPayload.data, epoch)
+          await this.logoutLocally(logoutPayload.data, epoch, true, false)
           if (manager && this.ownsEventWorker(manager, epoch)) {
-            void this.trackSdkLifecycle(async (): Promise<void> => manager.logout())
+            // The server already ended this session, so it may reject the echo (e.g. "vid not
+            // signed"). That says nothing about the next session or about undelivered events.
+            void this.trackSdkLifecycle(async (): Promise<void> => manager.logout(), false)
           }
         }
         break
@@ -1060,10 +1231,18 @@ class PuppetService extends PUPPET.Puppet {
         }
         const { roomId } = loadPayload
         this.roomCache.invalidate(roomId)
-        await this.roomCache.run(roomId, async (): Promise<void> => {
-          await this._payloadStore.room?.delete(roomId)
-          await this._payloadStore.roomMember?.delete(roomId)
-        })
+        try {
+          await this.retryEventWrite(epoch, async (): Promise<void> => this.roomCache.run(roomId, async (): Promise<void> => {
+            await this._payloadStore.room?.delete(roomId)
+            await this._payloadStore.roomMember?.delete(roomId)
+          }))
+        } catch (error) {
+          // The server has loaded the members; waiting listeners must still be released. The
+          // persistent copy may stay stale until the next dirty/load event for this room.
+          if (!this.isEventEpochCurrent(epoch)) { return }
+          this.log.error('PuppetService', 'room %s cache invalidation failed, members may be stale: %s', roomId, error)
+          this.reportStreamError(error)
+        }
         if (!this.isEventEpochCurrent(epoch)) { return }
         this.emit('room-member-load', { roomId })
         break
@@ -1097,21 +1276,22 @@ class PuppetService extends PUPPET.Puppet {
       case grpcPuppet.EventType.EVENT_TYPE_REPLAY_COMPLETE: {
         if (!this.recovery.enabled) { break }
         const barrier: unknown = JSON.parse(payload)
-        if (seq !== 0 || typeof barrier !== 'object' || barrier === null
-          || !('accountId' in barrier) || !('throughSeq' in barrier)) {
-          throw new Error('Invalid replay barrier')
+        const value = (typeof barrier === 'object' && barrier !== null ? barrier : {}) as { accountId?: unknown, throughSeq?: unknown }
+        const valid = seq === 0 && typeof value.accountId === 'string' && !!value.accountId
+          && typeof value.throughSeq === 'number' && Number.isSafeInteger(value.throughSeq)
+          && value.throughSeq >= 0 && value.throughSeq <= this.recoveryProcessedSeq
+        if (this.recovery.state.status !== 'recovering') {
+          this.log.warn('PuppetService', 'ignoring replay barrier outside recovery (status %s)', this.recovery.state.status)
+          break
         }
-        const value = barrier as { accountId: unknown, throughSeq: unknown }
-        if (typeof value.accountId !== 'string' || !value.accountId || typeof value.throughSeq !== 'number'
-          || !Number.isSafeInteger(value.throughSeq) || value.throughSeq < 0
-          || value.throughSeq > this.recoveryProcessedSeq || this.failedEventSeq !== undefined) {
-          throw new Error('Invalid or incomplete replay barrier')
+        if (!valid || !this.recovery.acceptsBarrier(value.accountId as string)) {
+          // Never a terminal state: reconnect and let Work re-send LOGIN and a fresh barrier.
+          // Retries stay within the recovery budget, after which the application decides.
+          this.log.error('PuppetService', 'invalid or mismatched replay barrier, reconnecting: %s', payload)
+          if (this._grpcManager) { this.requestRecovery(this._grpcManager) }
+          break
         }
-        this.recovery.barrier(value.accountId)
-        if (this.recovery.state.status === 'offline') {
-          this.stopRecovery(this.recovery.state.reason)
-          this.reportStreamError(new Error(this.recovery.state.reason))
-        }
+        this.recovery.barrier(value.accountId as string)
         break
       }
       case grpcPuppet.EventType.EVENT_TYPE_ROOM_INVITE:
@@ -1169,7 +1349,7 @@ class PuppetService extends PUPPET.Puppet {
         this.log.error(`eventType ${type} unsupported! data: ${payload}`)
     }
     if (seq && this.isEventEpochCurrent(epoch) && this.eventMetadataEnabled) {
-      await this.commitEventCheckpoint(seq, timestamp, epoch)
+      await this.retryEventWrite(epoch, async (): Promise<void> => this.commitEventCheckpoint(seq, timestamp, epoch))
     }
   }
 
@@ -1182,6 +1362,7 @@ class PuppetService extends PUPPET.Puppet {
     if (!manager || manager !== this._grpcManager) { return }
 
     try {
+      // The caller receives this failure; restart preparation reports it too.
       await this.trackSdkLifecycle(async (): Promise<void> => manager.logout())
     } catch (e) {
       this.log.error('PuppetService', 'logout() RPC failed: %s', e)
@@ -4660,7 +4841,9 @@ class PuppetService extends PUPPET.Puppet {
       if (replacement?.old === manager) { this.deferOldStreamLoss() }
       manager.stopStream(); return
     }
-    if (!this.ownsEventWorker(manager, epoch)) { return }
+    // An account switch on this new stream advances the epoch but keeps the stream: still Start it.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- Both can change while startStream is awaited.
+    if (manager !== this._grpcManager || this.eventsBlocked || this.recoveryStopped) { return }
     await util.promisify(manager.client.start.bind(manager.client))(new grpcPuppet.StartRequest())
   }
 
@@ -4809,6 +4992,8 @@ class PuppetService extends PUPPET.Puppet {
     if (!this.eventMetadataEnabled) {
       return
     }
+    // The previous account's cursor no longer applies.
+    this.uncommittedCheckpoint = undefined
     await this.withEventCheckpoint(async (): Promise<void> => this.writeEventMetadata(new Map([
       [ 'lastEventSeq', undefined ], [ 'lastEventTimestamp', undefined ], [ 'accountId', undefined ],
     ]), epoch))

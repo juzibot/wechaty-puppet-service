@@ -21,18 +21,21 @@ function response (type: ReturnType<puppet.EventResponse['getType']>, payload: u
   return event
 }
 
-test('real login bridge synchronous listener failure makes preparation fail', async t => {
+test('real login bridge synchronous listener failure is skipped without failing preparation', async t => {
   const service = new LifecycleService({ token: `insecure_${randomUUID()}` })
   const manager = new GrpcManager({ token: `insecure_${randomUUID()}` })
   sinon.stub(manager, 'stopStream'); sinon.stub(manager, 'stop').resolves()
   sinon.stub(service.store, 'start').resolves()
   service.attach(manager)
+  const errors = sinon.spy()
+  service.on('error', errors)
   service.on('login', (): never => { throw new Error('login listener failed') })
   try {
     manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'account' }))
-    await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 1000 }), /login listener failed/)
-    await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 1000 }), /login listener failed/)
-    t.pass('SDK login failure cannot be mistaken for a drained event queue')
+    await service.prepareForRestart({ deadline: Date.now() + 1000 })
+    assert.equal(service.isLoggedIn, true, 'the SDK login itself still happened')
+    assert.equal(errors.callCount, 1)
+    t.pass('a Bot listener failure is reported, not latched into restart preparation')
   } finally { await service.cleanup(); sinon.restore() }
 })
 
@@ -108,10 +111,11 @@ test('real logout RPC remains pending in prepare and its delayed rejection is no
     const loggedIn = new Promise<void>((resolve): void => { service.once('login', (): void => { resolve() }) })
     service.grpcManager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'account' }))
     await loggedIn
-    service.grpcManager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'account', data: 'logout' }, 2))
+    const publicLogout = assert.rejects(service.logout('user logout'), /logout rejected late/)
     await acceptance
     await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 20 }), /deadline/)
     rejectLogout({ code: grpc.status.UNAVAILABLE, details: 'logout rejected late' })
+    await publicLogout
     await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 1000 }), /logout rejected late/)
     t.pass('both SDK lifecycle completion and the real RPC failure are part of preparation')
   } finally { await service.cleanup(); sinon.restore(); server.forceShutdown() }

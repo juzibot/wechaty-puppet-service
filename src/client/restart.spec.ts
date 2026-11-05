@@ -49,17 +49,53 @@ test('prepare drains accepted events and metadata, rejects new events and suppre
   } finally { await service.cleanup(); sinon.restore() }
 })
 
-test('prepare propagates checkpoint failure permanently', async t => {
+test('a checkpoint that keeps failing is retried and skipped without halting the stream', async t => {
   const service = new RestartService({ token: randomUUID() })
+  Object.defineProperty(service, 'eventWriteRetryDelays', { value: [ 1, 1, 1 ] })
   const manager = new GrpcManager({ token: `insecure_${randomUUID()}` })
-  sinon.stub(manager, 'stopStream'); sinon.stub(manager, 'stop').resolves()
-  sinon.stub(service.metadata, 'set').rejects(new Error('checkpoint write failed'))
+  const stop = sinon.stub(manager, 'stopStream'); sinon.stub(manager, 'stop').resolves()
+  const set = sinon.stub(service.metadata, 'set').rejects(new Error('checkpoint write failed'))
+  const errors: unknown[] = []
+  const dongs: string[] = []
+  service.on('error', (error): void => { errors.push(error) })
+  service.on('dong', ({ data }): void => { dongs.push(String(data)) })
   service.attach(manager)
   try {
     manager.emit('data', event(1))
+    manager.emit('data', event(2))
+    // The cursor cannot be made durable, so handing over would replay delivered events.
     await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 2000 }), /checkpoint write failed/)
-    await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 2000 }), /checkpoint write failed/)
-    t.pass('checkpoint failures cannot become successful preparation')
+    assert.deepEqual(dongs, [ '1', '2' ], 'each listener runs once and later events still arrive')
+    assert.ok(set.callCount >= 8, 'every event retried its checkpoint before skipping')
+    assert.equal(errors.length, 2)
+    assert.equal(stop.callCount, 1, 'only preparation stops the stream')
+    t.pass('a skipped checkpoint never halts the stream; only a still-lagging cursor fails preparation')
+  } finally { sinon.restore(); sinon.stub(manager, 'stop').resolves(); await service.cleanup(); sinon.restore() }
+})
+
+test('a transient checkpoint failure is retried in place without re-emitting', async t => {
+  const service = new RestartService({ token: randomUUID() })
+  Object.defineProperty(service, 'eventWriteRetryDelays', { value: [ 1, 1, 1 ] })
+  const manager = new GrpcManager({ token: `insecure_${randomUUID()}` })
+  sinon.stub(manager, 'stopStream'); sinon.stub(manager, 'stop').resolves()
+  const original = service.metadata.set.bind(service.metadata)
+  let failures = 2
+  sinon.stub(service.metadata, 'set').callsFake(async (key, value): ReturnType<typeof original> => {
+    if (failures-- > 0) { throw new Error('transient') }
+    return original(key as string, value as string)
+  })
+  let dongs = 0
+  const errors = sinon.spy()
+  service.on('dong', (): void => { dongs++ })
+  service.on('error', errors)
+  service.attach(manager)
+  try {
+    manager.emit('data', event(1))
+    await service.prepareForRestart({ deadline: Date.now() + 2000 })
+    assert.equal(dongs, 1)
+    assert.equal(errors.callCount, 0)
+    assert.equal(await service.metadata.get('lastEventSeq'), '1')
+    t.pass('retry covers the write only')
   } finally { sinon.restore(); sinon.stub(manager, 'stop').resolves(); await service.cleanup(); sinon.restore() }
 })
 
@@ -88,22 +124,31 @@ test('each caller has an independent bounded deadline while the shared drain con
   } finally { release(); await service.cleanup(); sinon.restore() }
 })
 
-test('event listener failure and stream close failure remain failed', async t => {
+test('listener failure skips only its event; stream close failure still fails preparation', async t => {
   for (const failure of [ 'listener', 'close' ]) {
     const service = new RestartService({ token: randomUUID() })
     const manager = new GrpcManager({ token: `insecure_${randomUUID()}` })
     const stop = sinon.stub(manager, 'stopStream')
     sinon.stub(manager, 'stop').resolves()
     if (failure === 'close') { stop.throws(new Error('close failed')) }
-    service.on('dong', (): never => { throw new Error('listener failed') })
+    let calls = 0
+    service.on('dong', ({ data }): void => { calls++; if (data === '1') { throw new Error('listener failed') } })
+    service.on('error', (): void => {})
     service.attach(manager)
     try {
       manager.emit('data', event(1))
-      await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 2000 }), new RegExp(failure))
-      await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 2000 }), new RegExp(failure))
+      manager.emit('data', event(2))
+      if (failure === 'listener') {
+        await service.prepareForRestart({ deadline: Date.now() + 2000 })
+        assert.equal(calls, 2, 'the failed event was not retried and the next one still ran')
+        assert.equal(await service.metadata.get('lastEventSeq'), '2', 'the cursor moved past the skipped event')
+      } else {
+        await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 2000 }), /close/)
+        await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 2000 }), /close/)
+      }
     } finally { await service.cleanup(); sinon.restore() }
   }
-  t.pass('failure is sticky across repeated callers')
+  t.pass('event failures are skipped; transport close failure stays sticky')
 })
 
 test('preparing an offline recovery session fails explicitly without claiming a drain', async t => {
@@ -203,4 +248,74 @@ test('preparation racing a connecting legacy stream rejects and cannot reopen it
     assert.throws((): void => { void manager.client }, /NO CLIENT/)
     t.pass('pending startup cannot publish a late stream or start RPC')
   } finally { await service.cleanup(); server.forceShutdown() }
+})
+
+test('preparation commits a skipped event cursor that could not be written earlier', async t => {
+  const service = new RestartService({ token: randomUUID() })
+  Object.defineProperty(service, 'eventWriteRetryDelays', { value: [] })
+  const manager = new GrpcManager({ token: `insecure_${randomUUID()}` })
+  sinon.stub(manager, 'stopStream'); sinon.stub(manager, 'stop').resolves()
+  const original = service.metadata.set.bind(service.metadata)
+  let down = true
+  sinon.stub(service.metadata, 'set').callsFake(async (key, value): ReturnType<typeof original> => {
+    if (down) { throw new Error('store down') }
+    return original(key as string, value as string)
+  })
+  service.on('error', (): void => {})
+  service.on('dong', (): never => { throw new Error('listener failed') })
+  service.attach(manager)
+  try {
+    manager.emit('data', event(1))
+    await new Promise<void>((resolve): void => { setTimeout(resolve, 20) })
+    assert.equal(await service.metadata.get('lastEventSeq'), undefined)
+    down = false
+    await service.prepareForRestart({ deadline: Date.now() + 2000 })
+    assert.equal(await service.metadata.get('lastEventSeq'), '1', 'the next process does not replay it')
+    t.pass('a lagging cursor is made durable before handing over')
+  } finally { sinon.restore(); sinon.stub(manager, 'stop').resolves(); await service.cleanup(); sinon.restore() }
+})
+
+test('a store that stays down stops backing off after repeated exhausted writes', async t => {
+  const service = new RestartService({ token: randomUUID() })
+  Object.defineProperty(service, 'eventWriteRetryDelays', { value: [ 1, 1, 1 ] })
+  const manager = new GrpcManager({ token: `insecure_${randomUUID()}` })
+  sinon.stub(manager, 'stopStream'); sinon.stub(manager, 'stop').resolves()
+  const set = sinon.stub(service.metadata, 'set').rejects(new Error('store down'))
+  service.on('error', (): void => {})
+  service.attach(manager)
+  try {
+    for (let seq = 1; seq <= 5; seq++) { manager.emit('data', event(seq)) }
+    await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 2000 }), /store down/)
+    // 3 events x 4 attempts until the breaker opens, then 1 attempt each (plus skip commits).
+    assert.ok(set.callCount < 5 * 4 * 2, `attempts were bounded: ${set.callCount}`)
+    t.pass('a dead store cannot stall the stream behind retries')
+  } finally { sinon.restore(); sinon.stub(manager, 'stop').resolves(); await service.cleanup(); sinon.restore() }
+})
+
+test('a rollback left by a failed write is restored before a retry or later write succeeds', async t => {
+  const service = new RestartService({ token: randomUUID() })
+  Object.defineProperty(service, 'eventWriteRetryDelays', { value: [ 1 ] })
+  const manager = new GrpcManager({ token: `insecure_${randomUUID()}` })
+  sinon.stub(manager, 'stopStream'); sinon.stub(manager, 'stop').resolves()
+  const originalSet = service.metadata.set.bind(service.metadata)
+  const originalDelete = service.metadata.delete.bind(service.metadata)
+  await originalSet('lastEventSeq', '1')
+  // Seq 2's first attempt fails mid-write and its rollback fails too; the retry then succeeds.
+  let failSet = 0
+  let failRollback = 0
+  sinon.stub(service.metadata, 'set').callsFake(async (key, value): ReturnType<typeof originalSet> => {
+    if (key === 'lastEventSeq' && value === '2' && failSet++ === 0) { throw new Error('write failed') }
+    if (key === 'lastEventSeq' && value === '1' && failRollback++ === 0) { throw new Error('rollback failed') }
+    return originalSet(key as string, value as string)
+  })
+  sinon.stub(service.metadata, 'delete').callsFake(async (key): ReturnType<typeof originalDelete> => originalDelete(key as string))
+  service.on('error', (): void => {})
+  service.attach(manager)
+  try {
+    manager.emit('data', event(2))
+    manager.emit('data', event(3))
+    await service.prepareForRestart({ deadline: Date.now() + 2000 })
+    assert.equal(await service.metadata.get('lastEventSeq'), '3', 'the cursor never goes back')
+    t.pass('an old rollback snapshot cannot overwrite later progress')
+  } finally { sinon.restore(); sinon.stub(manager, 'stop').resolves(); await service.cleanup(); sinon.restore() }
 })

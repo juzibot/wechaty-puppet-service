@@ -341,9 +341,15 @@ for (const mode of [ 'single', 'batch' ] as const) {
       assert.equal(client.uploads.length, 0)
       for (const file of [ FileBox.fromBuffer(Buffer.alloc(16 * 1024), 'small.txt'), FileBox.fromBuffer(Buffer.alloc(32 * 1024), 'large.txt'), FileBox.fromFile('tests/fixtures/smoke-testing.ts'), FileBox.fromStream(Readable.from([ 'stream' ]), 'stream.txt') ]) {
         const result = observe(send(f.service, mode, file))
-        // FileBox.fromFile performs real fs.stat/open before creating the upload.
-        await new Promise<void>(resolve => setImmediate(resolve))
-        for (let attempt = 0; attempt < 20 && result.state === 'pending'; attempt++) { await f.clock.tickAsync(1000) }
+        // FileBox.fromFile performs real fs.stat/open before creating the upload: give real I/O
+        // real time (Date and setImmediate are not faked) instead of a fixed number of ticks.
+        const started = Date.now()
+        let ticked = 0
+        while (result.state === 'pending' && Date.now() - started < 10_000) {
+          await new Promise<void>(resolve => setImmediate(resolve))
+          // Fake time only advances as before (at most 20s in total); otherwise just wait for I/O.
+          if (ticked < 20) { ticked++; await f.clock.tickAsync(1000) }
+        }
         assert.equal(result.state, 'fulfilled')
       }
       assert.equal(client.uploads.length, 4)

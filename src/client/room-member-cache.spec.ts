@@ -37,7 +37,13 @@ class BridgedService extends PuppetService {
 
 let fixtureId = 0
 function serviceFixture (): BridgedService {
-  return new BridgedService({ token: `insecure_cache-${process.pid}-${fixtureId++}` })
+  const service = new BridgedService({ token: `insecure_cache-${process.pid}-${fixtureId++}` })
+  Object.defineProperty(service, 'eventWriteRetryDelays', { value: [ 1, 1, 1 ] })
+  return service
+}
+
+async function settle (): Promise<void> {
+  for (let i = 0; i < 20; i++) { await new Promise<void>(resolve => setTimeout(resolve, 2)) }
 }
 
 function event (payload: unknown, seq = 2): grpcPuppet.EventResponse {
@@ -97,11 +103,13 @@ async function finishResetHandshake (fixture: ResetFixture): Promise<void> {
   await drain()
 }
 
-test('bridge cache failure stops the stream and fences later seq until explicit reset', async t => {
+test('bridge cache failure is retried, reported, and still releases room-member-load', async t => {
   const service = serviceFixture()
   const manager = new GrpcManager({ token: 'insecure_token' })
   const metadata = new Map<string, string>([ [ 'lastEventSeq', '1' ], [ 'lastEventTimestamp', String(Date.now()) ] ])
-  const deleteRoom = sinon.stub().rejects(new Error('persistent cache unavailable'))
+  const deleteRoom = sinon.stub().callsFake(async (id: string): Promise<void> => {
+    if (id === 'room') { throw new Error('persistent cache unavailable') }
+  })
   Object.defineProperty(service, '_payloadStore', {
     value: {
       room: { delete: deleteRoom },
@@ -115,27 +123,23 @@ test('bridge cache failure stops the stream and fences later seq until explicit 
   const stop = sinon.stub(manager, 'stopStream')
   const start = sinon.stub(manager, 'startStream').resolves()
   const errors = sinon.spy()
-  const completed = sinon.spy()
+  const completed: string[] = []
   const unhandled = sinon.spy()
   process.on('unhandledRejection', unhandled)
   t.teardown((): void => { process.off('unhandledRejection', unhandled) })
   service.on('error', errors)
-  service.on('room-member-load', completed)
+  service.on('room-member-load', ({ roomId }): void => { completed.push(roomId) })
   service.connect(manager)
   manager.emit('data', event(state))
   manager.emit('data', event({ roomId: 'other-room' }, 3))
-  await drain()
+  await settle()
   t.equal(unhandled.callCount, 0)
+  t.equal(deleteRoom.withArgs('room').callCount, 4, 'one attempt plus three retries')
   t.equal(errors.callCount, 1)
-  t.equal(completed.callCount, 0)
-  t.equal(metadata.get('lastEventSeq'), '1')
-  t.equal(stop.callCount, 1)
+  t.same(completed, [ 'room', 'other-room' ], 'loading listeners are released even when the cache delete failed')
+  t.equal(metadata.get('lastEventSeq'), '3')
+  t.equal(stop.callCount, 0)
   t.equal(start.callCount, 0)
-  deleteRoom.resolves()
-  manager.emit('data', event(state))
-  await drain()
-  t.equal(completed.callCount, 0)
-  t.equal(metadata.get('lastEventSeq'), '1')
 })
 
 test('invalid event payloads are dropped without touching cache, emitting, or halting the stream', async t => {
@@ -269,21 +273,23 @@ test('invalidation waits for an already-started asynchronous cache write', async
   t.equal(loaded.callCount, 1)
 })
 
-test('later events cannot bypass a halted failure and never cause automatic restart', async t => {
-  for (const skipped of [ false, true ]) {
+test('a skipped event never halts later events or causes a restart', async t => {
+  for (const gap of [ false, true ]) {
     const service = serviceFixture()
     const manager = new GrpcManager({ token: 'insecure_token' })
     const metadata = new Map<string, string>([ [ 'lastEventSeq', '1' ] ])
+    let failing = true
     Object.defineProperty(service, '_payloadStore', {
       value: {
-        room: { delete: sinon.stub().rejects(new Error('persistent cache unavailable')) },
+        room: { delete: sinon.stub().callsFake(async (): Promise<void> => { if (failing) { throw new Error('persistent cache unavailable') } }) },
+        roomMember: { delete: sinon.stub().resolves() },
         miscellaneous: {
           get: async (key: string): Promise<string | undefined> => metadata.get(key),
           set: async (key: string, value: string): Promise<void> => { metadata.set(key, value) },
         },
       },
     })
-    sinon.stub(manager, 'stopStream')
+    const stop = sinon.stub(manager, 'stopStream')
     const start = sinon.stub(manager, 'startStream').resolves()
     const errors = sinon.spy()
     const completed = sinon.spy()
@@ -291,14 +297,15 @@ test('later events cannot bypass a halted failure and never cause automatic rest
     service.on('room-member-load', completed)
     service.connect(manager)
     manager.emit('data', event(state))
-    await drain()
-    manager.emit('data', event(state, skipped ? 3 : 2))
-    manager.emit('data', event(state, 4))
-    await drain()
+    await settle()
+    failing = false
+    manager.emit('data', event(state, gap ? 4 : 3))
+    await settle()
     t.equal(start.callCount, 0)
+    t.equal(stop.callCount, 0)
     t.equal(errors.callCount, 1)
-    t.equal(completed.callCount, 0)
-    t.equal(metadata.get('lastEventSeq'), '1')
+    t.equal(completed.callCount, 2)
+    t.equal(metadata.get('lastEventSeq'), gap ? '4' : '3')
   }
 })
 
@@ -354,29 +361,21 @@ test('superseded delete rejection cannot stop the stream established by reset', 
   t.equal(fixture.metadata.get('lastEventSeq'), '2')
 })
 
-test('failure stops before notifying an error listener that immediately performs actual reset', async t => {
-  const remove = sinon.stub().onFirstCall().rejects(new Error('persistent cache unavailable'))
-  remove.onSecondCall().resolves()
-  const fixture = resetFixture(remove)
+test('an error listener that resets after a skipped event reconnects from the advanced cursor', async t => {
+  const fixture = resetFixture()
+  let failing = true
+  fixture.service.on('room-member-load', (): void => { if (failing) { failing = false; throw new Error('listener failed') } })
   const resetting = deferred<Promise<void>>()
-  const stopsAtError: number[] = []
-  fixture.service.on('error', (): void => {
-    stopsAtError.push(fixture.stop.callCount)
-    resetting.resolve(fixture.service.reset())
-  })
+  fixture.service.on('error', (): void => { resetting.resolve(fixture.service.reset()) })
   fixture.manager.emit('data', event(state))
   await fixture.started.promise
-  t.same(stopsAtError, [ 1 ])
   t.equal(fixture.start.callCount, 1)
-  t.same(fixture.start.args[0], [ '1', 'account' ])
+  t.same(fixture.start.args[0], [ '2', 'account' ], 'the skipped event is not replayed again')
   await finishResetHandshake(fixture)
   await resetting.promise
-  await drain()
-  t.equal(fixture.stop.callCount, 2)
-  t.equal(fixture.start.callCount, 1)
-  fixture.manager.emit('data', event(state))
-  await drain()
-  t.equal(fixture.metadata.get('lastEventSeq'), '2')
+  fixture.manager.emit('data', event(state, 3))
+  await settle()
+  t.equal(fixture.metadata.get('lastEventSeq'), '3')
 })
 
 test('reset waits for and rolls back a superseded asynchronous cursor commit before resuming', async t => {
@@ -412,27 +411,26 @@ test('reset waits for and rolls back a superseded asynchronous cursor commit bef
   await resetting
 })
 
-test('explicit reset preserves the failed seq barrier if the new stream skips that event', async t => {
-  const remove = sinon.stub().onFirstCall().rejects(new Error('persistent cache unavailable'))
-  remove.onSecondCall().resolves()
-  const fixture = resetFixture(remove)
+test('explicit reset after a skipped event resumes normal processing', async t => {
+  const fixture = resetFixture()
+  let failing = true
   const errors = sinon.spy()
   const completed = sinon.spy()
   fixture.service.on('error', errors)
-  fixture.service.on('room-member-load', completed)
+  fixture.service.on('room-member-load', (): void => { completed(); if (failing) { failing = false; throw new Error('listener failed') } })
   fixture.manager.emit('data', event(state))
-  await drain()
+  await settle()
   t.equal(fixture.start.callCount, 0)
+  t.equal(errors.callCount, 1)
   const resetting = fixture.service.reset()
   await fixture.started.promise
   await finishResetHandshake(fixture)
   await resetting
   fixture.manager.emit('data', event(state, 3))
-  await drain()
-  t.equal(errors.callCount, 2)
-  t.equal(completed.callCount, 0)
-  t.equal(fixture.metadata.get('lastEventSeq'), '1')
-  t.equal(fixture.start.callCount, 1)
+  await settle()
+  t.equal(errors.callCount, 1)
+  t.equal(completed.callCount, 2)
+  t.equal(fixture.metadata.get('lastEventSeq'), '3')
 })
 
 test('explicit reset uses the actual durable cursor without age fallback or invented zero', async t => {

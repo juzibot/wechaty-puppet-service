@@ -296,6 +296,24 @@ test('nested cancellation is Node16-compatible and releases parent/child listene
   t.pass('all nested signal combinations release their listeners')
 })
 
+test('endSession and resume reject requests queued for the previous session', async t => {
+  for (const mode of [ 'resume-after-logout', 'resume-other-account' ] as const) {
+    const gate = new RecoveryGate({ enabled: true })
+    try {
+      gate.begin('A')
+      gate.login('A'); gate.ready()
+      const queued = assert.rejects(gate.wait(), /logged out|Account changed/)
+      gate.endSession(mode === 'resume-after-logout' ? 'Account logged out' : 'Account changed')
+      await queued
+      gate.resume(mode === 'resume-after-logout' ? 'A' : 'B')
+      assert.equal(gate.state.status, 'ready')
+      assert.equal(gate.account, mode === 'resume-after-logout' ? 'A' : 'B')
+      await gate.wait()
+    } finally { gate.fail('test complete') }
+  }
+  t.pass('a new session never inherits requests admitted for the previous one')
+})
+
 test('ready session rejects account changes and cannot be reopened by late ready/barrier', async t => {
   const gate = new RecoveryGate({ enabled: true })
   gate.begin('A'); gate.login('A'); gate.ready(); gate.barrier('A')
@@ -408,7 +426,7 @@ test('healthy heartbeat cannot keep unanswered lifecycle controls alive', async 
   t.pass('control deadlines and lifecycle cancellation bound start and stop')
 })
 
-test('PuppetService isolates LOGIN B after ready A even when already logged in', async t => {
+test('PuppetService switches a ready session to LOGIN B without leaking A requests', async t => {
   const server = new grpc.Server()
   let stream: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse> | undefined
   let sends = 0
@@ -434,13 +452,25 @@ test('PuppetService isolates LOGIN B after ready A even when already logged in',
     assert.equal(service.currentUserId, 'A')
     await service.messageSendText('contact', 'before')
     assert.equal(sends, 1)
+    // A's message is still queued ahead of LOGIN B; its listener replies after the switch began.
+    let replyForA: Promise<unknown> | undefined
+    service.once('message', async (): Promise<void> => {
+      await until((): boolean => service.isLoggedIn && service.currentUserId === 'B')
+      const reply = service.messageSendText('contact', 'reply as A')
+      reply.catch((): void => {})
+      replyForA = reply
+    })
+    stream!.write(response(puppet.EventType.EVENT_TYPE_MESSAGE, { messageId: 'from-A' }))
     stream!.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'B' }))
-    await until((): boolean => service.recoveryState.status === 'offline')
-    await assert.rejects(service.messageSendText('contact', 'after'), /Account changed/)
-    assert.equal(sends, 1)
-    assert.equal(service.grpcManager.eventStream, undefined)
+    await until((): boolean => replyForA !== undefined)
+    await assert.rejects(replyForA!, /Superseded|Account changed|New session|logged out/)
+    assert.equal(sends, 1, 'A reply was never sent on B session')
+    assert.equal(service.recoveryState.status, 'ready')
+    await service.messageSendText('contact', 'after')
+    assert.equal(sends, 2)
+    assert.ok(service.grpcManager.eventStream, 'the stream keeps running')
   } finally { await service.onStop(); await service.destroyTestStore(); server.forceShutdown() }
-  t.pass('the SDK rejects writes after a ready-session account change')
+  t.pass('a ready-session account change switches sessions without halting the stream')
 })
 
 test('event-triggered Stop detaches stale contexts and reports server failure', async t => {
@@ -600,4 +630,381 @@ test('recovery cursor persists with event cache disabled while legacy clients ke
   } finally {
     if (previous === undefined) { delete process.env['WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE'] } else { process.env['WECHATY_PUPPET_SERVICE_DISABLE_EVENT_CACHE'] = previous }
   }
+})
+
+test('listeners of the new session can call the server after a switch or a same-account re-login', async t => {
+  for (const path of [ 'switch', 'relogin' ] as const) {
+    const server = new grpc.Server()
+    let stream: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse> | undefined
+    let sends = 0
+    server.addService(puppet.PuppetService, {
+      event: (call: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>): void => {
+        stream = call
+        call.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+        call.write(response(puppet.EventType.EVENT_TYPE_READY, {}))
+        call.write(response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'A', throughSeq: 0 }))
+      },
+      start: (_call: grpc.ServerUnaryCall<puppet.StartRequest, puppet.StartResponse>, callback: grpc.sendUnaryData<puppet.StartResponse>): void => { callback(null, new puppet.StartResponse()) },
+      stop: (_call: grpc.ServerUnaryCall<puppet.StopRequest, puppet.StopResponse>, callback: grpc.sendUnaryData<puppet.StopResponse>): void => { callback(null, new puppet.StopResponse()) },
+      logout: (_call: grpc.ServerUnaryCall<puppet.LogoutRequest, puppet.LogoutResponse>, callback: grpc.sendUnaryData<puppet.LogoutResponse>): void => { callback(null, new puppet.LogoutResponse()) },
+      messageSendText: (_call: grpc.ServerUnaryCall<puppet.MessageSendTextRequest, puppet.MessageSendTextResponse>, callback: grpc.sendUnaryData<puppet.MessageSendTextResponse>): void => { sends++; callback(null, new puppet.MessageSendTextResponse()) },
+    })
+    const port = await new Promise<number>((resolve, reject): void => {
+      server.bindAsync('127.0.0.1:0', grpc.ServerCredentials.createInsecure(), (error, value): void => { error ? reject(error) : resolve(value) })
+    })
+    const service = new RealLoginRecoveryService({ token: `insecure_new-session-${path}-${Date.now()}`, endpoint: `127.0.0.1:${port}`, tls: { disable: true }, recovery: { enabled: true } })
+    service.on('error', (): void => {})
+    try {
+      await service.onStart()
+      await until((): boolean => service.recoveryState.status === 'ready')
+      const next = path === 'switch' ? 'B' : 'A'
+      const results: string[] = []
+      const record = (label: string, call: Promise<unknown>): void => {
+        void (async (): Promise<void> => {
+          try { await call; results.push(`${label}:ok`) } catch (error) { results.push(`${label}:${(error as Error).message}`) }
+        })()
+      }
+      service.on('login', ({ contactId }): void => {
+        if (contactId === next) { record('login', service.messageSendText('contact', 'from login listener')) }
+      })
+      service.once('message', (): void => { record('message', service.messageSendText('contact', 'from message listener')) })
+      if (path === 'relogin') { stream!.write(response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'A', data: 'kicked' })) }
+      stream!.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: next }))
+      stream!.write(response(puppet.EventType.EVENT_TYPE_MESSAGE, { messageId: `from-${next}` }))
+      await until((): boolean => results.length === 2)
+      assert.deepEqual(results.sort(), [ 'login:ok', 'message:ok' ], path)
+      assert.equal(sends, 2)
+      assert.equal(service.recoveryState.status, 'ready')
+    } finally { await service.onStop(); await service.destroyTestStore(); server.forceShutdown() }
+  }
+  t.pass('a session fence never rejects the new session itself')
+})
+
+test('queued LOGIN A, READY, barrier A, LOGIN B: B listeners can call the server without waiting', async t => {
+  const server = new grpc.Server()
+  let sends = 0
+  server.addService(puppet.PuppetService, {
+    event: (call: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>): void => {
+      call.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+      call.write(response(puppet.EventType.EVENT_TYPE_READY, {}))
+      call.write(response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'A', throughSeq: 0 }))
+      call.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'B' }))
+      call.write(response(puppet.EventType.EVENT_TYPE_MESSAGE, { messageId: 'from-B' }))
+    },
+    start: (_call: grpc.ServerUnaryCall<puppet.StartRequest, puppet.StartResponse>, callback: grpc.sendUnaryData<puppet.StartResponse>): void => { callback(null, new puppet.StartResponse()) },
+    stop: (_call: grpc.ServerUnaryCall<puppet.StopRequest, puppet.StopResponse>, callback: grpc.sendUnaryData<puppet.StopResponse>): void => { callback(null, new puppet.StopResponse()) },
+    messageSendText: (_call: grpc.ServerUnaryCall<puppet.MessageSendTextRequest, puppet.MessageSendTextResponse>, callback: grpc.sendUnaryData<puppet.MessageSendTextResponse>): void => { sends++; callback(null, new puppet.MessageSendTextResponse()) },
+  })
+  const port = await new Promise<number>((resolve, reject): void => {
+    server.bindAsync('127.0.0.1:0', grpc.ServerCredentials.createInsecure(), (error, value): void => { error ? reject(error) : resolve(value) })
+  })
+  const service = new RealLoginRecoveryService({ token: `insecure_queued-switch-${Date.now()}`, endpoint: `127.0.0.1:${port}`, tls: { disable: true }, recovery: { enabled: true } })
+  service.on('error', (): void => {})
+  const results: string[] = []
+  const record = (label: string, call: Promise<unknown>): void => {
+    void (async (): Promise<void> => {
+      try { await call; results.push(`${label}:ok`) } catch (error) { results.push(`${label}:${(error as Error).message}`) }
+    })()
+  }
+  service.on('login', ({ contactId }): void => { if (contactId === 'B') { record('login', service.messageSendText('contact', 'from B login')) } })
+  service.on('message', (): void => { record('message', service.messageSendText('contact', 'from B message')) })
+  try {
+    await service.onStart()
+    await until((): boolean => results.length === 2)
+    assert.deepEqual(results.sort(), [ 'login:ok', 'message:ok' ])
+    assert.equal(sends, 2)
+    assert.equal(service.currentUserId, 'B')
+    assert.equal(service.recoveryState.status, 'ready')
+  } finally { await service.onStop(); await service.destroyTestStore(); server.forceShutdown() }
+  t.pass('a switch decided at arrival never rejects the new account itself')
+})
+
+async function switchServer (onConnect: (call: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>, connection: number) => void) {
+  const server = new grpc.Server()
+  const state = { sends: [] as string[], connections: 0 }
+  server.addService(puppet.PuppetService, {
+    event: (call: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>): void => { state.connections++; onConnect(call, state.connections) },
+    start: (_call: grpc.ServerUnaryCall<puppet.StartRequest, puppet.StartResponse>, callback: grpc.sendUnaryData<puppet.StartResponse>): void => { callback(null, new puppet.StartResponse()) },
+    stop: (_call: grpc.ServerUnaryCall<puppet.StopRequest, puppet.StopResponse>, callback: grpc.sendUnaryData<puppet.StopResponse>): void => { callback(null, new puppet.StopResponse()) },
+    logout: (_call: grpc.ServerUnaryCall<puppet.LogoutRequest, puppet.LogoutResponse>, callback: grpc.sendUnaryData<puppet.LogoutResponse>): void => { callback(null, new puppet.LogoutResponse()) },
+    messageSendText: (call: grpc.ServerUnaryCall<puppet.MessageSendTextRequest, puppet.MessageSendTextResponse>, callback: grpc.sendUnaryData<puppet.MessageSendTextResponse>): void => { state.sends.push(call.request.getText()); callback(null, new puppet.MessageSendTextResponse()) },
+  })
+  const port = await new Promise<number>((resolve, reject): void => {
+    server.bindAsync('127.0.0.1:0', grpc.ServerCredentials.createInsecure(), (error, value): void => { error ? reject(error) : resolve(value) })
+  })
+  return { server, state, address: `127.0.0.1:${port}` }
+}
+
+function settled (results: string[], label: string, call: Promise<unknown>): void {
+  void (async (): Promise<void> => {
+    try { await call; results.push(`${label}:ok`) } catch { results.push(`${label}:rejected`) }
+  })()
+}
+
+test('A ready, then queued LOGIN B, MESSAGE(B), LOGIN A: B work is discarded and never sent as A', async t => {
+  let stream!: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>
+  const { server, state, address } = await switchServer((call): void => {
+    stream = call
+    call.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+    call.write(response(puppet.EventType.EVENT_TYPE_READY, {}))
+    call.write(response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'A', throughSeq: 0 }))
+  })
+  const service = new RealLoginRecoveryService({ token: `insecure_aba-${Date.now()}`, endpoint: address, tls: { disable: true }, recovery: { enabled: true } })
+  service.on('error', (): void => {})
+  const logins: string[] = []
+  let messages = 0
+  try {
+    await service.onStart()
+    await until((): boolean => service.recoveryState.status === 'ready')
+    service.on('login', ({ contactId }): void => { logins.push(contactId) })
+    service.on('message', (): void => { messages++ })
+    // All three arrive before any of them is processed.
+    stream.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'B' }))
+    stream.write(response(puppet.EventType.EVENT_TYPE_MESSAGE, { messageId: 'from-B' }))
+    stream.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+    await until((): boolean => service.isLoggedIn && service.currentUserId === 'A' && service.recoveryState.status === 'ready' && logins.length > 0)
+    await new Promise<void>((resolve): void => { setTimeout(resolve, 100) })
+    assert.equal(messages, 0, 'the message queued for B is discarded by the switch back to A')
+    assert.ok(!logins.includes('B'), 'B, superseded before it was processed, never logs in')
+    await service.messageSendText('c', 'as A')
+    assert.deepEqual(state.sends, [ 'as A' ])
+  } finally { await service.onStop(); await service.destroyTestStore(); server.forceShutdown() }
+  t.pass('each account switch discards the previous account entirely')
+})
+
+test('a listener of the old account that replies after a switch is rejected', async t => {
+  let stream!: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>
+  const { server, state, address } = await switchServer((call): void => {
+    stream = call
+    call.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+    call.write(response(puppet.EventType.EVENT_TYPE_READY, {}))
+    call.write(response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'A', throughSeq: 0 }))
+  })
+  const service = new RealLoginRecoveryService({ token: `insecure_late-reply-${Date.now()}`, endpoint: address, tls: { disable: true }, recovery: { enabled: true } })
+  service.on('error', (): void => {})
+  const results: string[] = []
+  try {
+    await service.onStart()
+    await until((): boolean => service.recoveryState.status === 'ready')
+    let handled!: () => void
+    const handledMessage = new Promise<void>((resolve): void => { handled = resolve })
+    service.once('message', async (): Promise<void> => {
+      handled()
+      await until((): boolean => service.isLoggedIn && service.currentUserId === 'B' && service.recoveryState.status === 'ready')
+      settled(results, 'A-reply', service.messageSendText('c', 'A reply'))
+    })
+    stream.write(response(puppet.EventType.EVENT_TYPE_MESSAGE, { messageId: 'from-A' }))
+    await handledMessage
+    stream.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'B' }))
+    await until((): boolean => results.length === 1)
+    assert.deepEqual(results, [ 'A-reply:rejected' ])
+    await service.messageSendText('c', 'as B')
+    assert.deepEqual(state.sends, [ 'as B' ])
+  } finally { await service.onStop(); await service.destroyTestStore(); server.forceShutdown() }
+  t.pass('work begun for the old account never runs as the new one')
+})
+
+test('LOGIN B queued, stream lost before it runs, reconnect delivers B/READY/barrier: B is usable', async t => {
+  const { server, state, address } = await switchServer((call, connection): void => {
+    if (connection === 1) {
+      call.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+      call.write(response(puppet.EventType.EVENT_TYPE_READY, {}))
+      call.write(response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'A', throughSeq: 0 }))
+      setTimeout((): void => {
+        call.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'B' }))
+        call.end()
+      }, 100)
+      return
+    }
+    call.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'B' }))
+    call.write(response(puppet.EventType.EVENT_TYPE_READY, {}))
+    call.write(response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'B', throughSeq: 0 }))
+  })
+  const service = new RealLoginRecoveryService({ token: `insecure_lost-switch-${Date.now()}`, endpoint: address, tls: { disable: true }, recovery: { enabled: true } })
+  service.on('error', (): void => {})
+  try {
+    await service.onStart()
+    await until((): boolean => state.connections >= 2 && service.isLoggedIn && service.currentUserId === 'B' && service.recoveryState.status === 'ready')
+    await service.messageSendText('c', 'as B')
+    assert.deepEqual(state.sends, [ 'as B' ])
+  } finally { await service.onStop(); await service.destroyTestStore(); server.forceShutdown() }
+  t.pass('a switch interrupted by a reconnect still ends on the new account')
+})
+
+test('restart with stored A, snapshot LOGIN B: requests wait for B READY and barrier', async t => {
+  let stream: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse> | undefined
+  let starts = 0
+  const { server, state, address } = await switchServer((call): void => {
+    stream = call
+    call.write(response(puppet.EventType.EVENT_TYPE_HEARTBEAT, {}))
+  })
+  const service = new RealLoginRecoveryService({ token: `insecure_restart-switch-${Date.now()}`, endpoint: address, tls: { disable: true }, recovery: { enabled: true } })
+  service.on('error', (): void => {})
+  try {
+    // Simulate a previous run that stored account A.
+    await service.onStart()
+    await (service as unknown as { setMiscellaneousStoreData: (d: { accountId: string }) => Promise<void> }).setMiscellaneousStoreData({ accountId: 'A' })
+    await service.onStop()
+    await service.onStart()
+    starts++
+    await until((): boolean => stream !== undefined && state.connections >= 2)
+    assert.equal(service.recoveryState.status, 'recovering')
+    stream!.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'B' }))
+    await until((): boolean => service.isLoggedIn && service.currentUserId === 'B')
+    const pending = service.messageSendText('c', 'as B')
+    await new Promise<void>((resolve): void => { setTimeout(resolve, 50) })
+    assert.deepEqual(state.sends, [], 'nothing is sent before B is ready')
+    assert.equal(service.recoveryState.status, 'recovering')
+    stream!.write(response(puppet.EventType.EVENT_TYPE_READY, {}))
+    stream!.write(response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'B', throughSeq: 0 }))
+    await pending
+    assert.deepEqual(state.sends, [ 'as B' ])
+    assert.equal(service.recoveryState.status, 'ready')
+  } finally { await service.onStop(); await service.destroyTestStore(); server.forceShutdown() }
+  t.pass(`a switch during replay still waits for the new account barrier (${starts})`)
+})
+
+test('a reply of A delayed across LOGOUT A and LOGIN B is rejected; B works', async t => {
+  let stream!: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>
+  const { server, state, address } = await switchServer((call): void => {
+    stream = call
+    call.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+    call.write(response(puppet.EventType.EVENT_TYPE_READY, {}))
+    call.write(response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'A', throughSeq: 0 }))
+  })
+  const service = new RealLoginRecoveryService({ token: `insecure_logout-reply-${Date.now()}`, endpoint: address, tls: { disable: true }, recovery: { enabled: true } })
+  service.on('error', (): void => {})
+  const results: string[] = []
+  try {
+    await service.onStart()
+    await until((): boolean => service.recoveryState.status === 'ready')
+    let started!: () => void
+    const listenerStarted = new Promise<void>((resolve): void => { started = resolve })
+    let release!: () => void
+    const released = new Promise<void>((resolve): void => { release = resolve })
+    service.once('message', async (): Promise<void> => {
+      started()
+      await released
+      settled(results, 'A-reply', service.messageSendText('c', 'A reply'))
+    })
+    stream.write(response(puppet.EventType.EVENT_TYPE_MESSAGE, { messageId: 'from-A' }))
+    await listenerStarted
+    stream.write(response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'A', data: 'kicked' }))
+    stream.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'B' }))
+    await until((): boolean => service.isLoggedIn && service.currentUserId === 'B' && service.recoveryState.status === 'ready')
+    release()
+    await until((): boolean => results.length === 1)
+    assert.deepEqual(results, [ 'A-reply:rejected' ])
+    assert.deepEqual(state.sends, [], 'nothing was sent as B on behalf of A')
+    await service.messageSendText('c', 'as B')
+    assert.deepEqual(state.sends, [ 'as B' ])
+  } finally { await service.onStop(); await service.destroyTestStore(); server.forceShutdown() }
+  t.pass('a logout ends the old session for every listener, not only queued events')
+})
+
+function storeOf (service: RealLoginRecoveryService): { miscellaneous?: { get: (key: string) => Promise<string | undefined> }, room?: { delete: (id: string) => Promise<void> } } {
+  return Reflect.get(service, '_payloadStore') as ReturnType<typeof storeOf>
+}
+
+test('a backlog of duplicate LOGIN, LOGOUT and the next LOGIN keeps the new session usable', async t => {
+  for (const chain of [ [ 'B' ], [ 'B', 'C' ] ]) {
+    let stream!: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>
+    const { server, state, address } = await switchServer((call): void => {
+      stream = call
+      call.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+      call.write(response(puppet.EventType.EVENT_TYPE_READY, {}))
+      call.write(response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'A', throughSeq: 0 }))
+    })
+    const service = new RealLoginRecoveryService({ token: `insecure_backlog-${chain.length}-${Date.now()}`, endpoint: address, tls: { disable: true }, recovery: { enabled: true } })
+    service.on('error', (): void => {})
+    const last = chain[chain.length - 1]!
+    const results: string[] = []
+    try {
+      await service.onStart()
+      await until((): boolean => service.recoveryState.status === 'ready')
+      // A's message listener starts now and replies only after the last account is ready.
+      let started!: () => void
+      const listenerStarted = new Promise<void>((resolve): void => { started = resolve })
+      let replyA: Promise<unknown> | undefined
+      service.once('message', async (): Promise<void> => {
+        started()
+        await until((): boolean => service.isLoggedIn && service.currentUserId === last && service.recoveryState.status === 'ready')
+        replyA = service.messageSendText('c', 'A reply'); replyA.catch((): void => {})
+      })
+      stream.write(response(puppet.EventType.EVENT_TYPE_MESSAGE, { messageId: 'from-A' }, 1))
+      await listenerStarted
+      // Hold the queue inside a worker that really awaits: the room cache delete.
+      let entered!: () => void
+      const deleting = new Promise<void>((resolve): void => { entered = resolve })
+      let release!: () => void
+      const held = new Promise<void>((resolve): void => { release = resolve })
+      const store = storeOf(service) as Record<string, unknown>
+      Object.defineProperty(store, 'room', { configurable: true, value: { delete: async (): Promise<void> => { entered(); await held } } })
+      Object.defineProperty(store, 'roomMember', { configurable: true, value: { delete: async (): Promise<void> => {} } })
+      stream.write(response(puppet.EventType.EVENT_TYPE_ROOM_MEMBER_LOAD, { roomId: 'room' }, 2))
+      await deleting
+      service.on('login', ({ contactId }): void => {
+        if (contactId === last) { settled(results, 'login', service.messageSendText('c', `${last} login`)) }
+      })
+      service.on('message', (): void => { settled(results, 'message', service.messageSendText('c', `${last} message`)) })
+      const sessionBefore = (service as unknown as { recovery: { session: number } }).recovery.session
+      stream.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+      let previous = 'A'
+      for (const next of chain) {
+        stream.write(response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: previous, data: 'kicked' }))
+        stream.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: next }))
+        previous = next
+      }
+      stream.write(response(puppet.EventType.EVENT_TYPE_MESSAGE, { messageId: `from-${last}` }, 3))
+      // Every event of the backlog has arrived (each LOGOUT advanced the session) before release.
+      await until((): boolean => (service as unknown as { recovery: { session: number } }).recovery.session >= sessionBefore + chain.length)
+      await new Promise<void>((resolve): void => { setTimeout(resolve, 20) })
+      release()
+      await until((): boolean => results.length === 2 && replyA !== undefined)
+      assert.deepEqual(results.sort(), [ 'login:ok', 'message:ok' ], chain.join('>'))
+      await assert.rejects(replyA!)
+      assert.ok(!state.sends.includes('A reply'))
+      assert.equal(service.currentUserId, last)
+      assert.equal(service.recoveryState.status, 'ready')
+    } finally { await service.onStop(); await service.destroyTestStore(); server.forceShutdown() }
+  }
+  t.pass('session boundaries are applied once, on arrival')
+})
+
+test('a duplicate LOGIN paused in its store read cannot reopen the gate after LOGOUT', async t => {
+  let stream!: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>
+  const { server, state, address } = await switchServer((call): void => {
+    stream = call
+    call.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+    call.write(response(puppet.EventType.EVENT_TYPE_READY, {}))
+    call.write(response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'A', throughSeq: 0 }))
+  })
+  const service = new RealLoginRecoveryService({ token: `insecure_paused-login-${Date.now()}`, endpoint: address, tls: { disable: true }, recovery: { enabled: true } })
+  service.on('error', (): void => {})
+  try {
+    await service.onStart()
+    await until((): boolean => service.recoveryState.status === 'ready')
+    const misc = storeOf(service).miscellaneous!
+    const get = misc.get.bind(misc)
+    let entered!: () => void
+    const reading = new Promise<void>((resolve): void => { entered = resolve })
+    let release!: () => void
+    const held = new Promise<void>((resolve): void => { release = resolve })
+    let armed = true
+    misc.get = async (key: string): Promise<string | undefined> => {
+      if (armed && key === 'accountId') { armed = false; entered(); await held }
+      return get(key)
+    }
+    stream.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+    await reading
+    stream.write(response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'A', data: 'kicked' }))
+    await until((): boolean => service.recoveryState.status === 'offline')
+    release()
+    await until((): boolean => !service.isLoggedIn)
+    await new Promise<void>((resolve): void => { setTimeout(resolve, 50) })
+    assert.equal(service.recoveryState.status, 'offline', 'the ended session stays closed')
+    await assert.rejects(service.messageSendText('c', 'after logout'))
+    assert.deepEqual(state.sends, [])
+  } finally { await service.onStop(); await service.destroyTestStore(); server.forceShutdown() }
+  t.pass('a LOGIN superseded while awaiting never opens the gate')
 })

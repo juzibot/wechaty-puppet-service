@@ -369,3 +369,29 @@ for (const candidate of [ false, true ]) {
     } finally { await service.cleanup(); a.server.forceShutdown(); b.server.forceShutdown(); sinon.restore() }
   })
 }
+
+test('a cursor still owed to the old endpoint is never written after publishing the new one', async t => {
+  const a = await endpoint('A'); const b = await endpoint('B'); const service = await running(a.address)
+  Object.defineProperty(service, 'eventWriteRetryDelays', { value: [] })
+  const metadata = service.store.miscellaneous!
+  const original = metadata.set.bind(metadata)
+  let down = false
+  const set = sinon.stub(metadata, 'set').callsFake(async (key, value): ReturnType<typeof original> => {
+    if (down && key === 'lastEventSeq') { throw new Error('store down') }
+    return original(key as string, value as string)
+  })
+  try {
+    const stream = await bounded(a.connected)
+    service.once('dong', (): never => { throw new Error('listener failed') })
+    down = true
+    const skipped = new Promise<void>(resolve => service.once('error', (): void => { resolve() }))
+    stream.write(event(puppet.EventType.EVENT_TYPE_DONG, { data: 'old' }, 100))
+    await bounded(skipped)
+    down = false
+    await replace(service, b.address)
+    await service.prepareForRestart({ deadline: Date.now() + 2000 })
+    assert.equal(await metadata.get('lastEventSeq'), '0', 'the old server sequence is not carried to the new one')
+    assert.ok(set.called)
+    t.pass('owed cursors are scoped to the server that numbered them')
+  } finally { await service.cleanup(); a.server.forceShutdown(); b.server.forceShutdown(); sinon.restore() }
+})
