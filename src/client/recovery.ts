@@ -86,7 +86,6 @@ export class RecoveryGate {
   private controls = new AbortController()
   // Aborted on every session fence: replay reads of an ended session never run as the next one.
   private sessionReads = new AbortController()
-  private sessionId = 0
   private admissionEpoch = 0
   private admissionRetries = new AbortController()
 
@@ -109,8 +108,6 @@ export class RecoveryGate {
   get state (): RecoveryState { return this.value }
   get enabled (): boolean { return this.options?.enabled === true }
   get account (): string | undefined { return this.accountId }
-  /** Changes on every session fence; events and their requests belong to the session they arrived in. */
-  get session (): number { return this.sessionId }
 
   begin (accountId?: string, newSession = false): void {
     if (!this.enabled) { return }
@@ -128,20 +125,9 @@ export class RecoveryGate {
   }
 
   /**
-   * Another account logged in while a replay is still pending: requests queued for the previous
-   * account are rejected and the new account waits for its own READY and barrier.
-   */
-  switchAccount (accountId: string): void {
-    if (!this.enabled || this.value.status !== 'recovering') { return }
-    this.fenceSession(false)
-    this.begin(accountId)
-    this.accountId = accountId
-  }
-
-  /**
    * A LOGIN outside a replay (after LOGOUT, or replacing a ready account) is a live session:
-   * the stream will not send another barrier, so the gate opens now. Anything queued or awaiting
-   * admission for an earlier session is rejected first.
+   * the stream will not send another barrier, so the gate opens now. A ready gate is fenced
+   * first; an offline one was already fenced when its session ended.
    */
   resume (accountId: string): void {
     if (!this.enabled) { return }
@@ -171,6 +157,8 @@ export class RecoveryGate {
     } else {
       this.fenceSession(false, reason)
     }
+    // No account is current after a logout or switch; the next LOGIN names it.
+    this.accountId = undefined
     this.loggedIn = false
     this.replayComplete = false
   }
@@ -184,7 +172,6 @@ export class RecoveryGate {
     this.admissionEpoch++
     this.admissionRetries.abort()
     this.admissionRetries = new AbortController()
-    this.sessionId++
     const reads = this.sessionReads
     this.sessionReads = new AbortController()
     reads.abort()
@@ -239,7 +226,6 @@ export class RecoveryGate {
     if (!this.enabled) { return }
     this.admissionEpoch++
     // Any offline state counts as fenced (resume relies on it), so end the session's reads too.
-    this.sessionId++
     const reads = this.sessionReads
     this.sessionReads = new AbortController()
     reads.abort()

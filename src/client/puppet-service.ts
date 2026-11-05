@@ -158,10 +158,11 @@ class PuppetService extends PUPPET.Puppet {
   private recoveryProcessedSeq = 0
   // A skipped event whose cursor could not be written; restart preparation must commit it.
   private uncommittedCheckpoint?: { seq: number, timestamp: string, manager: GrpcManager }
-  // Account of the latest LOGIN received on the stream, processed or not. Fences happen when a
-  // LOGIN arrives; workers only follow, so each account change fences exactly once.
-  private arrivedAccount?: string
-  // Event epoch of the stream whose replay barrier has arrived; Work sends one per stream.
+  // Account state last received on the current event epoch (null after LOGOUT); a new epoch
+  // (reconnect, reset, switch) starts unknown and falls back to the processed state.
+  private arrivedAccount?: { epoch: number, contactId: string | null }
+  // Epoch in which this stream's replay barrier arrived (Work sends one per stream). A switch
+  // carries it into the new epoch; a new stream starts a new epoch without it.
   private barrierArrivedEpoch?: number
   private endpointReplacement?: { old: GrpcManager, sealed: boolean, cancel: () => void, oldLost: boolean, oldError?: unknown }
   private lastAuthenticatedAccount?: string
@@ -560,7 +561,6 @@ class PuppetService extends PUPPET.Puppet {
     this.restartPreparation = undefined
     this.eventDrainError = undefined
     this.uncommittedCheckpoint = undefined
-    this.arrivedAccount = undefined
     this.listenerDrain = { pending: new Set() }
     this.eventsBlocked = false
 
@@ -798,37 +798,50 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   /**
-   * Fences at arrival, before earlier queued events run, whenever the LOGIN names another account
-   * than the last one received (or, before any, the gate's). Queued but unprocessed LOGINs count:
-   * the new account's own listeners must never be judged against a fence applied later.
+   * An account switch discards everything still pending for the previous account (product rule:
+   * its unreported events may be dropped). On arrival of a LOGIN naming another account than the
+   * last one seen, the event epoch advances: queued events of the old account never run, its
+   * listeners' later requests are superseded, and its gate session is fenced. The LOGIN itself
+   * starts the new epoch, so it and everything after it belong to the new account only.
+   * LOGOUT then LOGIN is not a switch: the server ended the session, and the LOGOUT (with its
+   * reason) is still delivered in order.
    */
-  private fenceChangedAccount (payload: string): void {
+  private switchOnArrival (payload: string): void {
     let contactId: unknown
     try { contactId = (JSON.parse(payload) as { contactId?: unknown }).contactId } catch { return }
     if (typeof contactId !== 'string' || !contactId) { return }
-    const previous = this.arrivedAccount ?? this.recovery.account
+    // After a LOGOUT (seen here, or already processed) no account is current: never a switch.
+    const seen = this.arrivedAccount?.epoch === this.eventEpoch ? this.arrivedAccount : undefined
+    const previous = seen ? seen.contactId : this.isLoggedIn ? this.currentUserId : this.recovery.state.status === 'recovering' ? this.recovery.account : undefined
     if (previous && previous !== contactId) {
-      // Before this stream's barrier the new account still gets one and must wait for it;
-      // after it, no barrier follows and the new account becomes a live session when processed.
-      if (this.recovery.state.status === 'recovering' && this.barrierArrivedEpoch !== this.eventEpoch) {
-        this.recovery.switchAccount(contactId)
-      } else {
-        this.recovery.endSession('Account changed')
-      }
+      this.log.warn('PuppetService', 'LOGIN %s replaces %s: discarding events still pending for %s', contactId, previous, previous)
+      // Queued old-account workers stay chained (restart drain still awaits them) but see a
+      // stale epoch and return without running.
+      const barrierArrived = this.barrierArrivedEpoch === this.eventEpoch
+      this.eventEpoch++
+      if (barrierArrived) { this.barrierArrivedEpoch = this.eventEpoch }
+      // A reconnect waiting for its handshake follows the new account's LOGIN/READY instead.
+      this.waitingForLogin = false
+      this.waitingForReady = false
+      const replaying = this.recovery.state.status === 'recovering' && !barrierArrived
+      this.recovery.endSession('Account changed')
+      // Before this stream's barrier, it still sends the new account's READY and barrier: keep
+      // waiting (with a fresh budget; switches are rare). After it, none follows and the new
+      // account opens as a live session.
+      if (replaying) { this.recovery.begin(contactId) }
     }
-    this.arrivedAccount = contactId
+    this.arrivedAccount = { epoch: this.eventEpoch, contactId }
   }
 
   /**
-   * During a replay the barrier still completes the gate; a switched account gets a new session.
+   * During a replay (same account, or a switch decided on arrival) the barrier completes the gate.
    * Otherwise (after LOGOUT, or a ready account replaced) no barrier follows on this stream, so
-   * the gate opens as a live session. Either way earlier requests never reach the new account.
+   * the gate opens as a live session. Earlier requests were already fenced on arrival.
    */
   private admitRecoveryLogin (contactId: string): void {
-    // A newer LOGIN already arrived and fenced the gate for its account: this one is superseded,
-    // and must neither reopen nor re-fence the gate (that would reject the newer session).
-    if (this.arrivedAccount && this.arrivedAccount !== contactId) { return }
-    if (this.recovery.state.status === 'recovering') {
+    // A replay of this account (or a first start with no stored account) still ends with a barrier.
+    const account = this.recovery.account
+    if (this.recovery.state.status === 'recovering' && (!account || account === contactId)) {
       this.recovery.login(contactId)
       return
     }
@@ -896,21 +909,15 @@ class PuppetService extends PUPPET.Puppet {
         // cursor) and restart preparation. LOGOUT has no snapshot and can be lost in either case.
         if (client !== this._grpcManager || this.eventsBlocked || this.restartRequested) { return }
         this.touchRecoveryStream()
-        if (this.recovery.enabled && event.getType() === grpcPuppet.EventType.EVENT_TYPE_LOGIN) {
-          // Fence before earlier queued events run: their listeners must not send as the new account.
-          this.fenceChangedAccount(event.getPayload())
-        }
+        if (event.getType() === grpcPuppet.EventType.EVENT_TYPE_LOGIN) { this.switchOnArrival(event.getPayload()) }
         if (event.getType() === grpcPuppet.EventType.EVENT_TYPE_REPLAY_COMPLETE) { this.barrierArrivedEpoch = this.eventEpoch }
-        if (this.recovery.enabled && event.getType() === grpcPuppet.EventType.EVENT_TYPE_LOGOUT) {
+        if (event.getType() === grpcPuppet.EventType.EVENT_TYPE_LOGOUT) {
+          this.arrivedAccount = { epoch: this.eventEpoch, contactId: null }
           // Reject requests for the ended session now, but keep the stream so SCAN keeps flowing.
-          this.recovery.endSession('Account logged out')
-          this.arrivedAccount = undefined
+          if (this.recovery.enabled) { this.recovery.endSession('Account logged out') }
         }
         const epoch = this.eventEpoch
-        // Captured on arrival: an event that arrived before an account switch is still delivered,
-        // but requests its listeners make afterwards are rejected instead of sent as the new account.
-        const session = this.recovery.session
-        const current = (): boolean => this.ownsEventWorker(client, epoch) && this.recovery.session === session
+        const current = (): boolean => this.ownsEventWorker(client, epoch)
         this.eventQueue = this.eventQueue.then(async (): Promise<void> => {
           if (!this.ownsEventWorker(client, epoch)) { return undefined }
           try {
@@ -4802,7 +4809,9 @@ class PuppetService extends PUPPET.Puppet {
       if (replacement?.old === manager) { this.deferOldStreamLoss() }
       manager.stopStream(); return
     }
-    if (!this.ownsEventWorker(manager, epoch)) { return }
+    // An account switch on this new stream advances the epoch but keeps the stream: still Start it.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- Both can change while startStream is awaited.
+    if (manager !== this._grpcManager || this.eventsBlocked || this.recoveryStopped) { return }
     await util.promisify(manager.client.start.bind(manager.client))(new grpcPuppet.StartRequest())
   }
 
