@@ -752,8 +752,12 @@ class PuppetService extends PUPPET.Puppet {
     return task
   }
 
-  private async acceptLogin (contactId: string, epoch: number): Promise<void> {
+  private async acceptLogin (contactId: string, epoch: number, session: number): Promise<void> {
+    // A LOGOUT (or switch) that arrived meanwhile ended the session this LOGIN belongs to; it must
+    // not then open the gate or log in. Checked again after every await.
+    const current = (): boolean => this.isEventEpochCurrent(epoch) && (!this.recovery.enabled || this.recovery.session === session)
     await this.enqueueAuthentication(epoch, async (): Promise<void> => {
+      if (!current()) { return }
       // A LOGIN is never refused: earlier failures belong to restart preparation, and an account
       // change ends the previous session locally before this one starts.
       if (typeof contactId !== 'string' || !contactId) { throw new Error('Invalid LOGIN account') }
@@ -766,11 +770,11 @@ class PuppetService extends PUPPET.Puppet {
           // A's session is over locally either way; B must still log in.
           this.reportStreamError(error)
         }
-        if (!this.isEventEpochCurrent(epoch)) { return }
+        if (!current()) { return }
       }
       // Also re-run when already logged in: a store that failed to record this account earlier
       // would otherwise make every reconnect look like an account switch.
-      if (!await this.storeLoginAccount(contactId, epoch)) { return }
+      if (!await this.storeLoginAccount(contactId, epoch) || !current()) { return }
       if (this.isLoggedIn) {
         if (this.recovery.enabled) { this.admitRecoveryLogin(contactId) }
         this.lastAuthenticatedAccount = contactId
@@ -949,7 +953,7 @@ class PuppetService extends PUPPET.Puppet {
             return undefined
           }
           try {
-            await this.recovery.runEvent(current, async (): Promise<void> => this.onGrpcStreamEvent(event, epoch))
+            await this.recovery.runEvent(current, async (): Promise<void> => this.onGrpcStreamEvent(event, epoch, session))
           } catch (error) {
             if (!this.ownsEventWorker(client, epoch)) {
               this.log.error('PuppetService', 'superseded event worker failed: %s', error)
@@ -1149,7 +1153,7 @@ class PuppetService extends PUPPET.Puppet {
     this.reportStreamError(error)
   }
 
-  private async onGrpcStreamEvent (event: grpcPuppet.EventResponse, epoch = this.eventEpoch): Promise<void> {
+  private async onGrpcStreamEvent (event: grpcPuppet.EventResponse, epoch = this.eventEpoch, session = this.recovery.session): Promise<void> {
     if (!this.isEventEpochCurrent(epoch)) { return }
 
     const type    = event.getType()
@@ -1190,7 +1194,7 @@ class PuppetService extends PUPPET.Puppet {
       case grpcPuppet.EventType.EVENT_TYPE_LOGIN:
         {
           const loginPayload = JSON.parse(payload) as PUPPET.payloads.EventLogin
-          await this.acceptLogin(loginPayload.contactId, epoch)
+          await this.acceptLogin(loginPayload.contactId, epoch, session)
         }
         break
       case grpcPuppet.EventType.EVENT_TYPE_LOGOUT:
