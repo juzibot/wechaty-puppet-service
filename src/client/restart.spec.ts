@@ -291,3 +291,31 @@ test('a store that stays down stops backing off after repeated exhausted writes'
     t.pass('a dead store cannot stall the stream behind retries')
   } finally { sinon.restore(); sinon.stub(manager, 'stop').resolves(); await service.cleanup(); sinon.restore() }
 })
+
+test('a rollback left by a failed write is restored before a retry or later write succeeds', async t => {
+  const service = new RestartService({ token: randomUUID() })
+  Object.defineProperty(service, 'eventWriteRetryDelays', { value: [ 1 ] })
+  const manager = new GrpcManager({ token: `insecure_${randomUUID()}` })
+  sinon.stub(manager, 'stopStream'); sinon.stub(manager, 'stop').resolves()
+  const originalSet = service.metadata.set.bind(service.metadata)
+  const originalDelete = service.metadata.delete.bind(service.metadata)
+  await originalSet('lastEventSeq', '1')
+  // Seq 2's first attempt fails mid-write and its rollback fails too; the retry then succeeds.
+  let failSet = 0
+  let failRollback = 0
+  sinon.stub(service.metadata, 'set').callsFake(async (key, value): ReturnType<typeof originalSet> => {
+    if (key === 'lastEventSeq' && value === '2' && failSet++ === 0) { throw new Error('write failed') }
+    if (key === 'lastEventSeq' && value === '1' && failRollback++ === 0) { throw new Error('rollback failed') }
+    return originalSet(key as string, value as string)
+  })
+  sinon.stub(service.metadata, 'delete').callsFake(async (key): ReturnType<typeof originalDelete> => originalDelete(key as string))
+  service.on('error', (): void => {})
+  service.attach(manager)
+  try {
+    manager.emit('data', event(2))
+    manager.emit('data', event(3))
+    await service.prepareForRestart({ deadline: Date.now() + 2000 })
+    assert.equal(await service.metadata.get('lastEventSeq'), '3', 'the cursor never goes back')
+    t.pass('an old rollback snapshot cannot overwrite later progress')
+  } finally { sinon.restore(); sinon.stub(manager, 'stop').resolves(); await service.cleanup(); sinon.restore() }
+})

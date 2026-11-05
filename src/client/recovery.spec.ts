@@ -691,3 +691,42 @@ test('listeners of the new session can call the server after a switch or a same-
   }
   t.pass('a session fence never rejects the new session itself')
 })
+
+test('queued LOGIN A, READY, barrier A, LOGIN B: B listeners can call the server without waiting', async t => {
+  const server = new grpc.Server()
+  let sends = 0
+  server.addService(puppet.PuppetService, {
+    event: (call: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>): void => {
+      call.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+      call.write(response(puppet.EventType.EVENT_TYPE_READY, {}))
+      call.write(response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'A', throughSeq: 0 }))
+      call.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'B' }))
+      call.write(response(puppet.EventType.EVENT_TYPE_MESSAGE, { messageId: 'from-B' }))
+    },
+    start: (_call: grpc.ServerUnaryCall<puppet.StartRequest, puppet.StartResponse>, callback: grpc.sendUnaryData<puppet.StartResponse>): void => { callback(null, new puppet.StartResponse()) },
+    stop: (_call: grpc.ServerUnaryCall<puppet.StopRequest, puppet.StopResponse>, callback: grpc.sendUnaryData<puppet.StopResponse>): void => { callback(null, new puppet.StopResponse()) },
+    messageSendText: (_call: grpc.ServerUnaryCall<puppet.MessageSendTextRequest, puppet.MessageSendTextResponse>, callback: grpc.sendUnaryData<puppet.MessageSendTextResponse>): void => { sends++; callback(null, new puppet.MessageSendTextResponse()) },
+  })
+  const port = await new Promise<number>((resolve, reject): void => {
+    server.bindAsync('127.0.0.1:0', grpc.ServerCredentials.createInsecure(), (error, value): void => { error ? reject(error) : resolve(value) })
+  })
+  const service = new RealLoginRecoveryService({ token: `insecure_queued-switch-${Date.now()}`, endpoint: `127.0.0.1:${port}`, tls: { disable: true }, recovery: { enabled: true } })
+  service.on('error', (): void => {})
+  const results: string[] = []
+  const record = (label: string, call: Promise<unknown>): void => {
+    void (async (): Promise<void> => {
+      try { await call; results.push(`${label}:ok`) } catch (error) { results.push(`${label}:${(error as Error).message}`) }
+    })()
+  }
+  service.on('login', ({ contactId }): void => { if (contactId === 'B') { record('login', service.messageSendText('contact', 'from B login')) } })
+  service.on('message', (): void => { record('message', service.messageSendText('contact', 'from B message')) })
+  try {
+    await service.onStart()
+    await until((): boolean => results.length === 2)
+    assert.deepEqual(results.sort(), [ 'login:ok', 'message:ok' ])
+    assert.equal(sends, 2)
+    assert.equal(service.currentUserId, 'B')
+    assert.equal(service.recoveryState.status, 'ready')
+  } finally { await service.onStop(); await service.destroyTestStore(); server.forceShutdown() }
+  t.pass('a switch decided at arrival never rejects the new account itself')
+})
