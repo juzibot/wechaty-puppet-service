@@ -312,9 +312,12 @@ for (const recoveryEnabled of [ false, true ]) {
       await bounded(service.onStart())
       const manager = service.grpcManager
       const loggedInB = new Promise<void>((resolve): void => { service.on('login', ({ contactId }): void => { if (contactId === 'B') { resolve() } }) })
+      const loggedInA = new Promise<void>((resolve): void => { service.once('login', (): void => { resolve() }) })
       manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
       manager.emit('data', response(puppet.EventType.EVENT_TYPE_READY, {}))
       if (recoveryEnabled) { manager.emit('data', response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'A', throughSeq: 0 })) }
+      await bounded(loggedInA)
+      await new Promise<void>((resolve): void => { setTimeout(resolve, 20) })
       manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'B' }))
       await bounded(loggedInB)
       assert.deepEqual(events, [ 'login:A', 'logout:A', 'login:B' ])
@@ -432,8 +435,8 @@ test('stop/start fences authentication waiting on old metadata and queued old LO
     await bounded(service.onStart())
     const previous = service.grpcManager
     previous.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }, 1))
-    previous.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'B' }, 2))
     await bounded(entry)
+    previous.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'B' }, 2))
     const stopping = service.onStop()
     const starting = service.onStart()
     release()
