@@ -86,6 +86,7 @@ export class RecoveryGate {
   private controls = new AbortController()
   // Aborted on every session fence: replay reads of an ended session never run as the next one.
   private sessionReads = new AbortController()
+  private sessionId = 0
   private admissionEpoch = 0
   private admissionRetries = new AbortController()
 
@@ -108,6 +109,8 @@ export class RecoveryGate {
   get state (): RecoveryState { return this.value }
   get enabled (): boolean { return this.options?.enabled === true }
   get account (): string | undefined { return this.accountId }
+  /** Advances whenever a session ends (logout, switch, failure); never when the next one opens. */
+  get session (): number { return this.sessionId }
 
   begin (accountId?: string, newSession = false): void {
     if (!this.enabled) { return }
@@ -172,6 +175,7 @@ export class RecoveryGate {
     this.admissionEpoch++
     this.admissionRetries.abort()
     this.admissionRetries = new AbortController()
+    this.sessionId++
     const reads = this.sessionReads
     this.sessionReads = new AbortController()
     reads.abort()
@@ -226,6 +230,7 @@ export class RecoveryGate {
     if (!this.enabled) { return }
     this.admissionEpoch++
     // Any offline state counts as fenced (resume relies on it), so end the session's reads too.
+    this.sessionId++
     const reads = this.sessionReads
     this.sessionReads = new AbortController()
     reads.abort()

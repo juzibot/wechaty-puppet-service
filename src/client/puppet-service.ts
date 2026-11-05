@@ -812,7 +812,10 @@ class PuppetService extends PUPPET.Puppet {
     if (typeof contactId !== 'string' || !contactId) { return }
     // After a LOGOUT (seen here, or already processed) no account is current: never a switch.
     const seen = this.arrivedAccount?.epoch === this.eventEpoch ? this.arrivedAccount : undefined
-    const previous = seen ? seen.contactId : this.isLoggedIn ? this.currentUserId : this.recovery.state.status === 'recovering' ? this.recovery.account : undefined
+    // A replay compares with the account it is replaying (it may lag the login if the cursor store
+    // failed); otherwise with the logged-in account.
+    const replayAccount = this.recovery.state.status === 'recovering' ? this.recovery.account : undefined
+    const previous = seen ? seen.contactId : replayAccount ?? (this.isLoggedIn ? this.currentUserId : undefined)
     if (previous && previous !== contactId) {
       this.log.warn('PuppetService', 'LOGIN %s replaces %s: discarding events still pending for %s', contactId, previous, previous)
       // Queued old-account workers stay chained (restart drain still awaits them) but see a
@@ -917,7 +920,11 @@ class PuppetService extends PUPPET.Puppet {
           if (this.recovery.enabled) { this.recovery.endSession('Account logged out') }
         }
         const epoch = this.eventEpoch
-        const current = (): boolean => this.ownsEventWorker(client, epoch)
+        // Captured after this event's own fence: an event received before a LOGOUT or switch keeps
+        // the ended session, so requests its listeners make later are rejected, while the LOGIN
+        // that opens the next session (and everything after it) is never fenced again.
+        const session = this.recovery.session
+        const current = (): boolean => this.ownsEventWorker(client, epoch) && this.recovery.session === session
         this.eventQueue = this.eventQueue.then(async (): Promise<void> => {
           if (!this.ownsEventWorker(client, epoch)) { return undefined }
           try {
