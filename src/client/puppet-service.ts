@@ -689,14 +689,19 @@ class PuppetService extends PUPPET.Puppet {
     this.log.info('PuppetService', 'onStop() ... done')
   }
 
-  private trackSdkLifecycle (operation: () => void | Promise<void>): Promise<void> {
+  /**
+   * `retain` decides which later operations a failure blocks: `authentication` also rejects the
+   * next LOGIN, `drain` only fails restart preparation, `none` is logged. Every task is drained.
+   */
+  private trackSdkLifecycle (operation: () => void | Promise<void>, retain: 'authentication' | 'drain' | 'none' = 'authentication'): Promise<void> {
     const drain = this.listenerDrain
     // Keep the event worker free to process READY/barriers required by lifecycle RPCs.
     const result = Promise.resolve().then(operation)
     const task = result.catch((error: unknown): void => {
-      if (drain === this.listenerDrain) {
-        this.sdkLifecycleError ??= error instanceof Error ? error : new Error(String(error))
-        this.eventDrainError ??= this.sdkLifecycleError
+      if (drain === this.listenerDrain && retain !== 'none') {
+        const failure = error instanceof Error ? error : new Error(String(error))
+        if (retain === 'authentication') { this.sdkLifecycleError ??= failure }
+        this.eventDrainError ??= failure
       }
       this.log.error('PuppetService', 'SDK lifecycle task failed: %s', error)
     }).finally((): void => { this.sdkLifecycleTasks.delete(task) })
@@ -1043,7 +1048,9 @@ class PuppetService extends PUPPET.Puppet {
           const manager = this._grpcManager
           await this.logoutLocally(logoutPayload.data, epoch)
           if (manager && this.ownsEventWorker(manager, epoch)) {
-            void this.trackSdkLifecycle(async (): Promise<void> => manager.logout())
+            // The server already ended this session, so it may reject the echo (e.g. "vid not
+            // signed"). That says nothing about the next session or about undelivered events.
+            void this.trackSdkLifecycle(async (): Promise<void> => manager.logout(), 'none')
           }
         }
         break
@@ -1182,7 +1189,8 @@ class PuppetService extends PUPPET.Puppet {
     if (!manager || manager !== this._grpcManager) { return }
 
     try {
-      await this.trackSdkLifecycle(async (): Promise<void> => manager.logout())
+      // The caller receives this failure; it must not reject the next session's LOGIN.
+      await this.trackSdkLifecycle(async (): Promise<void> => manager.logout(), 'drain')
     } catch (e) {
       this.log.error('PuppetService', 'logout() RPC failed: %s', e)
       throw e
