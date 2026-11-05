@@ -30,8 +30,17 @@ jobs:
           cache: npm
           cache-dependency-path: package.json
 
+      # node-jq downloads its jq binary from GitHub releases at install time, which
+      # intermittently answers 504. Retry the install instead of failing the job.
       - name: Install Dependencies
-        run: npm install
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            npm install && exit 0
+            echo "npm install failed (attempt $attempt), retrying in 20s"
+            sleep 20
+          done
+          exit 1
 
       # - name: Set up TS
       #   run: npm install typescript@4.7.3
@@ -51,8 +60,17 @@ jobs:
           cache: npm
           cache-dependency-path: package.json
 
+      # node-jq downloads its jq binary from GitHub releases at install time, which
+      # intermittently answers 504. Retry the install instead of failing the job.
       - name: Install Dependencies
-        run: npm install
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            npm install && exit 0
+            echo "npm install failed (attempt $attempt), retrying in 20s"
+            sleep 20
+          done
+          exit 1
 
       # - name: Set up TS
       #   run: npm install typescript@4.7.3
@@ -87,8 +105,17 @@ jobs:
       - name: Install npm 11
         run: npm install -g npm@11
 
+      # node-jq downloads its jq binary from GitHub releases at install time, which
+      # intermittently answers 504. Retry the install instead of failing the job.
       - name: Install Dependencies
-        run: npm install
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            npm install && exit 0
+            echo "npm install failed (attempt $attempt), retrying in 20s"
+            sleep 20
+          done
+          exit 1
 
       # - name: Set up TS
       #   run: npm install typescript@4.7.3
