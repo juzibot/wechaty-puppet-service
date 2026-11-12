@@ -40,6 +40,14 @@ async function until (condition: () => boolean, label = 'condition'): Promise<vo
   }
 }
 
+/**
+ * An account switch clears the current user locally before the new one is projected, and
+ * `currentUserId` throws while no account is current: a poll must read the flag first.
+ */
+function signedInAs (service: LogoutOwnerService, contactId: string): boolean {
+  return service.isLoggedIn && service.currentUserId === contactId
+}
+
 interface HarnessOptions {
   readonly recoveryEnabled: boolean
   /** Written on the new event stream right after the server sees Start. */
@@ -154,7 +162,7 @@ test('a LOGIN listener superseded by another account never logs out the new acco
     await bounded(harness.service.onStart())
     await bounded(entered)
     harness.write(login('B'))
-    await bounded(until((): boolean => harness.service.currentUserId === 'B', 'login B'))
+    await bounded(until((): boolean => signedInAs(harness.service, 'B'), 'login B'))
     releaseStale()
     await bounded(until((): boolean => failures.length === 1, 'stale logout rejection'))
     assert.match(String(failures[0]), /Superseded logout request/)
@@ -163,6 +171,34 @@ test('a LOGIN listener superseded by another account never logs out the new acco
     assert.equal(harness.service.isLoggedIn, true)
     t.pass('the account that arrived later keeps its local state and its session')
   } finally { releaseStale(); await harness.close(); sinon.restore() }
+})
+
+test('waiting for a switch tolerates the window in which no account is current', async t => {
+  const harness = await startHarness({ recoveryEnabled: true, connect: write => openSession(write) })
+  const store = harness.service.store.miscellaneous!
+  const original = store.set.bind(store)
+  let projected!: () => void
+  const projecting = new Promise<void>((resolve): void => { projected = resolve })
+  let release!: () => void
+  const blocked = new Promise<void>((resolve): void => { release = resolve })
+  // The account write is the last async step before B is projected: holding it makes the window
+  // in which A's local logout has already cleared the current user deterministic.
+  sinon.stub(store, 'set').callsFake(async (key, value): ReturnType<typeof original> => {
+    if (key === 'accountId' && value === 'B') { projected(); await blocked }
+    return original(key, value)
+  })
+  try {
+    await bounded(harness.service.onStart())
+    await bounded(until((): boolean => signedInAs(harness.service, 'A'), 'login A'))
+    harness.write(login('B'))
+    await bounded(projecting)
+    assert.equal(harness.service.isLoggedIn, false, 'the switch clears the previous account first')
+    assert.equal(signedInAs(harness.service, 'B'), false, 'the poll must not throw while nobody is current')
+    release()
+    await bounded(until((): boolean => signedInAs(harness.service, 'B'), 'login B'))
+    assert.equal(harness.service.isLoggedIn, true)
+    t.pass('only the projected account satisfies the wait')
+  } finally { release(); await harness.close(); sinon.restore() }
 })
 
 for (const account of [ 'A', 'B' ]) {
