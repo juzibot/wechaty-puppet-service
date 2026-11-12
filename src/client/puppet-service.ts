@@ -1438,10 +1438,9 @@ class PuppetService extends PUPPET.Puppet {
     try {
       // Queued outside the authentication queue: the remote Logout must never wait for it.
       await this.trackSdkLifecycle(async (): Promise<void> => {
-        if (!this.isLogoutOwned(owned)) {
-          this.log.warn('PuppetService', 'logout() RPC not submitted: this logout was superseded')
-          return
-        }
+        // A request whose local session ended but which no longer owns the account must not report
+        // a submitted Logout to its caller: the RPC below is never sent, so this is a failure.
+        if (!this.isLogoutOwned(owned)) { throw new Error('Superseded logout request') }
         // The caller's request context is retained: its deadline or signal still cancels the call.
         await this.recovery.runEvent((): boolean => this.isLogoutOwned(owned), async (): Promise<void> => owned.manager.logout())
       })

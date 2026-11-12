@@ -179,12 +179,15 @@ for (const account of [ 'A', 'B' ]) {
     try {
       await bounded(harness.service.onStart())
       await bounded(until((): boolean => harness.service.isLoggedIn, 'login A'))
-      await bounded(harness.service.logout('wrong account'))
+      // The local session already ended here, but the Logout RPC was never submitted: the caller
+      // must not be told it was. This is the pre-check, not the interceptor's own rejection.
+      await assert.rejects(bounded(harness.service.logout('wrong account')), /Superseded logout request/)
       await bounded(until((): boolean => harness.service.isLoggedIn, 'the arriving LOGIN'))
       assert.equal(harness.logoutCalls(), 0, 'an unsubmitted Logout must not follow the new LOGIN')
       assert.equal(harness.service.currentUserId, account)
       assert.equal(harness.service.isLoggedIn, true, 'the arriving account is not cleared')
-      t.pass(`a LOGIN for ${account} takes the account back before the Logout is submitted`)
+      await assert.rejects(harness.service.prepareForRestart({ deadline: Date.now() + 2000 }), /Superseded logout request/)
+      t.pass(`a LOGIN for ${account} takes the account back and the unsubmitted Logout stays visible`)
     } finally { await harness.close(); sinon.restore() }
   })
 }
@@ -201,7 +204,7 @@ test('a transport replaced inside the logout window keeps the old Logout off bot
   try {
     await bounded(harness.service.onStart())
     await bounded(until((): boolean => harness.service.isLoggedIn, 'login A'))
-    await bounded(harness.service.logout('wrong account'))
+    await assert.rejects(bounded(harness.service.logout('wrong account')), /Superseded logout request/)
     await bounded(stopping ?? Promise.resolve())
     assert.equal(harness.logoutCalls(), 0, 'a retired transport never receives the old Logout')
     const next = new Promise<void>((resolve): void => { harness.service.once('login', (): void => { resolve() }) })
