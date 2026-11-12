@@ -247,6 +247,15 @@ export class RecoveryGate {
     return events.run({ current }, operation)
   }
 
+  /**
+   * The enclosing event worker's ownership predicate. A lifecycle action it starts may outlive the
+   * event (a public logout fences the session it runs in), so it can capture this instead of
+   * inheriting a closure its own side effect invalidates.
+   */
+  captureEventCurrent (): (() => boolean) | undefined {
+    return events.getStore()?.current
+  }
+
   runDetached<Result> (operation: () => Result): Result {
     return requests.run({}, (): Result => events.exit(operation))
   }
