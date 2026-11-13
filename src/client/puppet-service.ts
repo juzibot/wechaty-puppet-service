@@ -598,7 +598,10 @@ class PuppetService extends PUPPET.Puppet {
     this.recovery.begin(accountId, true)
     this.recoveryProcessedSeq = Number(lastEventSeq ?? 0)
     this.touchRecoveryStream()
-    await grpcManager.start(lastEventSeq, accountId)
+    // Building a transport belongs to no event: a stop() issued from a listener has already
+    // advanced the epoch that listener's context is checked against, so inheriting it would
+    // refuse the new Event stream and Start, exactly as onStop() detaches its own Stop.
+    await this.recovery.runDetached(async (): Promise<void> => grpcManager.start(lastEventSeq, accountId))
     if (grpcManager !== this._grpcManager) { throw new Error('Transport start superseded') }
     if (attempt.failed) { await attempt.completed() }
     if (this.isPreparingForRestart()) { throw new Error('Start interrupted by restart preparation') }

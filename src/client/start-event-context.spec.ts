@@ -28,6 +28,15 @@ function response (type: ReturnType<puppet.EventResponse['getType']>, payload: u
   return event
 }
 
+/**
+ * Runs the operation on a later turn of the caller's own async chain, as a listener that awaits
+ * something first would: the event's context is still the caller's, and a failure stays visible.
+ */
+async function later (operation: () => Promise<void>): Promise<void> {
+  await new Promise<void>((resolve): void => { setImmediate(resolve) })
+  await operation()
+}
+
 async function until (condition: () => boolean, label: string): Promise<void> {
   const deadline = Date.now() + 3000
   while (!condition()) {
@@ -90,14 +99,12 @@ for (const trigger of [ 'logout', 'dong' ] as const) {
   test(`stop and start from a ${trigger} listener opens a new event stream and sends Start`, async t => {
     const harness = await startHarness(true)
     let restarted: Promise<void> | undefined
-    const restart = async (): Promise<void> => {
-      await harness.service.stop()
-      await harness.service.start()
-    }
     harness.service.on(trigger, (): void => {
       if (restarted) { return }
-      // A later turn of the same async chain: the event's context is still the caller's.
-      restarted = new Promise<void>((resolve): void => { setImmediate((): void => { restart().then(resolve, resolve) }) })
+      restarted = later(async (): Promise<void> => {
+        await harness.service.stop()
+        await harness.service.start()
+      })
     })
     try {
       await bounded(harness.service.onStart())
@@ -118,3 +125,51 @@ for (const trigger of [ 'logout', 'dong' ] as const) {
     } finally { await harness.close(); sinon.restore() }
   })
 }
+
+/**
+ * Guard, not a fix: without recovery the gRPC interceptor that checks an event's epoch is not even
+ * installed, so reset() reopening the stream from a listener cannot be refused. This pins that
+ * resetEventStream() needs no detaching, so nobody adds one on a wrong guess.
+ */
+test('reset from a dong listener reopens the event stream when recovery is off', async t => {
+  const harness = await startHarness(false)
+  let reset: Promise<void> | undefined
+  harness.service.on('dong', (): void => {
+    if (reset) { return }
+    reset = later(async (): Promise<void> => harness.service.reset())
+  })
+  try {
+    await bounded(harness.service.onStart())
+    await bounded(until((): boolean => harness.service.isLoggedIn, 'login A'))
+    assert.equal(harness.calls.events, 1)
+    harness.write(response(puppet.EventType.EVENT_TYPE_DONG, { data: 'x' }))
+    await bounded(until((): boolean => reset !== undefined, 'dong listener'))
+    await bounded(reset!, 8000)
+    assert.equal(harness.calls.events, 2, 'reset must reach the server with a new event stream')
+    t.pass('the reopened stream is not refused by the epoch reset() itself advanced')
+  } finally { await harness.close(); sinon.restore() }
+})
+
+/**
+ * Guard, not a fix: replaceEndpoint() never stops the live manager first, so the epoch the calling
+ * listener is checked against is untouched while the candidate stream opens.
+ */
+test('replaceEndpoint from a dong listener opens the candidate event stream', async t => {
+  const harness = await startHarness(true)
+  const candidate = await startHarness(true)
+  let replaced: Promise<void> | undefined
+  harness.service.on('dong', (): void => {
+    if (replaced) { return }
+    const endpoint = candidate.service.options.endpoint!
+    replaced = later(async (): Promise<void> => harness.service.replaceEndpoint(endpoint, { deadline: Date.now() + 4000 }))
+  })
+  try {
+    await bounded(harness.service.onStart())
+    await bounded(until((): boolean => harness.service.isLoggedIn, 'login A'))
+    harness.write(response(puppet.EventType.EVENT_TYPE_DONG, { data: 'x' }))
+    await bounded(until((): boolean => replaced !== undefined, 'dong listener'))
+    await bounded(replaced!, 8000)
+    assert.equal(candidate.calls.events, 1, 'the candidate must receive its event stream')
+    t.pass('the candidate stream is not refused by the calling listener\'s epoch')
+  } finally { await candidate.close(); await harness.close(); sinon.restore() }
+})
