@@ -127,6 +127,50 @@ for (const trigger of [ 'logout', 'dong' ] as const) {
 }
 
 /**
+ * onStart() on a running transport stops it first and starts again, from the same listener: the
+ * rebuild goes through that recursive branch rather than through ServiceCtl.reset().
+ */
+test('onStart on a running transport from a dong listener rebuilds it', async t => {
+  const harness = await startHarness(true)
+  let rebuilt: Promise<void> | undefined
+  harness.service.on('dong', (): void => {
+    if (rebuilt) { return }
+    rebuilt = later(async (): Promise<void> => harness.service.onStart())
+  })
+  try {
+    await bounded(harness.service.onStart())
+    await bounded(until((): boolean => harness.service.isLoggedIn, 'login A'))
+    harness.write(response(puppet.EventType.EVENT_TYPE_DONG, { data: 'x' }))
+    await bounded(until((): boolean => rebuilt !== undefined, 'dong listener'))
+    await bounded(rebuilt!, 8000)
+    assert.deepEqual(
+      { events: harness.calls.events, starts: harness.calls.starts, stops: harness.calls.stops },
+      { events: 2, starts: 2, stops: 1 },
+    )
+    t.pass('the stop-then-start inside onStart is not refused by the listener it runs in')
+  } finally { await harness.close(); sinon.restore() }
+})
+
+/**
+ * Detaching the start also drops the caller's request context. A caller deadline bounds a unary
+ * call, not the long-lived event stream the transport keeps open: it must outlive that deadline.
+ */
+test('a caller deadline does not cut the event stream a started transport keeps', async t => {
+  const harness = await startHarness(true)
+  try {
+    await bounded(harness.service.withRecoveryRequestContext(
+      { deadline: Date.now() + 300 },
+      async (): Promise<void> => harness.service.onStart(),
+    ))
+    await bounded(until((): boolean => harness.service.isLoggedIn, 'login A'))
+    await new Promise<void>((resolve): void => { setTimeout(resolve, 600) })
+    assert.equal(harness.service.recoveryState.status, 'ready', 'the stream is still up past the caller deadline')
+    assert.equal(harness.calls.events, 1, 'no reconnect was needed')
+    t.pass('the caller context no longer reaches the long-lived stream')
+  } finally { await harness.close(); sinon.restore() }
+})
+
+/**
  * Guard, not a fix: without recovery the gRPC interceptor that checks an event's epoch is not even
  * installed, so reset() reopening the stream from a listener cannot be refused. This pins that
  * resetEventStream() needs no detaching, so nobody adds one on a wrong guess.
