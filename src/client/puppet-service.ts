@@ -158,8 +158,8 @@ class PuppetService extends PUPPET.Puppet {
   private stoppingTask?: Promise<void>
   // Held from the moment stopService() detaches `_grpcManager` until it finishes stopping it.
   private detachingManager?: GrpcManager
-  // The last manager whose receipt reported released=false; the next stopWithReceipt() retries it.
-  private unreleasedManager?: GrpcManager
+  // Managers whose local release failed, however the stop was requested; stopWithReceipt() retries every one.
+  private readonly pendingReleases = new Set<GrpcManager>()
   private readonly stopReceipts = new WeakMap<GrpcManager, Promise<TransportStopReceipt>>()
   private readonly sdkLifecycleTasks = new Set<Promise<void>>()
   private authenticationQueue: Promise<void> = Promise.resolve()
@@ -582,12 +582,8 @@ class PuppetService extends PUPPET.Puppet {
     this.listenerDrain = { pending: new Set() }
     this.eventsBlocked = false
 
-    // A manager whose release failed earlier is not retried by anyone once a new one replaces it.
-    const unreleased = this.unreleasedManager
-    this.unreleasedManager = undefined
-    if (unreleased && !unreleased.forceRelease().released) {
-      this.log.warn('PuppetService', 'start() could not release the previous transport; continuing with a new one')
-    }
+    // Still-unreleased managers stay tracked: a later stopWithReceipt() reports and retries them too.
+    this.retryPendingReleases()
 
     this.log.info('PuppetService', 'start() instanciating GrpcManager ...')
     const grpcManager = new GrpcManager(this.options, this.recovery)
@@ -749,6 +745,7 @@ class PuppetService extends PUPPET.Puppet {
       }
     } finally {
       if (this.detachingManager === grpcManager) { this.detachingManager = undefined }
+      this.trackIfUnreleased(grpcManager)
     }
 
     this.log.info('PuppetService', 'onStop() ... done')
@@ -764,27 +761,51 @@ class PuppetService extends PUPPET.Puppet {
    * records. Never rejects; resolves within the timeout, after which the SDK releases it itself.
    */
   stopWithReceipt (options: TransportStopOptions = {}): Promise<TransportStopReceipt> {
-    const manager = this._grpcManager ?? this.detachingManager ?? this.unreleasedManager
-    if (!manager) { return Promise.resolve({ released: true, serverAcked: false, forced: false }) }
+    const manager = this._grpcManager ?? this.detachingManager
+    const timeout = transportStopTimeout(options)
+    if (!manager) { return this.receiptForPendingReleases(timeout) }
     const existing = this.stopReceipts.get(manager)
     if (existing) { return existing }
-    const receipt = this.settleStopReceipt(manager, transportStopTimeout(options))
+    const receipt = this.settleStopReceipt(manager, timeout)
     this.stopReceipts.set(manager, receipt)
     return receipt
   }
 
   private async settleStopReceipt (manager: GrpcManager, timeoutMilliseconds: number): Promise<TransportStopReceipt> {
-    const retryingRelease = manager === this.unreleasedManager
-      && manager !== this._grpcManager && manager !== this.detachingManager
-    const stopping = retryingRelease ? undefined : this.stopForReceipt(manager)
-    const receipt = await settleTransportStop(manager, stopping, timeoutMilliseconds)
+    const receipt = await settleTransportStop(manager, this.stopForReceipt(manager), timeoutMilliseconds)
     if (receipt.released) {
-      if (this.unreleasedManager === manager) { this.unreleasedManager = undefined }
+      this.pendingReleases.delete(manager)
     } else {
-      this.unreleasedManager = manager
+      this.pendingReleases.add(manager)
       this.stopReceipts.delete(manager)
     }
-    return receipt
+    // Earlier managers that never released must not be hidden behind this one's success.
+    const others = await this.receiptForPendingReleases(timeoutMilliseconds, manager)
+    return others.released ? receipt : { ...receipt, released: false, releaseError: receipt.releaseError ?? others.releaseError }
+  }
+
+  /** No live manager: report whatever earlier stops left unreleased, retrying each one. */
+  private async receiptForPendingReleases (timeoutMilliseconds: number, except?: GrpcManager): Promise<TransportStopReceipt> {
+    let failure: TransportStopReceipt | undefined
+    let released: TransportStopReceipt | undefined
+    for (const manager of [ ...this.pendingReleases ].filter(candidate => candidate !== except)) {
+      const receipt = await settleTransportStop(manager, undefined, timeoutMilliseconds)
+      if (receipt.released) { this.pendingReleases.delete(manager); released ??= receipt } else { failure ??= receipt }
+    }
+    return failure ?? released ?? { released: true, serverAcked: false, forced: false }
+  }
+
+  private trackIfUnreleased (manager: GrpcManager | undefined): void {
+    if (manager && !manager.releaseState().released) { this.pendingReleases.add(manager) }
+  }
+
+  private retryPendingReleases (): void {
+    for (const manager of [ ...this.pendingReleases ]) {
+      if (manager.forceRelease().released) { this.pendingReleases.delete(manager) }
+    }
+    if (this.pendingReleases.size) {
+      this.log.warn('PuppetService', 'start() could not release %d previous transport(s); they stay tracked for stopWithReceipt()', this.pendingReleases.size)
+    }
   }
 
   private async stopForReceipt (manager: GrpcManager): Promise<void> {

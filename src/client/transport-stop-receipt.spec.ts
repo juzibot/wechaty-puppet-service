@@ -185,6 +185,41 @@ test('a force-released service starts again on a new manager once its own storag
   } finally { barrier.resolve(); await harness.close(); sinon.restore() }
 })
 
+test('a plain stop() that fails to release still reports released=false on the next receipt', async t => {
+  const harness = await startHarness()
+  const client = (harness.manager as unknown as { _client: puppet.PuppetClient })._client
+  const close = sinon.stub(client, 'close').throws(new Error('close failed'))
+  try {
+    await bounded(harness.service.stop())
+    const failed = await bounded(harness.service.stopWithReceipt())
+    assert.equal(failed.released, false, 'a release that failed during a plain stop is not reported as released')
+    assert.match(String(failed.releaseError?.message), /close failed/)
+    close.restore()
+    const retried = await bounded(harness.service.stopWithReceipt())
+    assert.equal(retried.released, true)
+    assert.equal(harness.stops(), 1, 'the retry releases locally without another Stop')
+    t.pass('stop() keeps the manager whose release failed')
+  } finally { close.restore(); await harness.close(); sinon.restore() }
+})
+
+test('start() keeps a manager whose release keeps failing instead of dropping its retry entry', async t => {
+  const harness = await startHarness()
+  const client = (harness.manager as unknown as { _client: puppet.PuppetClient })._client
+  const close = sinon.stub(client, 'close').throws(new Error('close failed'))
+  try {
+    const failed = await bounded(harness.service.stopWithReceipt())
+    assert.equal(failed.released, false)
+    await bounded(harness.service.start())
+    const pending = (harness.service as unknown as { pendingReleases: Set<GrpcManager> }).pendingReleases
+    assert.ok(pending.has(harness.manager), 'the failed manager is still tracked after the service started again')
+    close.restore()
+    const receipt = await bounded(harness.service.stopWithReceipt())
+    assert.equal(receipt.released, true, 'every pending manager is released and reported')
+    assert.equal(pending.size, 0)
+    t.pass('no retry entry is lost across start()')
+  } finally { close.restore(); await harness.close(); sinon.restore() }
+})
+
 test('a manager that failed to release is retried and dropped when the service starts again', async t => {
   const harness = await startHarness()
   const client = (harness.manager as unknown as { _client: puppet.PuppetClient })._client
@@ -193,9 +228,10 @@ test('a manager that failed to release is retried and dropped when the service s
     const failed = await bounded(harness.service.stopWithReceipt())
     assert.equal(failed.released, false)
     close.restore()
-    assert.equal((harness.service as unknown as { unreleasedManager?: GrpcManager }).unreleasedManager, harness.manager)
+    const pending = (harness.service as unknown as { pendingReleases: Set<GrpcManager> }).pendingReleases
+    assert.ok(pending.has(harness.manager))
     await bounded(harness.service.start())
-    assert.equal((harness.service as unknown as { unreleasedManager?: GrpcManager }).unreleasedManager, undefined, 'no stale reference after a new start')
+    assert.equal(pending.size, 0, 'no stale reference after a new start')
     assert.equal(harness.manager.releaseState().released, true, 'the stale manager was released again')
     t.pass('start() does not leave an unreleased manager behind')
   } finally { close.restore(); await harness.close(); sinon.restore() }
