@@ -57,6 +57,8 @@ import { packageJson }  from '../package-json.js'
 import { GrpcManager }  from './grpc-manager.js'
 import { TransportStartAttempt } from './transport-start.js'
 import type { TransportStartOptions } from './transport-start.js'
+import { settleTransportStop, transportStopTimeout } from './transport-stop.js'
+import type { TransportStopOptions, TransportStopReceipt } from './transport-stop.js'
 import { RecoveryGate, withRecoveryRequestContext } from './recovery.js'
 import type { RecoveryOptions, RecoveryRequestContext, RecoveryState } from './recovery.js'
 import { PayloadStore } from './payload-store.js'
@@ -154,6 +156,11 @@ class PuppetService extends PUPPET.Puppet {
   private startingTask?: Promise<void>
   private transportStart?: TransportStartAttempt
   private stoppingTask?: Promise<void>
+  // Held from the moment stopService() detaches `_grpcManager` until it finishes stopping it.
+  private detachingManager?: GrpcManager
+  // Managers whose local release failed, however the stop was requested; stopWithReceipt() retries every one.
+  private readonly pendingReleases = new Set<GrpcManager>()
+  private readonly stopReceipts = new WeakMap<GrpcManager, Promise<TransportStopReceipt>>()
   private readonly sdkLifecycleTasks = new Set<Promise<void>>()
   private authenticationQueue: Promise<void> = Promise.resolve()
   private authenticationGeneration = 0
@@ -575,6 +582,9 @@ class PuppetService extends PUPPET.Puppet {
     this.listenerDrain = { pending: new Set() }
     this.eventsBlocked = false
 
+    // Still-unreleased managers stay tracked: a later stopWithReceipt() reports and retries them too.
+    this.retryPendingReleases()
+
     this.log.info('PuppetService', 'start() instanciating GrpcManager ...')
     const grpcManager = new GrpcManager(this.options, this.recovery)
     this.log.info('PuppetService', 'start() instanciating GrpcManager ... done')
@@ -715,23 +725,105 @@ class PuppetService extends PUPPET.Puppet {
     try { grpcManager?.stopStream({ preventRestart: true }) } catch (error) {
       this.reportStreamError(error)
     }
+    this.detachingManager = grpcManager
     this._grpcManager = undefined
-    await this.checkpointQueue
-    if (starting) {
-      try { await starting } catch (error) { this.log.warn('PuppetService', 'stopped startup failed: %s', error) }
-    }
-    await this.waitForSdkLifecycle()
+    try {
+      // A force-released manager never sends Stop, so a drain that cannot finish must not keep this stop pending.
+      await this.unlessAbandoned(grpcManager, this.checkpointQueue)
+      if (starting) {
+        try { await this.unlessAbandoned(grpcManager, starting) } catch (error) { this.log.warn('PuppetService', 'stopped startup failed: %s', error) }
+      }
+      await this.unlessAbandoned(grpcManager, this.waitForSdkLifecycle())
 
-    if (grpcManager) {
-      this.log.info('PuppetService', 'onStop() stopping grpc manager ...')
-      this.stoppingManager = grpcManager
-      try {
-        await this.recovery.runDetached(async (): Promise<void> => grpcManager.stop())
-      } finally { this.stoppingManager = undefined }
-      this.log.info('PuppetService', 'onStop() stopping grpc manager ... done')
+      if (grpcManager) {
+        this.log.info('PuppetService', 'onStop() stopping grpc manager ...')
+        this.stoppingManager = grpcManager
+        try {
+          await this.recovery.runDetached(async (): Promise<void> => grpcManager.stop())
+        } finally { this.stoppingManager = undefined }
+        this.log.info('PuppetService', 'onStop() stopping grpc manager ... done')
+      }
+    } finally {
+      if (this.detachingManager === grpcManager) { this.detachingManager = undefined }
+      this.trackIfUnreleased(grpcManager)
     }
 
     this.log.info('PuppetService', 'onStop() ... done')
+  }
+
+  private async unlessAbandoned (manager: GrpcManager | undefined, operation: Promise<unknown>): Promise<void> {
+    if (!manager) { await operation; return }
+    await Promise.race([ operation, manager.abandonedSignal ])
+  }
+
+  /**
+   * Stops the transport and reports whether it was released locally, from the manager's own
+   * records. Never rejects; resolves within the timeout, after which the SDK releases it itself.
+   */
+  stopWithReceipt (options: TransportStopOptions = {}): Promise<TransportStopReceipt> {
+    const manager = this._grpcManager ?? this.detachingManager
+    const timeout = transportStopTimeout(options)
+    if (!manager) { return this.receiptForPendingReleases(timeout) }
+    const existing = this.stopReceipts.get(manager)
+    if (existing) { return existing }
+    const receipt = this.settleStopReceipt(manager, timeout)
+    this.stopReceipts.set(manager, receipt)
+    return receipt
+  }
+
+  private async settleStopReceipt (manager: GrpcManager, timeoutMilliseconds: number): Promise<TransportStopReceipt> {
+    const receipt = await settleTransportStop(manager, this.stopForReceipt(manager), timeoutMilliseconds)
+    if (receipt.released) {
+      this.pendingReleases.delete(manager)
+    } else {
+      this.pendingReleases.add(manager)
+      this.stopReceipts.delete(manager)
+    }
+    // Earlier managers that never released must not be hidden behind this one's success.
+    const others = await this.receiptForPendingReleases(timeoutMilliseconds, manager)
+    return others.released ? receipt : { ...receipt, released: false, releaseError: receipt.releaseError ?? others.releaseError }
+  }
+
+  /** No live manager: report whatever earlier stops left unreleased, retrying each one. */
+  private async receiptForPendingReleases (timeoutMilliseconds: number, except?: GrpcManager): Promise<TransportStopReceipt> {
+    let failure: TransportStopReceipt | undefined
+    let released: TransportStopReceipt | undefined
+    for (const manager of [ ...this.pendingReleases ].filter(candidate => candidate !== except)) {
+      const receipt = await settleTransportStop(manager, undefined, timeoutMilliseconds)
+      if (receipt.released) { this.pendingReleases.delete(manager); released ??= receipt } else { failure ??= receipt }
+    }
+    return failure ?? released ?? { released: true, serverAcked: false, forced: false }
+  }
+
+  private trackIfUnreleased (manager: GrpcManager | undefined): void {
+    if (manager && !manager.releaseState().released) { this.pendingReleases.add(manager) }
+  }
+
+  private retryPendingReleases (): void {
+    for (const manager of [ ...this.pendingReleases ]) {
+      if (manager.forceRelease().released) { this.pendingReleases.delete(manager) }
+    }
+    if (this.pendingReleases.size) {
+      this.log.warn('PuppetService', 'start() could not release %d previous transport(s); they stay tracked for stopWithReceipt()', this.pendingReleases.size)
+    }
+  }
+
+  private async stopForReceipt (manager: GrpcManager): Promise<void> {
+    // A later turn lets a stop() that is calling this from a synchronous listener publish stoppingTask first.
+    await Promise.resolve()
+    const inProgress = this.stoppingTask
+    await this.runStopQuietly(inProgress)
+    // The reused stop may have belonged to an earlier manager while a start installed this one.
+    if (inProgress && manager === this._grpcManager) { await this.runStopQuietly(undefined) }
+  }
+
+  private async runStopQuietly (inProgress: Promise<void> | undefined): Promise<void> {
+    try {
+      // An already inactive FSM would skip onStop() and leave an attached manager running.
+      await (inProgress ?? (this.state.inactive() === true ? this.onStop() : this.stop()))
+    } catch (error) {
+      this.log.warn('PuppetService', 'stopWithReceipt() stop failed: %s', error)
+    }
   }
 
   /** Every task is drained; a failure fails restart preparation unless `retainForDrain` is false. */
