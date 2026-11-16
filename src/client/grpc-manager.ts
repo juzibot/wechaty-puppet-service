@@ -47,6 +47,10 @@ import {
 
 import type { PuppetServiceOptions } from './puppet-service.js'
 import type { RecoveryGate } from './recovery.js'
+import {
+  toError,
+  type TransportReleaseState,
+}                             from './transport-stop.js'
 
 /**
  * Huan(202108): register `wechaty` schema for gRPC service discovery
@@ -85,6 +89,17 @@ class GrpcManager extends EventEmitter {
   private retiring = false
   private retired?: () => void
   private readonly trackedCalls = new Set<ReturnType<Parameters<grpc.Interceptor>[1]>>()
+
+  // Recorded for TransportStopReceipt instead of being read back from global error events.
+  private abandoned = false
+  private signalAbandoned!: () => void
+  /** Settles when forceRelease() abandons this manager, so a stalled stop can stop waiting for it. */
+  readonly abandonedSignal = new Promise<void>((resolve): void => { this.signalAbandoned = resolve })
+  private releaseStarted = false
+  private serverAcked = false
+  private stopError?: Error
+  private unreleasedStream?: { stream: grpc.ClientReadableStream<puppet.EventResponse>, error: Error }
+  private unclosedClient?: { client: puppet.PuppetClient, error: Error }
 
   // A connection replacement retires only the Event subscription. Calls already
   // submitted on this channel retain their original callback/deadline.
@@ -192,6 +207,7 @@ class GrpcManager extends EventEmitter {
 
   async start (lastEventSeq?: string, accountId?: string): Promise<void> {
     this._log.verbose('GrpcManager', 'start()')
+    this.assertNotAbandoned()
 
     /**
      * 1. Init grpc client
@@ -220,6 +236,13 @@ class GrpcManager extends EventEmitter {
 
   async stop (): Promise<void> {
     this._log.verbose('GrpcManager', 'stop()')
+    // Hermit terminates by token: a late Stop from a released manager could end the next connection.
+    if (this.abandoned || this.releaseState().released) {
+      this._log.verbose('GrpcManager', 'stop() transport already released, skip Stop')
+      return
+    }
+    this.releaseStarted = true
+    this.retryUnreleasedStream()
 
     /**
      * 1. Disconnect from stream
@@ -234,9 +257,15 @@ class GrpcManager extends EventEmitter {
     try {
       this._log.verbose('GrpcManager', 'stop() stop client ...')
       await this.runLifecycleRpc(callback => this.client.stop(new puppet.StopRequest(), new grpc.Metadata(), this.lifecycleCallOptions(), callback), true)
+      this.serverAcked = true
       this._log.verbose('GrpcManager', 'stop() stop client ... done')
     } catch (e) {
-      this.emit('error', e)
+      // A forced release cancels this call itself; that cancellation is not a stop failure.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- forceRelease() can run while Stop is awaited.
+      if (!this.abandoned) {
+        this.stopError = toError(e)
+        this.emit('error', e)
+      }
     } finally {
       // Even a throwing error listener must not prevent channel destruction.
       this.destroyClient()
@@ -255,9 +284,74 @@ class GrpcManager extends EventEmitter {
   }
 
   abortStartup (): void {
+    this.releaseStarted = true
     this.cancelLifecycleCalls()
     for (const call of this.trackedCalls) { call.cancelWithStatus(grpc.status.CANCELLED, 'Transport closed') }
     try { this.stopStream({ preventRestart: true }) } finally { this.destroyClient() }
+  }
+
+  /**
+   * Releases the transport without any RPC and abandons this manager for good: it never sends
+   * Start, Stop or Logout afterwards. Never throws; a failed release is retried by calling again.
+   */
+  forceRelease (): TransportReleaseState {
+    this.abandoned = true
+    this.signalAbandoned()
+    this.releaseStarted = true
+    this.cancelLifecycleCalls()
+    for (const call of this.trackedCalls) {
+      try { call.cancelWithStatus(grpc.status.CANCELLED, 'Transport released') } catch (e) {
+        this._log.warn('GrpcManager', 'forceRelease() cancel call failed: %s', e)
+      }
+    }
+    this.retryUnreleasedStream()
+    try { this.stopStream({ throwOnError: true, preventRestart: true }) } catch {
+      // Recorded in unreleasedStream and reported through releaseState().
+    }
+    this.retryUnclosedClient()
+    this.destroyClient()
+    return this.releaseState()
+  }
+
+  releaseState (): TransportReleaseState {
+    const releaseError = this.unreleasedStream?.error ?? this.unclosedClient?.error
+    return {
+      released    : this.releaseStarted && !releaseError && !this._client && !this.eventStream,
+      serverAcked : this.serverAcked,
+      ...(this.stopError ? { stopError: this.stopError } : {}),
+      ...(releaseError ? { releaseError } : {}),
+    }
+  }
+
+  private retryUnreleasedStream (): void {
+    const pending = this.unreleasedStream
+    if (!pending) { return }
+    try {
+      this.destroyStream(pending.stream)
+      this.unreleasedStream = undefined
+    } catch (e) {
+      this.unreleasedStream = { stream: pending.stream, error: toError(e) }
+    }
+  }
+
+  private retryUnclosedClient (): void {
+    const pending = this.unclosedClient
+    if (!pending) { return }
+    try {
+      pending.client.close()
+      this.unclosedClient = undefined
+    } catch (e) {
+      this.unclosedClient = { client: pending.client, error: toError(e) }
+    }
+  }
+
+  private destroyStream (eventStream: grpc.ClientReadableStream<puppet.EventResponse>): void {
+    if (this.recovery?.enabled) { eventStream.cancel() }
+    eventStream.destroy()
+  }
+
+  private assertNotAbandoned (): void {
+    if (this.abandoned) { throw new Error('Manager transport has been released') }
   }
 
   private lifecycleCallOptions (): grpc.CallOptions {
@@ -268,6 +362,7 @@ class GrpcManager extends EventEmitter {
     operation: (callback: (error: grpc.ServiceError | null) => void) => grpc.ClientUnaryCall,
     allowStopping = false,
   ): Promise<void> {
+    this.assertNotAbandoned()
     if (this.lifecycleStopping && !allowStopping) { throw new Error('Manager lifecycle is stopping') }
     let call: grpc.ClientUnaryCall | undefined
     try {
@@ -282,6 +377,7 @@ class GrpcManager extends EventEmitter {
 
   async initClient (): Promise<void> {
     this._log.verbose('GrpcManager', 'initClient()')
+    this.assertNotAbandoned()
 
     /**
      * Huan(202108): for maximum compatible with the non-tls community servers/clients,
@@ -355,6 +451,7 @@ class GrpcManager extends EventEmitter {
     try {
       client.close()
     } catch (e) {
+      this.unclosedClient = { client, error: toError(e) }
       this._log.error('GrpcManager', 'destroyClient() client.close() rejection: %s\n%s', e && (e as Error).message, (e as Error).stack)
     }
   }
@@ -362,6 +459,7 @@ class GrpcManager extends EventEmitter {
   private streamRestartPrevented = false
 
   async startStream (lastEventSeq?: string, accountId?: string): Promise<void> {
+    this.assertNotAbandoned()
     if (this.streamRestartPrevented) { throw new Error('Event stream disabled for restart') }
     if (this.recovery?.enabled) {
       return this.startRecoveryStream(lastEventSeq, accountId)
@@ -559,10 +657,10 @@ class GrpcManager extends EventEmitter {
 
     try {
       this._log.verbose('GrpcManager', 'stopStream() destroying event stream ...')
-      if (this.recovery?.enabled) { eventStream.cancel() }
-      eventStream.destroy()
+      this.destroyStream(eventStream)
       this._log.verbose('GrpcManager', 'stopStream() destroying event stream ... done')
     } catch (e) {
+      this.unreleasedStream = { stream: eventStream, error: toError(e) }
       if (options.throwOnError) { throw e }
       this.emit('error', e)
     }
