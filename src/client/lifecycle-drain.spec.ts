@@ -194,14 +194,20 @@ for (const mode of [ 'start', 'logout' ] as const) {
     sinon.stub(service.store, 'start').resolves(); sinon.stub(service.store, 'stop').resolves()
     const starting = mode === 'start' ? assert.rejects(service.onStart(), /interrupted by stop/) : service.onStart()
     let stopping: Promise<void> | undefined
+    let logout: Promise<void> | undefined
     let timer: NodeJS.Timeout | undefined
     try {
       if (mode === 'logout') {
         await starting
         service.login('account')
-        service.grpcManager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'account', data: 'logout' }))
+        logout = assert.rejects(service.logout('user request'), /cancel/i)
+        void logout.catch((error: unknown): void => { t.fail(String(error)) })
       }
-      await acceptance
+      await Promise.race([
+        acceptance,
+        new Promise<never>((_resolve, reject): void => { timer = setTimeout((): void => { reject(new Error('server did not accept the RPC')) }, 5000) }),
+      ])
+      clearTimeout(timer)
       stopping = service.onStop()
       const completed = await Promise.race([
         stopping.then((): boolean => true),
@@ -211,7 +217,7 @@ for (const mode of [ 'start', 'logout' ] as const) {
       t.pass('channel release does not depend on an unresponsive lifecycle RPC')
     } finally {
       clearTimeout(timer); server.forceShutdown()
-      await starting; await stopping; await service.cleanup(); sinon.restore()
+      await starting; await stopping; await logout; await service.cleanup(); sinon.restore()
     }
   })
 }

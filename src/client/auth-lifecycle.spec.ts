@@ -156,7 +156,7 @@ for (const recoveryEnabled of [ false, true ]) {
   })
 }
 
-test('real gRPC logout listener can await public logout while echoed LOGOUT RPCs drain', async t => {
+test('real gRPC logout listener can explicitly logout without echoing either notification', async t => {
   const server = new grpc.Server()
   let stream!: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>
   let logoutCalls = 0
@@ -182,7 +182,7 @@ test('real gRPC logout listener can await public logout while echoed LOGOUT RPCs
         stream.write(response(puppet.EventType.EVENT_TYPE_LOGOUT, { data: 'server echo' }))
         stream.write(response(puppet.EventType.EVENT_TYPE_DONG, { data: 'echo processed' }))
       }
-      if (logoutCalls === 3) {
+      if (logoutCalls === 1) {
         releaseDerivedRpc = (): void => { callback(null, new puppet.LogoutResponse()) }
         derivedRpcEntered()
         return
@@ -212,17 +212,18 @@ test('real gRPC logout listener can await public logout while echoed LOGOUT RPCs
     await bounded(ready)
     assert.equal(service.currentUserId, 'A')
     stream.write(response(puppet.EventType.EVENT_TYPE_LOGOUT, { data: 'remote logout' }))
-    await bounded(Promise.all([ listenerDone, echoProcessed, derivedRpc ]))
+    await bounded(Promise.all([ echoProcessed, derivedRpc ]))
     assert.equal(service.isLoggedIn, false)
     assert.equal(logoutEvents, 1)
-    assert.equal(logoutCalls, 3, 'remote logout, listener reentry and server echo each issue one RPC')
+    assert.equal(logoutCalls, 1, 'only the explicit listener call issues an RPC')
     await bounded(assert.rejects(service.prepareForRestart({ deadline: Date.now() + 20 }), /deadline/))
     assert.ok(releaseDerivedRpc)
     releaseDerivedRpc()
     releaseDerivedRpc = undefined
+    await bounded(listenerDone)
     await bounded(service.prepareForRestart({ deadline: Date.now() + 2000 }))
     assert.equal(logoutEvents, 1)
-    assert.equal(logoutCalls, 3)
+    assert.equal(logoutCalls, 1)
     t.pass('listener completes without recursion or deadlock, but derived RPC still blocks restart')
   } finally {
     releaseDerivedRpc?.()
@@ -232,8 +233,8 @@ test('real gRPC logout listener can await public logout while echoed LOGOUT RPCs
   }
 })
 
-function fixture (logout: () => Promise<void> = async (): Promise<void> => {}, startStore: () => Promise<void> = async (): Promise<void> => {}): { service: AuthService, manager: GrpcManager } {
-  const service = new AuthService({ token: `insecure_${randomUUID()}` })
+function fixture (logout: () => Promise<void> = async (): Promise<void> => {}, startStore: () => Promise<void> = async (): Promise<void> => {}, recoveryEnabled = false): { service: AuthService, manager: GrpcManager } {
+  const service = new AuthService({ token: `insecure_${randomUUID()}`, recovery: { enabled: recoveryEnabled } })
   const manager = new GrpcManager({ token: `insecure_${randomUUID()}` })
   sinon.stub(manager, 'stopStream'); sinon.stub(manager, 'stop').resolves(); sinon.stub(manager, 'logout').callsFake(logout)
   sinon.stub(service.store, 'start').callsFake(startStore); sinon.stub(service.store, 'stop').resolves()
@@ -241,28 +242,336 @@ function fixture (logout: () => Promise<void> = async (): Promise<void> => {}, s
   return { service, manager }
 }
 
+function deferred (): { promise: Promise<void>, resolve: () => void } {
+  let complete!: () => void
+  const promise = new Promise<void>((resolve): void => { complete = resolve })
+  return { promise, resolve: complete }
+}
+
+async function flushStream (service: AuthService, manager: GrpcManager): Promise<void> {
+  const drained = deferred()
+  service.once('dong', drained.resolve)
+  manager.emit('data', response(puppet.EventType.EVENT_TYPE_DONG, { data: 'drain' }))
+  await bounded(drained.promise)
+}
+
+for (const recoveryEnabled of [ false, true ]) {
+  for (const waitAt of [ 'queued', 'metadata', 'listener' ] as const) {
+    test(`same-account LOGIN supersedes old stream LOGOUT at ${waitAt}, recovery=${recoveryEnabled}`, async t => {
+      let logoutCalls = 0
+      const { service, manager } = fixture(async (): Promise<void> => { logoutCalls++ }, undefined, recoveryEnabled)
+      const login = response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' })
+      const logout = response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'A', data: 'previous session' })
+      const entered = deferred()
+      const release = deferred()
+      let localLogouts = 0
+      service.on('logout', (): void => { localLogouts++ })
+      try {
+        manager.emit('data', login)
+        await flushStream(service, manager)
+        assert.equal(service.currentUserId, 'A')
+
+        const store = service.store.miscellaneous!
+        const get = store.get.bind(store)
+        const remove = sinon.spy(store, 'delete')
+        if (waitAt === 'metadata') {
+          sinon.stub(store, 'get').callsFake(async (key: string): Promise<string | undefined> => {
+            entered.resolve()
+            await release.promise
+            return get(key)
+          })
+        }
+        if (waitAt === 'listener') {
+          service.once('logout', (): void => { manager.emit('data', login) })
+        }
+        manager.emit('data', logout)
+        if (waitAt === 'metadata') { await bounded(entered.promise) }
+        if (waitAt !== 'listener') { manager.emit('data', login) }
+        release.resolve()
+        await flushStream(service, manager)
+        if (waitAt === 'listener') { await flushStream(service, manager) }
+
+        assert.equal(logoutCalls, 0, 'no stale Logout RPC')
+        assert.equal(localLogouts, waitAt === 'listener' ? 1 : 0)
+        if (waitAt !== 'listener') { assert.equal(remove.callCount, 0, 'no stale cursor reset') }
+        assert.equal(service.currentUserId, 'A')
+        assert.equal(await store.get('accountId'), 'A')
+        if (recoveryEnabled) { assert.equal(service.recoveryState.status, 'ready') }
+
+        manager.emit('data', logout)
+        await flushStream(service, manager)
+        assert.equal(service.isLoggedIn, false, 'a current server LOGOUT still logs out locally')
+        assert.equal(logoutCalls, 0, 'a current server LOGOUT is notification only')
+        manager.emit('data', login)
+        await flushStream(service, manager)
+        await service.logout('user request')
+        assert.equal(service.isLoggedIn, false)
+        assert.equal(logoutCalls, 1, 'explicit logout still submits its own RPC')
+        t.pass('only the superseded server event loses ownership')
+      } finally {
+        release.resolve()
+        await bounded(service.cleanup())
+        sinon.restore()
+      }
+    })
+  }
+
+  test(`a different LOGIN keeps the prior server logout reason without echoing it, recovery=${recoveryEnabled}`, async t => {
+    let logoutCalls = 0
+    const { service, manager } = fixture(async (): Promise<void> => { logoutCalls++ }, undefined, recoveryEnabled)
+    const reasons: string[] = []
+    service.on('logout', ({ data }): void => { if (data) { reasons.push(data) } })
+    try {
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+      await flushStream(service, manager)
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'A', data: 'kicked by server' }))
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'B' }))
+      await flushStream(service, manager)
+      assert.deepEqual(reasons, [ 'kicked by server' ])
+      assert.equal(logoutCalls, 0)
+      assert.equal(service.currentUserId, 'B')
+      t.pass('preserve local notification without logging the next account out remotely')
+    } finally { await bounded(service.cleanup()); sinon.restore() }
+  })
+
+  test(`a late named LOGOUT cannot fence the next account, recovery=${recoveryEnabled}`, async t => {
+    const { service, manager } = fixture(undefined, undefined, recoveryEnabled)
+    const transport = sinon.stub(service, 'cancelEndpointReplacement')
+    let localLogouts = 0
+    service.on('logout', (): void => { localLogouts++ })
+    try {
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }, 1))
+      await flushStream(service, manager)
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'B' }, 2))
+      await flushStream(service, manager)
+      const gate = Reflect.get(service, 'recovery') as { session: number }
+      const session = gate.session
+      const priorLogouts = localLogouts
+      transport.resetHistory()
+      for (const contactId of [ 'A', 42, null, '', '   ' ]) {
+        manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId }, 3))
+        await flushStream(service, manager)
+        assert.equal(gate.session, session, `no cancellation of B requests for ${JSON.stringify(contactId)}`)
+        assert.equal(localLogouts, priorLogouts)
+        assert.equal(transport.callCount, 0)
+        assert.equal(service.currentUserId, 'B')
+        assert.equal(await service.store.miscellaneous!.get('lastEventSeq'), '2')
+        if (recoveryEnabled) { assert.equal(service.recoveryState.status, 'ready') }
+      }
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGOUT, { data: 'legacy notification' }))
+      await flushStream(service, manager)
+      assert.equal(localLogouts, priorLogouts + 1)
+      assert.equal(service.isLoggedIn, false)
+      t.pass('only a missing contactId uses legacy arrival order')
+    } finally { await bounded(service.cleanup()); sinon.restore() }
+  })
+
+  test(`LOGOUT cannot clear the cursor while waiting for the auth queue, recovery=${recoveryEnabled}`, async t => {
+    const { service, manager } = fixture(undefined, undefined, recoveryEnabled)
+    const held = deferred()
+    const dispatching = deferred()
+    const login = response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' })
+    const store = service.store.miscellaneous!
+    const auth = service as unknown as {
+      authenticationQueue: Promise<void>,
+      enqueueAuthentication: (epoch: number, operation: () => Promise<void>, eventBound?: boolean) => Promise<void>,
+    }
+    try {
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }, 1))
+      await flushStream(service, manager)
+      auth.authenticationQueue = held.promise
+      const enqueue = auth.enqueueAuthentication.bind(auth)
+      sinon.stub(auth, 'enqueueAuthentication').callsFake((epoch, operation, eventBound): Promise<void> => {
+        dispatching.resolve()
+        return enqueue(epoch, operation, eventBound)
+      })
+      const removed = sinon.spy(store, 'delete')
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'A' }, 2))
+      await bounded(dispatching.promise)
+      assert.equal(await store.get('lastEventSeq'), '1')
+      manager.emit('data', login)
+      held.resolve()
+      await flushStream(service, manager)
+      assert.equal(removed.callCount, 0)
+      assert.equal(await store.get('lastEventSeq'), '1')
+      assert.equal(service.currentUserId, 'A')
+      t.pass('the invalidated logout never acquires the right to clear metadata')
+    } finally { held.resolve(); await bounded(service.cleanup()); sinon.restore() }
+  })
+
+  test(`malformed LOGIN cannot revoke a valid logout pending submission, recovery=${recoveryEnabled}`, async t => {
+    let logoutCalls = 0
+    const { service, manager } = fixture(async (): Promise<void> => { logoutCalls++ }, undefined, recoveryEnabled)
+    service.on('error', (): void => {})
+    service.once('logout', (): void => {
+      for (const payload of [ {}, { contactId: null }, { contactId: '' }, { contactId: 42 } ]) {
+        manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, payload))
+      }
+    })
+    try {
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+      await flushStream(service, manager)
+      await bounded(service.logout('user request'))
+      await flushStream(service, manager)
+      assert.equal(logoutCalls, 1)
+      assert.equal(service.isLoggedIn, false)
+      t.pass('only a valid LOGIN can revoke an unsubmitted logout')
+    } finally { await bounded(service.cleanup()); sinon.restore() }
+  })
+
+  test(`a queued public logout cannot act after same-account LOGIN, recovery=${recoveryEnabled}`, async t => {
+    let logoutCalls = 0
+    let localLogouts = 0
+    const { service, manager } = fixture(async (): Promise<void> => { logoutCalls++ }, undefined, recoveryEnabled)
+    const login = response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' })
+    const held = deferred()
+    service.on('logout', (): void => { localLogouts++ })
+    try {
+      manager.emit('data', login)
+      await flushStream(service, manager)
+      Reflect.set(service, 'authenticationQueue', held.promise)
+      const rejected = assert.rejects(service.logout('old request'), /Superseded logout request/)
+      manager.emit('data', login)
+      held.resolve()
+      await bounded(rejected)
+      await flushStream(service, manager)
+      assert.equal(localLogouts, 0)
+      assert.equal(logoutCalls, 0)
+      assert.equal(service.currentUserId, 'A')
+
+      await bounded(service.logout('current request'))
+      assert.equal(localLogouts, 1)
+      assert.equal(logoutCalls, 1)
+      assert.equal(service.isLoggedIn, false)
+      t.pass('the fence is captured before entering the authentication queue')
+    } finally { held.resolve(); await bounded(service.cleanup()); sinon.restore() }
+  })
+
+  test(`same-account LOGIN during public local logout prevents its RPC, recovery=${recoveryEnabled}`, async t => {
+    let logoutCalls = 0
+    const { service, manager } = fixture(async (): Promise<void> => { logoutCalls++ }, undefined, recoveryEnabled)
+    const login = response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' })
+    try {
+      manager.emit('data', login)
+      await flushStream(service, manager)
+      service.once('logout', (): void => { manager.emit('data', login) })
+      await assert.rejects(bounded(service.logout('older request')), /Superseded logout request/)
+      await flushStream(service, manager)
+      assert.equal(logoutCalls, 0)
+      assert.equal(service.currentUserId, 'A')
+      t.pass('ownership is checked again before submitting the RPC')
+    } finally { await bounded(service.cleanup()); sinon.restore() }
+  })
+
+  for (const source of [ 'server', 'switch' ] as const) {
+    test(`delayed ${source} logout listener cannot log out a newer account, recovery=${recoveryEnabled}`, async t => {
+      await assertStaleLogoutListener(recoveryEnabled, source)
+      t.pass('logout listeners cannot act for a new login')
+    })
+  }
+
+  test(`a same-account LOGIN during cursor reset rolls back the partial write, recovery=${recoveryEnabled}`, async t => {
+    await assertCursorRollback(recoveryEnabled)
+    t.pass('a superseded reset does not overwrite the existing checkpoint')
+  })
+}
+
+async function assertStaleLogoutListener (recoveryEnabled: boolean, source: 'server' | 'switch'): Promise<void> {
+  let logoutCalls = 0
+  const { service, manager } = fixture(async (): Promise<void> => { logoutCalls++ }, undefined, recoveryEnabled)
+  const entered = deferred()
+  const release = deferred()
+  const rejected = deferred()
+  service.once('logout', async ({ contactId }): Promise<void> => {
+    assert.equal(contactId, 'A')
+    entered.resolve()
+    await release.promise
+    await assert.rejects(service.logout('old listener'), /Superseded logout request/)
+    rejected.resolve()
+  })
+  const loginB = response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'B' })
+  try {
+    manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+    await flushStream(service, manager)
+    manager.emit('data', source === 'server' ? response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'A' }) : loginB)
+    await bounded(entered.promise)
+    if (source === 'server') { manager.emit('data', loginB) }
+    await flushStream(service, manager)
+    release.resolve()
+    await bounded(rejected.promise)
+    assert.equal(logoutCalls, 0)
+    assert.equal(service.currentUserId, 'B')
+  } finally { release.resolve(); await bounded(service.cleanup()); sinon.restore() }
+}
+
+async function assertCursorRollback (recoveryEnabled: boolean): Promise<void> {
+  let logoutCalls = 0
+  const { service, manager } = fixture(async (): Promise<void> => { logoutCalls++ }, undefined, recoveryEnabled)
+  const login = response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' })
+  const store = service.store.miscellaneous!
+  const remove = store.delete.bind(store)
+  let interrupted = false
+  try {
+    manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }, 1))
+    await flushStream(service, manager)
+    assert.equal(await store.get('lastEventSeq'), '1')
+    sinon.stub(store, 'delete').callsFake(async (key): ReturnType<typeof remove> => {
+      const result = await remove(key)
+      if (!interrupted && key === 'lastEventSeq') {
+        interrupted = true
+        manager.emit('data', login)
+      }
+      return result
+    })
+    manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'A', data: 'superseded' }, 2))
+    await flushStream(service, manager)
+    assert.equal(interrupted, true)
+    assert.equal(await store.get('lastEventSeq'), '1')
+    assert.equal(await store.get('accountId'), 'A')
+    assert.equal(logoutCalls, 0)
+    assert.equal(service.currentUserId, 'A')
+  } finally { await bounded(service.cleanup()); sinon.restore() }
+}
+
+for (const contactId of [ 'A', 42 ]) {
+  test(`replay counts a ${typeof contactId === 'string' ? 'mismatched' : 'malformed'} LOGOUT without persisting it`, async t => {
+    const { service, manager } = fixture(undefined, undefined, true)
+    const recovery = Reflect.get(service, 'recovery') as { begin: (accountId: string) => void }
+    try {
+      recovery.begin('B')
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'B' }, 1))
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_READY, {}))
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId }, 2))
+      manager.emit('data', response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'B', throughSeq: 2 }))
+      await flushStream(service, manager)
+      assert.equal(service.recoveryState.status, 'ready')
+      assert.equal(service.currentUserId, 'B')
+      assert.equal(await service.store.miscellaneous!.get('lastEventSeq'), '1')
+      t.pass('an ignored notification cannot strand the active account in replay')
+    } finally { await bounded(service.cleanup()); sinon.restore() }
+  })
+}
+
 for (const target of [ 'A', 'B' ]) {
-  test(`A -> LOGOUT -> ${target} serializes real local logout without blocking on RPC`, async t => {
-    let release!: () => void
-    const rpc = new Promise<void>((resolve): void => { release = resolve })
-    const { service, manager } = fixture(async (): Promise<void> => rpc)
+  test(`A -> LOGOUT -> ${target} serializes real local transitions without a Logout RPC`, async t => {
+    let logoutCalls = 0
+    const { service, manager } = fixture(async (): Promise<void> => { logoutCalls++ })
     const events: string[] = []
     service.on('login', ({ contactId }): void => { events.push(`login:${contactId}`) })
     service.on('logout', (): void => { events.push(`logout:${service.currentUserId}`) })
-    const ready = new Promise<void>((resolve): void => { service.once('ready', (): void => { resolve() }) })
     try {
       manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+      await flushStream(service, manager)
       manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGOUT, { data: 'remote logout' }))
+      await flushStream(service, manager)
       manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: target }))
-      manager.emit('data', response(puppet.EventType.EVENT_TYPE_READY, {}))
-      await bounded(ready)
+      await flushStream(service, manager)
       assert.deepEqual(events, [ 'login:A', 'logout:A', `login:${target}` ])
       assert.equal(service.currentUserId, target)
-      await assert.rejects(service.prepareForRestart({ deadline: Date.now() + 20 }), /deadline/)
-      release()
       await service.prepareForRestart({ deadline: Date.now() + 2000 })
-      t.pass('RPC is drained separately from ordered authentication state')
-    } finally { release(); await bounded(service.cleanup()); sinon.restore() }
+      assert.equal(logoutCalls, 0)
+      t.pass('ordered authentication drains without a remote Logout')
+    } finally { await bounded(service.cleanup()); sinon.restore() }
   })
 }
 
@@ -283,7 +592,10 @@ for (const failure of [ 'sync-listener', 'async-listener', 'store' ] as const) {
       await bounded(received)
       rejectDelayed(new Error(`${failure} failed`))
       await bounded(observed)
+      const loggedOut = deferred()
+      service.once('logout', loggedOut.resolve)
       manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'A', data: 'kicked' }))
+      await bounded(loggedOut.promise)
       const relogin = new Promise<void>((resolve): void => { service.once('login', (): void => { resolve() }) })
       manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }, 3))
       await bounded(relogin)
@@ -469,49 +781,6 @@ test('public logout RPC is also drained and retains a delayed rejection', async 
   } finally { rejectRpc(new Error('cleanup')); await bounded(service.cleanup()); sinon.restore() }
 })
 
-for (const target of [ 'A', 'B' ]) {
-  test(`server LOGOUT whose echoed logout RPC fails still admits the next LOGIN ${target}`, async t => {
-    let rejected!: () => void
-    const rpcRejected = new Promise<void>((resolve): void => { rejected = resolve })
-    const { service, manager } = fixture(async (): Promise<void> => {
-      rejected()
-      throw new Error('13 INTERNAL: vid not signed')
-    })
-    const logins: string[] = []
-    service.on('login', ({ contactId }): void => { logins.push(contactId) })
-    try {
-      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
-      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'A', data: 'kicked by server' }))
-      await bounded(rpcRejected)
-      await new Promise<void>((resolve): void => { setImmediate(resolve) })
-      const loggedIn = new Promise<void>((resolve): void => { service.once('login', (): void => { resolve() }) })
-      manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: target }))
-      await bounded(loggedIn)
-      assert.deepEqual(logins, [ 'A', target ])
-      assert.equal(service.isLoggedIn, true)
-      assert.equal(service.currentUserId, target)
-      t.pass('a rejected echo of an already-ended session does not block re-login')
-    } finally { await bounded(service.cleanup()); sinon.restore() }
-  })
-}
-
-test('server LOGOUT whose echoed logout RPC fails does not fail restart preparation', async t => {
-  let rejected!: () => void
-  const rpcRejected = new Promise<void>((resolve): void => { rejected = resolve })
-  const { service, manager } = fixture(async (): Promise<void> => {
-    rejected()
-    throw new Error('13 INTERNAL: vid not signed')
-  })
-  try {
-    manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
-    manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'A', data: 'kicked by server' }))
-    await bounded(rpcRejected)
-    await bounded(service.prepareForRestart({ deadline: Date.now() + 2000 }))
-    assert.equal(service.isLoggedIn, false)
-    t.pass('the echo is drained, logged and not mistaken for lost work')
-  } finally { await bounded(service.cleanup()); sinon.restore() }
-})
-
 test('public logout RPC failure is returned to the caller without rejecting the next LOGIN', async t => {
   const { service, manager } = fixture(async (): Promise<void> => { throw new Error('public logout failure') })
   try {
@@ -547,8 +816,11 @@ test('recovery=true: LOGOUT then LOGIN A or B on the same stream opens a live se
       const queuedForA = service.withRecoveryRequestContext({ deadline: Date.now() + 2000 }, async (): Promise<void> => {
         await new Promise<void>((resolve): void => { setImmediate(resolve) })
       })
+      const loggedOut = deferred()
+      service.once('logout', loggedOut.resolve)
       manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'A', data: 'kicked' }))
       manager.emit('data', response(puppet.EventType.EVENT_TYPE_SCAN, { status: 2, qrcode: 'qr' }))
+      await bounded(loggedOut.promise)
       const relogin = new Promise<void>((resolve): void => { service.once('login', (): void => { resolve() }) })
       manager.emit('data', response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: next }))
       await bounded(relogin)
