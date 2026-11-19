@@ -94,9 +94,40 @@ const EVENT_WRITE_RETRY_DELAYS_MS: readonly number[] = [ 100, 500, 2000 ]
 // single attempt each until one write succeeds, so a dead store cannot stall the stream.
 const EVENT_WRITE_BREAKER_THRESHOLD = 3
 const EVENT_TYPE_NAMES = new Map<number, string>(Object.entries(grpcPuppet.EventType).map(([ name, value ]) => [ value as number, name ]))
+const CLEAR_EVENT_METADATA: ReadonlyMap<string, undefined> = new Map([
+  [ 'lastEventSeq', undefined ], [ 'lastEventTimestamp', undefined ], [ 'accountId', undefined ],
+])
+
+interface StreamLogout {
+  readonly contactId?: string
+  readonly reason?: string
+}
+
+function parseEventObject (payload: string): Record<string, unknown> | undefined {
+  let value: unknown
+  try { value = JSON.parse(payload) } catch { return undefined }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) { return undefined }
+  return value as Record<string, unknown>
+}
+
+function isAccountId (value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function parseStreamLogout (payload: string): StreamLogout | undefined {
+  const event = parseEventObject(payload)
+  if (!event) { return undefined }
+  const { contactId, data } = event
+  const reason = typeof data === 'string' ? data : undefined
+  if (!Object.prototype.hasOwnProperty.call(event, 'contactId')) { return { reason } }
+  return isAccountId(contactId) ? { contactId, reason } : undefined
+}
 
 interface ListenerDrain {
   readonly pending: Set<Promise<void>>
+}
+interface LoginArrival {
+  readonly contactId: string
 }
 /** The transport and session a public logout was captured in; it may act only while all of it holds. */
 interface LogoutFence {
@@ -104,6 +135,7 @@ interface LogoutFence {
   readonly generation: number
   readonly epoch: number
   readonly session: number
+  readonly loginArrival: LoginArrival | undefined
 }
 /** A local logout that still owes its remote Logout RPC. */
 interface PendingLogout extends LogoutFence { readonly manager: GrpcManager }
@@ -145,6 +177,7 @@ class PuppetService extends PUPPET.Puppet {
   private readonly roomCache = new RoomCacheCoordinator()
   private eventQueue: Promise<void> = Promise.resolve()
   private eventEpoch = 0
+  private loginArrival?: LoginArrival
   private eventsBlocked = false
   private checkpointQueue: Promise<void> = Promise.resolve()
   private pendingCheckpointRollback?: ReadonlyMap<string, string | undefined>
@@ -871,7 +904,8 @@ class PuppetService extends PUPPET.Puppet {
         this.log.warn('PuppetService', 'LOGIN %s replaces %s without LOGOUT; logging out locally first', contactId, this.currentUserId)
         this.cancelEndpointReplacement()
         try {
-          await this.logoutBase(`Replaced by ${contactId}`)
+          // The synthetic event belongs to A, not to the LOGIN B currently being processed.
+          await this.recovery.runEvent((): boolean => false, async (): Promise<void> => this.logoutBase(`Replaced by ${contactId}`))
         } catch (error) {
           // A's session is over locally either way; B must still log in.
           this.reportStreamError(error)
@@ -898,13 +932,11 @@ class PuppetService extends PUPPET.Puppet {
    * last one seen, the event epoch advances: queued events of the old account never run, its
    * listeners' later requests are superseded, and its gate session is fenced. The LOGIN itself
    * starts the new epoch, so it and everything after it belong to the new account only.
-   * LOGOUT then LOGIN is not a switch: the server ended the session, and the LOGOUT (with its
-   * reason) is still delivered in order.
+   * LOGOUT then LOGIN is not an epoch switch. An unprocessed same-account LOGOUT is superseded;
+   * an unprocessed logout of a different account can still deliver its original reason locally.
    */
-  private switchOnArrival (payload: string): void {
-    let contactId: unknown
-    try { contactId = (JSON.parse(payload) as { contactId?: unknown }).contactId } catch { return }
-    if (typeof contactId !== 'string' || !contactId) { return }
+  private switchOnArrival (contactId: string): void {
+    this.loginArrival = { contactId }
     // After a LOGOUT (seen here, or already processed) no account is current: never a switch.
     const seen = this.arrivedAccount?.epoch === this.eventEpoch ? this.arrivedAccount : undefined
     // A replay compares with the account it is replaying (it may lag the login if the cursor store
@@ -985,18 +1017,31 @@ class PuppetService extends PUPPET.Puppet {
     }
   }
 
-  /**
-   * `fence` ends the gate session: true for a public logout(). A LOGOUT event already ended it on
-   * arrival, and must not end the next session if one opened since.
-   */
-  private async logoutLocally (reason: string | undefined, epoch: number, eventBound = true, fence = true): Promise<void> {
-    this.lastAuthenticatedAccount = undefined
-    this.cancelEndpointReplacement()
+  private async acceptStreamLogout (reason: string | undefined, epoch: number, current: () => boolean): Promise<void> {
     await this.enqueueAuthentication(epoch, async (): Promise<void> => {
-      // Ends the session's requests but keeps the stream recoverable for SCAN and the next LOGIN.
-      if (fence) { this.recovery.endSession(reason ?? 'Account logged out') }
-      await this.logoutBase(reason)
-    }, eventBound)
+      if (!current()) { return }
+      let localLogout: Promise<void> | undefined
+      const commitLogout = (): void => {
+        this.uncommittedCheckpoint = undefined
+        this.lastAuthenticatedAccount = undefined
+        this.cancelEndpointReplacement()
+        // LOGOUT is a server-side notification, not a request to send the destructive Logout RPC.
+        // This event already fenced recovery on arrival. Never fence again in the worker.
+        localLogout = this.logoutBase(reason)
+      }
+      if (this.eventMetadataEnabled) {
+        try {
+          await this.retryEventWrite(epoch, async (): Promise<void> => this.withEventCheckpoint(
+            async (): Promise<void> => this.writeEventMetadata(CLEAR_EVENT_METADATA, epoch, current, commitLogout),
+          ))
+        } catch (error) {
+          // Local logout still applies after a cursor failure, if this event still owns it.
+          if (current()) { this.reportStreamError(error) }
+        }
+      }
+      if (!localLogout && current()) { commitLogout() }
+      await localLogout
+    })
   }
 
   private async waitForSdkLifecycle (): Promise<void> {
@@ -1032,15 +1077,28 @@ class PuppetService extends PUPPET.Puppet {
         // cursor) and restart preparation. LOGOUT has no snapshot and can be lost in either case.
         if (client !== this._grpcManager || this.eventsBlocked || this.restartRequested) { return }
         this.touchRecoveryStream()
-        if (event.getType() === grpcPuppet.EventType.EVENT_TYPE_LOGIN) {
-          // Any LOGIN — a repeated one for the same account included — makes the account live
-          // again: a logout that has not submitted its Logout RPC yet no longer owns it. Events of
-          // a retired manager never reach here, so this cannot cancel the current manager's intent.
-          this.pendingLogout = undefined
-          this.switchOnArrival(event.getPayload())
+        const type = event.getType()
+        const logout = type === grpcPuppet.EventType.EVENT_TYPE_LOGOUT ? parseStreamLogout(event.getPayload()) : undefined
+        const loginArrival = this.loginArrival
+        const activeAccount = logout
+          ? (this.arrivedAccount?.epoch === this.eventEpoch ? this.arrivedAccount.contactId : undefined)
+            ?? (this.isLoggedIn ? this.currentUserId : this.recovery.account)
+          : undefined
+        const mismatchedLogout = logout?.contactId !== undefined && activeAccount !== undefined && logout.contactId !== activeAccount
+        const ignoredLogout = type === grpcPuppet.EventType.EVENT_TYPE_LOGOUT && (!logout || mismatchedLogout)
+        const logoutAccount = logout?.contactId ?? activeAccount
+        // Without a wire session id, a LOGOUT after a same-account LOGIN is indistinguishable
+        // from a current logout. Legacy notifications without a contactId follow arrival order.
+        if (type === grpcPuppet.EventType.EVENT_TYPE_LOGIN) {
+          const contactId = parseEventObject(event.getPayload())?.['contactId']
+          if (isAccountId(contactId)) {
+            // A valid LOGIN, including the same account, supersedes unsubmitted Logout calls.
+            this.pendingLogout = undefined
+            this.switchOnArrival(contactId)
+          }
         }
-        if (event.getType() === grpcPuppet.EventType.EVENT_TYPE_REPLAY_COMPLETE) { this.barrierArrivedEpoch = this.eventEpoch }
-        if (event.getType() === grpcPuppet.EventType.EVENT_TYPE_LOGOUT) {
+        if (type === grpcPuppet.EventType.EVENT_TYPE_REPLAY_COMPLETE) { this.barrierArrivedEpoch = this.eventEpoch }
+        if (logout && !ignoredLogout) {
           this.arrivedAccount = { epoch: this.eventEpoch, contactId: null }
           // Reject requests for the ended session now, but keep the stream so SCAN keeps flowing.
           if (this.recovery.enabled) { this.recovery.endSession('Account logged out') }
@@ -1050,31 +1108,44 @@ class PuppetService extends PUPPET.Puppet {
         // the ended session, so requests its listeners make later are rejected, while the LOGIN
         // that opens the next session (and everything after it) is never fenced again.
         const session = this.recovery.session
-        const current = (): boolean => this.ownsEventWorker(client, epoch) && this.recovery.session === session
+        const ownsSession = (): boolean => this.ownsEventWorker(client, epoch) && this.recovery.session === session
+        // LOGOUT already fenced the session on arrival. A same-account LOGIN does not advance
+        // either epoch, so detect it using arrival identity even when recovery is disabled.
+        const current = (): boolean => ownsSession() && (!logout
+          || this.loginArrival === loginArrival
+          || (logoutAccount !== undefined && this.loginArrival?.contactId !== logoutAccount))
+        // Listeners can issue explicit requests, but they must not inherit a newer login's authority.
+        const rpcCurrent = (): boolean => ownsSession() && (!logout || this.loginArrival === loginArrival)
         // Session boundaries are applied on arrival only. A LOGOUT or LOGIN worker therefore never
         // fences again, and an event received in a session that has since ended (e.g. a duplicate
         // LOGIN queued before a LOGOUT) is discarded instead of reopening the ended session. In a
-        // backlog LOGOUT A, LOGIN B, LOGOUT B, the first two are discarded and the local logout runs
-        // once, for B's LOGOUT. Without recovery there is no gate and no session isolation.
-        const lifecycle = event.getType() === grpcPuppet.EventType.EVENT_TYPE_LOGIN
-          || event.getType() === grpcPuppet.EventType.EVENT_TYPE_LOGOUT
+        // backlog LOGOUT A, LOGIN B, LOGOUT B, the recovery gate discards the LOGIN and only
+        // B's LOGOUT owns the remaining local transition.
         this.eventQueue = this.eventQueue.then(async (): Promise<void> => {
           if (!this.ownsEventWorker(client, epoch)) { return undefined }
-          if (lifecycle && this.recovery.enabled && this.recovery.session !== session) {
-            this.log.warn('PuppetService', 'discarding %s received before the session ended', EVENT_TYPE_NAMES.get(event.getType()))
+          if (ignoredLogout) {
+            this.log.warn('PuppetService', 'discarding %s LOGOUT without fencing', logout ? 'mismatched' : 'malformed')
+            // A barrier counts consumed frames even when an inapplicable notification must
+            // not alter this account's persisted checkpoint.
+            const seq = event.getSeq()
+            if (seq && ownsSession()) { this.recoveryProcessedSeq = Math.max(this.recoveryProcessedSeq, seq) }
+            return undefined
+          }
+          if ((logout || type === grpcPuppet.EventType.EVENT_TYPE_LOGIN) && !current()) {
+            this.log.warn('PuppetService', 'discarding %s superseded by a newer session', EVENT_TYPE_NAMES.get(type))
             return undefined
           }
           try {
-            await this.recovery.runEvent(current, async (): Promise<void> => this.onGrpcStreamEvent(event, epoch, session))
+            await this.recovery.runEvent(rpcCurrent, async (): Promise<void> => this.onGrpcStreamEvent(event, epoch, session, current, logout))
           } catch (error) {
             if (!this.ownsEventWorker(client, epoch)) {
               this.log.error('PuppetService', 'superseded event worker failed: %s', error)
               return undefined
             }
             // A single event never stops the stream: skip it, alert, and keep processing.
-            await this.skipEvent(event, error, epoch, client)
+            await this.skipEvent(event, error, epoch, client, logout ? current : undefined)
           }
-          if (event.getSeq() && this.ownsEventWorker(client, epoch)) { this.recoveryProcessedSeq = event.getSeq() }
+          if (event.getSeq() && this.ownsEventWorker(client, epoch) && (!logout || current())) { this.recoveryProcessedSeq = event.getSeq() }
           return undefined
         }).catch((error: unknown): void => {
           this.eventDrainError ??= error instanceof Error ? error : new Error(String(error))
@@ -1179,8 +1250,13 @@ class PuppetService extends PUPPET.Puppet {
     }
   }
 
-  private async writeEventMetadata (changes: ReadonlyMap<string, string | undefined>, epoch?: number): Promise<void> {
-    const isCurrent = (): boolean => epoch === undefined || this.isEventEpochCurrent(epoch)
+  private async writeEventMetadata (
+    changes: ReadonlyMap<string, string | undefined>,
+    epoch?: number,
+    stillCurrent?: () => boolean,
+    afterWrite?: () => void,
+  ): Promise<void> {
+    const isCurrent = (): boolean => (epoch === undefined || this.isEventEpochCurrent(epoch)) && (stillCurrent?.() ?? true)
     if (!isCurrent()) { return }
     const previous = new Map<string, string | undefined>()
     for (const key of changes.keys()) { previous.set(key, await this._payloadStore.miscellaneous?.get(key)) }
@@ -1197,17 +1273,20 @@ class PuppetService extends PUPPET.Puppet {
       }
       throw error
     }
+    // The logout owner check and local projection must share the final write's continuation.
+    afterWrite?.()
   }
 
-  private async commitEventCheckpoint (seq: number, timestamp: string, epoch: number): Promise<void> {
+  private async commitEventCheckpoint (seq: number, timestamp: string, epoch: number, stillCurrent?: () => boolean): Promise<void> {
+    const current = (): boolean => this.isEventEpochCurrent(epoch) && (stillCurrent?.() ?? true)
     await this.withEventCheckpoint(async (): Promise<void> => {
-      if (!this.isEventEpochCurrent(epoch)) { return }
+      if (!current()) { return }
       const lastEventSeq = await this._payloadStore.miscellaneous?.get('lastEventSeq')
       if (lastEventSeq && seq <= Number(lastEventSeq) && seq !== 1) { return }
       await this.writeEventMetadata(new Map([
         [ 'lastEventTimestamp', timestamp ], [ 'lastEventSeq', String(seq) ],
-      ]), epoch)
-      if (this.isEventEpochCurrent(epoch) && this.uncommittedCheckpoint && seq >= this.uncommittedCheckpoint.seq) {
+      ]), epoch, stillCurrent)
+      if (current() && this.uncommittedCheckpoint && seq >= this.uncommittedCheckpoint.seq) {
         this.uncommittedCheckpoint = undefined
       }
     })
@@ -1247,25 +1326,31 @@ class PuppetService extends PUPPET.Puppet {
     }
   }
 
-  private async skipEvent (event: grpcPuppet.EventResponse, error: unknown, epoch: number, manager: GrpcManager): Promise<void> {
+  private async skipEvent (event: grpcPuppet.EventResponse, error: unknown, epoch: number, manager: GrpcManager, stillCurrent?: () => boolean): Promise<void> {
     const seq = event.getSeq()
     const type = EVENT_TYPE_NAMES.get(event.getType()) ?? String(event.getType())
     this.log.error('PuppetService', 'EVENT_SKIPPED seq=%s type=%s reason=%s', seq, type, error instanceof Error ? error.message : String(error))
     // Advance past the skipped event before notifying: an error listener may reset the stream,
     // and must not get the same event replayed. A failure here is overwritten by the next commit.
-    if (seq && this.eventMetadataEnabled && this.isEventEpochCurrent(epoch)) {
+    if (seq && this.eventMetadataEnabled && this.isEventEpochCurrent(epoch) && (stillCurrent?.() ?? true)) {
       const timestamp = String(Date.now())
       try {
-        await this.commitEventCheckpoint(seq, timestamp, epoch)
+        await this.commitEventCheckpoint(seq, timestamp, epoch, stillCurrent)
       } catch (checkpointError) {
-        this.uncommittedCheckpoint = { seq, timestamp, manager }
+        if (stillCurrent?.() ?? true) { this.uncommittedCheckpoint = { seq, timestamp, manager } }
         this.log.warn('PuppetService', 'checkpoint after skipped event %s failed: %s', seq, checkpointError)
       }
     }
     this.reportStreamError(error)
   }
 
-  private async onGrpcStreamEvent (event: grpcPuppet.EventResponse, epoch = this.eventEpoch, session = this.recovery.session): Promise<void> {
+  private async onGrpcStreamEvent (
+    event: grpcPuppet.EventResponse,
+    epoch = this.eventEpoch,
+    session = this.recovery.session,
+    current = (): boolean => this.isEventEpochCurrent(epoch),
+    logout?: StreamLogout,
+  ): Promise<void> {
     if (!this.isEventEpochCurrent(epoch)) { return }
 
     const type    = event.getType()
@@ -1305,29 +1390,17 @@ class PuppetService extends PUPPET.Puppet {
         break
       case grpcPuppet.EventType.EVENT_TYPE_LOGIN:
         {
-          const loginPayload = JSON.parse(payload) as PUPPET.payloads.EventLogin
-          await this.acceptLogin(loginPayload.contactId, epoch, session)
+          const contactId = parseEventObject(payload)?.['contactId']
+          if (!isAccountId(contactId)) { throw new Error('Invalid LOGIN account') }
+          await this.acceptLogin(contactId, epoch, session)
         }
         break
       case grpcPuppet.EventType.EVENT_TYPE_LOGOUT:
         {
-          const logoutPayload = JSON.parse(payload) as PUPPET.payloads.EventLogout
-          if (this.eventMetadataEnabled) {
-            try {
-              await this.retryEventWrite(epoch, async (): Promise<void> => this.resetMiscellaneousStoreData(epoch))
-            } catch (error) {
-              // The account is logged out either way; a stale cursor only costs a replay.
-              if (!this.isEventEpochCurrent(epoch)) { throw error }
-              this.reportStreamError(error)
-            }
-          }
-          const manager = this._grpcManager
-          await this.logoutLocally(logoutPayload.data, epoch, true, false)
-          if (manager && this.ownsEventWorker(manager, epoch)) {
-            // The server already ended this session, so it may reject the echo (e.g. "vid not
-            // signed"). That says nothing about the next session or about undelivered events.
-            void this.trackSdkLifecycle(async (): Promise<void> => manager.logout(), false)
-          }
+          const notification = logout ?? parseStreamLogout(payload)
+          if (!notification) { return }
+          await this.acceptStreamLogout(notification.reason, epoch, current)
+          if (!current()) { return }
         }
         break
       case grpcPuppet.EventType.EVENT_TYPE_DIRTY:
@@ -1461,27 +1534,45 @@ class PuppetService extends PUPPET.Puppet {
         this.log.error(`eventType ${type} unsupported! data: ${payload}`)
     }
     if (seq && this.isEventEpochCurrent(epoch) && this.eventMetadataEnabled) {
-      await this.retryEventWrite(epoch, async (): Promise<void> => this.commitEventCheckpoint(seq, timestamp, epoch))
+      const checkpointCurrent = type === grpcPuppet.EventType.EVENT_TYPE_LOGOUT ? current : undefined
+      await this.retryEventWrite(epoch, async (): Promise<void> => this.commitEventCheckpoint(seq, timestamp, epoch, checkpointCurrent))
     }
   }
 
   override async logout (reason?: string): Promise<void> {
+    const fence: LogoutFence = {
+      manager      : this._grpcManager,
+      generation   : this.authenticationGeneration,
+      epoch        : this.eventEpoch,
+      session      : this.recovery.session,
+      loginArrival : this.loginArrival,
+    }
+    const eventCurrent = this.recovery.captureEventCurrent()
     this.log.verbose('PuppetService', 'logout(%s)', reason ? `"${reason}"` : '')
-    if (!this.recovery.enabled) { return this.logoutLegacy(reason) }
-    return this.logoutOwned(reason)
+    if (!this.isLogoutRequestCurrent(fence, eventCurrent)) { throw new Error('Superseded logout request') }
+    if (!this.recovery.enabled) { return this.logoutLegacy(reason, fence, eventCurrent) }
+    return this.logoutOwned(reason, fence, eventCurrent)
   }
 
   /** Without recovery no session is fenced, so the Logout RPC needs no event owner of its own. */
-  private async logoutLegacy (reason?: string): Promise<void> {
-    const manager = this._grpcManager
-    const epoch = this.eventEpoch
-
-    await this.logoutLocally(reason, epoch, false)
-    if (!manager || manager !== this._grpcManager) { return }
+  private async logoutLegacy (reason: string | undefined, fence: LogoutFence, eventCurrent?: () => boolean): Promise<void> {
+    const current = (): boolean => this.isLogoutRequestCurrent(fence, eventCurrent)
+    await this.enqueueAuthentication(fence.epoch, async (): Promise<void> => {
+      if (!current()) { throw new Error('Superseded logout request') }
+      this.lastAuthenticatedAccount = undefined
+      this.cancelEndpointReplacement()
+      await this.logoutBase(reason)
+    }, false)
+    if (!current()) { throw new Error('Superseded logout request') }
+    const manager = fence.manager
+    if (!manager) { return }
 
     try {
       // The caller receives this failure; restart preparation reports it too.
-      await this.trackSdkLifecycle(async (): Promise<void> => manager.logout())
+      await this.trackSdkLifecycle(async (): Promise<void> => {
+        if (!current()) { throw new Error('Superseded logout request') }
+        await manager.logout()
+      })
     } catch (e) {
       this.log.error('PuppetService', 'logout() RPC failed: %s', e)
       throw e
@@ -1495,15 +1586,7 @@ class PuppetService extends PUPPET.Puppet {
    * this logout instead, and is dropped untouched when a newer LOGIN, switch, logout or transport
    * takes the account over first.
    */
-  private async logoutOwned (reason?: string): Promise<void> {
-    const fence: LogoutFence = {
-      manager    : this._grpcManager,
-      generation : this.authenticationGeneration,
-      epoch      : this.eventEpoch,
-      session    : this.recovery.session,
-    }
-    const eventCurrent = this.recovery.captureEventCurrent()
-    if (!this.isLogoutRequestCurrent(fence, eventCurrent)) { throw new Error('Superseded logout request') }
+  private async logoutOwned (reason: string | undefined, fence: LogoutFence, eventCurrent?: () => boolean): Promise<void> {
     let loggedOut: boolean | undefined
     let intent: PendingLogout | undefined
     await this.enqueueAuthentication(fence.epoch, async (): Promise<void> => {
@@ -1517,7 +1600,7 @@ class PuppetService extends PUPPET.Puppet {
       if (!manager) { await this.logoutBase(reason); return }
       // Published after this logout's own fence and before logoutBase runs a listener: a LOGIN
       // arriving while a listener suspends must cancel a Logout that no longer owns the account.
-      const pending: PendingLogout = { manager, generation: fence.generation, epoch: fence.epoch, session: this.recovery.session }
+      const pending: PendingLogout = { ...fence, manager, session: this.recovery.session }
       intent = pending
       this.pendingLogout = pending
       try { await this.logoutBase(reason) } catch (error) {
@@ -1554,6 +1637,7 @@ class PuppetService extends PUPPET.Puppet {
       && fence.generation === this.authenticationGeneration
       && fence.epoch === this.eventEpoch
       && this.recovery.session === fence.session
+      && fence.loginArrival === this.loginArrival
   }
 
   /** True while this logout is still the one owed a remote Logout: no newer session or transport. */
@@ -5185,9 +5269,7 @@ class PuppetService extends PUPPET.Puppet {
     }
     // The previous account's cursor no longer applies.
     this.uncommittedCheckpoint = undefined
-    await this.withEventCheckpoint(async (): Promise<void> => this.writeEventMetadata(new Map([
-      [ 'lastEventSeq', undefined ], [ 'lastEventTimestamp', undefined ], [ 'accountId', undefined ],
-    ]), epoch))
+    await this.withEventCheckpoint(async (): Promise<void> => this.writeEventMetadata(CLEAR_EVENT_METADATA, epoch))
   }
 
 }

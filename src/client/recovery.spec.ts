@@ -668,7 +668,10 @@ test('listeners of the new session can call the server after a switch or a same-
         if (contactId === next) { record('login', service.messageSendText('contact', 'from login listener')) }
       })
       service.once('message', (): void => { record('message', service.messageSendText('contact', 'from message listener')) })
-      if (path === 'relogin') { stream!.write(response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'A', data: 'kicked' })) }
+      if (path === 'relogin') {
+        stream!.write(response(puppet.EventType.EVENT_TYPE_LOGOUT, { contactId: 'A', data: 'kicked' }))
+        await until((): boolean => !service.isLoggedIn)
+      }
       stream!.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: next }))
       stream!.write(response(puppet.EventType.EVENT_TYPE_MESSAGE, { messageId: `from-${next}` }))
       await until((): boolean => results.length === 2)
