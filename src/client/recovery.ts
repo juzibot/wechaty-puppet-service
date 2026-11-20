@@ -45,6 +45,12 @@ function signalsOf (context: RequestContext): readonly AbortSignal[] {
 
 const requests = new AsyncLocalStorage<RequestContext>()
 const events = new AsyncLocalStorage<EventContext>()
+/** Internal snapshot for lifecycle retries, including all enclosing cancellation sources. */
+export function captureRecoveryRequestContext (): { deadline?: number, signals: readonly AbortSignal[] } {
+  const context = requests.getStore() ?? {}
+  return { deadline: context.deadline, signals: signalsOf(context) }
+}
+
 const controls = new Set([ 'Event', 'Start', 'Stop', 'Logout', 'Ding', 'EnterVerifyCode', 'CancelVerifyCode', 'RefreshQRCode', 'EnterVerifySlide', 'EnterSameNetVerify' ])
 // Only side-effect-free reads required by login/cache invalidation/replay listeners.
 const replayReads = new Set([

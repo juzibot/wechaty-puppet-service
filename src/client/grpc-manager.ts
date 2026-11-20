@@ -46,7 +46,7 @@ import {
 }                                         from '../auth/ca.js'
 
 import type { PuppetServiceOptions } from './puppet-service.js'
-import type { RecoveryGate } from './recovery.js'
+import type { RecoveryGate, RecoveryRequestContext } from './recovery.js'
 import {
   toError,
   type TransportReleaseState,
@@ -274,8 +274,14 @@ class GrpcManager extends EventEmitter {
     this._log.verbose('GrpcManager', 'stop() ... done')
   }
 
-  async logout (): Promise<void> {
-    await this.runLifecycleRpc(callback => this.client.logout(new puppet.LogoutRequest(), new grpc.Metadata(), this.lifecycleCallOptions(), callback))
+  async logout (context?: RecoveryRequestContext): Promise<void> {
+    const metadata = new grpc.Metadata()
+    if (context) { metadata.set('x-juzi-recovery-capability', 'admission-reject-v1') }
+    const options = this.lifecycleCallOptions()
+    if (context?.deadline !== undefined) {
+      options.deadline = Math.min(Number(options.deadline), context.deadline)
+    }
+    await this.runLifecycleRpc(callback => this.client.logout(new puppet.LogoutRequest(), metadata, options, callback), false, context?.signal)
   }
 
   cancelLifecycleCalls (): void {
@@ -361,16 +367,22 @@ class GrpcManager extends EventEmitter {
   private async runLifecycleRpc (
     operation: (callback: (error: grpc.ServiceError | null) => void) => grpc.ClientUnaryCall,
     allowStopping = false,
+    signal?: AbortSignal,
   ): Promise<void> {
     this.assertNotAbandoned()
     if (this.lifecycleStopping && !allowStopping) { throw new Error('Manager lifecycle is stopping') }
+    if (signal?.aborted) { throw new Error('Lifecycle request cancelled') }
     let call: grpc.ClientUnaryCall | undefined
+    const cancel = (): void => { call?.cancel() }
     try {
+      signal?.addEventListener('abort', cancel, { once: true })
       await new Promise<void>((resolve, reject): void => {
         call = operation((error): void => { error ? reject(error) : resolve() })
         this.lifecycleCalls.add(call)
+        if (signal?.aborted) { call.cancel() }
       })
     } finally {
+      signal?.removeEventListener('abort', cancel)
       if (call) { this.lifecycleCalls.delete(call) }
     }
   }
