@@ -128,6 +128,7 @@ interface ListenerDrain {
 }
 interface LoginArrival {
   readonly contactId: string
+  readonly timestamp: number
 }
 /** The transport and session a public logout was captured in; it may act only while all of it holds. */
 interface LogoutFence {
@@ -215,6 +216,7 @@ class PuppetService extends PUPPET.Puppet {
   private barrierArrivedEpoch?: number
   private endpointReplacement?: { old: GrpcManager, sealed: boolean, cancel: () => void, oldLost: boolean, oldError?: unknown }
   private lastAuthenticatedAccount?: string
+  private lastLoginTimestamp = 0
   // Set between a public logout's own session fence and the settlement of the Logout RPC it owes.
   private pendingLogout?: PendingLogout
   private readonly retiredManagers = new Set<GrpcManager>()
@@ -918,10 +920,12 @@ class PuppetService extends PUPPET.Puppet {
       if (this.isLoggedIn) {
         if (this.recovery.enabled) { this.admitRecoveryLogin(contactId) }
         this.lastAuthenticatedAccount = contactId
+        this.log.info('PuppetService', 'LOGIN %s ignored: same account is already logged in', contactId)
         return
       }
       if (this.recovery.enabled) { this.admitRecoveryLogin(contactId) }
       this.lastAuthenticatedAccount = contactId
+      this.lastLoginTimestamp = Date.now()
       this.login(contactId)
     })
   }
@@ -936,7 +940,7 @@ class PuppetService extends PUPPET.Puppet {
    * an unprocessed logout of a different account can still deliver its original reason locally.
    */
   private switchOnArrival (contactId: string): void {
-    this.loginArrival = { contactId }
+    this.loginArrival = { contactId, timestamp: Date.now() }
     // After a LOGOUT (seen here, or already processed) no account is current: never a switch.
     const seen = this.arrivedAccount?.epoch === this.eventEpoch ? this.arrivedAccount : undefined
     // A replay compares with the account it is replaying (it may lag the login if the cursor store
@@ -1066,6 +1070,33 @@ class PuppetService extends PUPPET.Puppet {
     })
   }
 
+  /** A fresh WorkEasy login QR ends only the cached local session, never the remote account. */
+  private workEasyScanLogout (payload: string): StreamLogout | undefined {
+    const token = envVars.WECHATY_PUPPET_SERVICE_TOKEN(this.options.token)
+    if (!token.startsWith('puppet_workeasy_') || !this.isLoggedIn) { return undefined }
+    const scan = parseEventObject(payload)
+    if (scan?.['type'] !== PUPPET.types.ScanType.Login || scan['status'] !== PUPPET.types.ScanStatus.Waiting
+      || typeof scan['qrcode'] !== 'string' || !scan['qrcode'].trim()) { return undefined }
+    const created = scan['createTimestamp']
+    const expires = scan['expireTimestamp']
+    const now = Date.now()
+    // Include a LOGIN already received but still queued: a late QR must not fence that login.
+    const latestLogin = Math.max(this.lastLoginTimestamp, this.loginArrival?.timestamp ?? 0)
+    const reason = typeof created !== 'number' || !Number.isSafeInteger(created) || created <= 0
+      || typeof expires !== 'number' || !Number.isSafeInteger(expires) || expires <= created
+      ? 'invalid timestamps'
+      : created <= latestLogin ? 'older than latest LOGIN'
+        : created > now ? 'future creation time'
+          : expires <= now ? 'expired QR' : undefined
+    if (reason) {
+      this.log.verbose('PuppetService', 'WorkEasy login SCAN kept local session: %s', reason)
+      return undefined
+    }
+    this.log.info('PuppetService', 'WorkEasy login SCAN accepted as local logout boundary: account=%s status=%s created=%s lastLogin=%s',
+      this.currentUserId, scan['status'], created, this.lastLoginTimestamp)
+    return { contactId: this.currentUserId, reason: '账号需要重新扫码登录' }
+  }
+
   protected bridgeGrpcEventStream (client: GrpcManager): void {
     this.log.verbose('PuppetService', 'bridgeGrpcEventStream(client)')
 
@@ -1078,7 +1109,8 @@ class PuppetService extends PUPPET.Puppet {
         if (client !== this._grpcManager || this.eventsBlocked || this.restartRequested) { return }
         this.touchRecoveryStream()
         const type = event.getType()
-        const logout = type === grpcPuppet.EventType.EVENT_TYPE_LOGOUT ? parseStreamLogout(event.getPayload()) : undefined
+        const scanLogout = type === grpcPuppet.EventType.EVENT_TYPE_SCAN ? this.workEasyScanLogout(event.getPayload()) : undefined
+        const logout = type === grpcPuppet.EventType.EVENT_TYPE_LOGOUT ? parseStreamLogout(event.getPayload()) : scanLogout
         const loginArrival = this.loginArrival
         const activeAccount = logout
           ? (this.arrivedAccount?.epoch === this.eventEpoch ? this.arrivedAccount.contactId : undefined)
@@ -1111,7 +1143,8 @@ class PuppetService extends PUPPET.Puppet {
         const ownsSession = (): boolean => this.ownsEventWorker(client, epoch) && this.recovery.session === session
         // LOGOUT already fenced the session on arrival. A same-account LOGIN does not advance
         // either epoch, so detect it using arrival identity even when recovery is disabled.
-        const current = (): boolean => ownsSession() && (!logout
+        // A QR boundary must clear the old identity before a following same-account LOGIN runs.
+        const current = (): boolean => ownsSession() && (!logout || !!scanLogout
           || this.loginArrival === loginArrival
           || (logoutAccount !== undefined && this.loginArrival?.contactId !== logoutAccount))
         // Listeners can issue explicit requests, but they must not inherit a newer login's authority.
@@ -1495,6 +1528,10 @@ class PuppetService extends PUPPET.Puppet {
         this.emit('room-announce', JSON.parse(payload) as PUPPET.payloads.EventRoomAnnounce)
         break
       case grpcPuppet.EventType.EVENT_TYPE_SCAN:
+        if (logout) {
+          await this.acceptStreamLogout(logout.reason, epoch, current)
+          if (!current()) { return }
+        }
         this.emit('scan', JSON.parse(payload) as PUPPET.payloads.EventScan)
         break
       case grpcPuppet.EventType.EVENT_TYPE_TAG:
@@ -1534,7 +1571,7 @@ class PuppetService extends PUPPET.Puppet {
         this.log.error(`eventType ${type} unsupported! data: ${payload}`)
     }
     if (seq && this.isEventEpochCurrent(epoch) && this.eventMetadataEnabled) {
-      const checkpointCurrent = type === grpcPuppet.EventType.EVENT_TYPE_LOGOUT ? current : undefined
+      const checkpointCurrent = logout || type === grpcPuppet.EventType.EVENT_TYPE_LOGOUT ? current : undefined
       await this.retryEventWrite(epoch, async (): Promise<void> => this.commitEventCheckpoint(seq, timestamp, epoch, checkpointCurrent))
     }
   }
