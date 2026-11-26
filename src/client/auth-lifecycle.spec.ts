@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 
 import { grpc, puppet } from '@juzi/wechaty-grpc'
+import * as PUPPET from '@juzi/wechaty-puppet'
 import { test, sinon } from 'tstest'
 
 import { GrpcManager } from './grpc-manager.js'
@@ -936,3 +937,216 @@ test('LOGIN B replacing A still logs in when a logout listener throws', async t 
     t.pass('the switch completes despite the listener failure')
   } finally { await bounded(service.cleanup()); sinon.restore() }
 })
+
+async function workEasyScanFixture (recoveryEnabled: boolean, tokenPrefix = 'puppet_workeasy_') {
+  const server = new grpc.Server()
+  let stream!: grpc.ServerWritableStream<puppet.EventRequest, puppet.EventResponse>
+  let remoteLogouts = 0
+  server.addService(puppet.PuppetService, {
+    event: (call: typeof stream): void => {
+      stream = call
+      call.write(response(puppet.EventType.EVENT_TYPE_HEARTBEAT, {}))
+    },
+    start: (_call: grpc.ServerUnaryCall<puppet.StartRequest, puppet.StartResponse>, callback: grpc.sendUnaryData<puppet.StartResponse>): void => {
+      stream.write(response(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' }))
+      stream.write(response(puppet.EventType.EVENT_TYPE_READY, {}))
+      stream.write(response(puppet.EventType.EVENT_TYPE_REPLAY_COMPLETE, { accountId: 'A', throughSeq: 0 }))
+      callback(null, new puppet.StartResponse())
+    },
+    logout: (_call: grpc.ServerUnaryCall<puppet.LogoutRequest, puppet.LogoutResponse>, callback: grpc.sendUnaryData<puppet.LogoutResponse>): void => {
+      remoteLogouts++
+      callback(null, new puppet.LogoutResponse())
+    },
+    stop: (_call: grpc.ServerUnaryCall<puppet.StopRequest, puppet.StopResponse>, callback: grpc.sendUnaryData<puppet.StopResponse>): void => { callback(null, new puppet.StopResponse()) },
+  })
+  const port = await bounded(new Promise<number>((resolve, reject): void => {
+    server.bindAsync('127.0.0.1:0', grpc.ServerCredentials.createInsecure(), (error, value): void => { error ? reject(error) : resolve(value) })
+  }))
+  const service = new AuthService({ token: `${tokenPrefix}${randomUUID()}`, endpoint: `127.0.0.1:${port}`, tls: { disable: true }, recovery: { enabled: recoveryEnabled } })
+  // Keep the real transport, authentication queue and cursor store; payload-cache loading is unrelated.
+  sinon.stub(service.store, 'start').resolves(); sinon.stub(service.store, 'stop').resolves()
+  const events: string[] = []
+  const scanLoginStates: boolean[] = []
+  const errors: unknown[] = []
+  let lastDrainedAt = 0
+  service.on('login', ({ contactId }): void => { events.push(`login:${contactId}`) })
+  service.on('logout', ({ contactId }): void => { events.push(`logout:${contactId}`) })
+  service.on('scan', (): void => { scanLoginStates.push(service.isLoggedIn); events.push('scan') })
+  service.on('error', (error): void => { errors.push(error) })
+  const send = (type: ReturnType<puppet.EventResponse['getType']>, payload: unknown): void => { stream.write(response(type, payload)) }
+  const flush = async (): Promise<void> => {
+    const received = deferred()
+    service.once('dong', received.resolve)
+    send(puppet.EventType.EVENT_TYPE_DONG, { data: 'scan test drained' })
+    await bounded(received.promise)
+    lastDrainedAt = Date.now()
+  }
+  const freshScan = async (): Promise<PUPPET.payloads.EventScan> => {
+    // Wait for a newer millisecond instead of assuming the event loop advances Date.now().
+    await until((): boolean => Date.now() > lastDrainedAt, 'new QR creation time')
+    const now = Date.now()
+    return {
+      type: PUPPET.types.ScanType.Login,
+      status: PUPPET.types.ScanStatus.Waiting,
+      qrcode: 'synthetic-login-qr',
+      timestamp: now,
+      createTimestamp: now,
+      expireTimestamp: now + 600_000,
+    }
+  }
+  const verify = async (): Promise<void> => {
+    await service.prepareForRestart({ deadline: Date.now() + 2000 })
+    assert.equal(remoteLogouts, 0, 'local cleanup must never send the remote Logout RPC')
+    assert.deepEqual(errors, [], 'authentication events must not report stream errors')
+  }
+  const close = async (): Promise<void> => {
+    try { await bounded(service.cleanup()) } finally { server.forceShutdown(); sinon.restore() }
+  }
+  try {
+    await bounded(service.onStart())
+    await flush()
+    assert.equal(service.currentUserId, 'A')
+    return { service, events, scanLoginStates, send, flush, freshScan, verify, close }
+  } catch (error) {
+    await close()
+    throw error
+  }
+}
+
+for (const recoveryEnabled of [ false, true ]) {
+  test(`WorkEasy new login QR resets cached identity without LOGOUT, recovery=${recoveryEnabled}`, async t => {
+    const f = await workEasyScanFixture(recoveryEnabled)
+    try {
+      f.send(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' })
+      await f.flush()
+      assert.deepEqual(f.events, [ 'login:A' ], 'ordinary duplicate LOGIN remains idempotent')
+      const scan = await f.freshScan()
+      f.send(puppet.EventType.EVENT_TYPE_SCAN, scan)
+      await f.flush()
+      assert.equal(f.service.isLoggedIn, false)
+      assert.deepEqual(f.events, [ 'login:A', 'logout:A', 'scan' ], 'local logout precedes SCAN')
+      assert.deepEqual(f.scanLoginStates, [ false ])
+      f.send(puppet.EventType.EVENT_TYPE_SCAN, scan)
+      await f.flush()
+      assert.equal(f.events.filter(event => event === 'logout:A').length, 1, 'repeated QR does not repeat logout')
+      f.send(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' })
+      f.send(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' })
+      f.send(puppet.EventType.EVENT_TYPE_READY, {})
+      await f.flush()
+      assert.equal(f.service.currentUserId, 'A')
+      assert.equal(f.events.filter(event => event === 'login:A').length, 2, 'the new scan cycle emits one new login')
+      if (recoveryEnabled) { assert.equal(f.service.recoveryState.status, 'ready') }
+      await f.verify()
+      t.pass('same-account relogin works without a server LOGOUT or a destructive RPC')
+    } finally { await f.close() }
+  })
+
+  test(`WorkEasy adjacent SCAN and LOGIN preserve authentication order, recovery=${recoveryEnabled}`, async t => {
+    const f = await workEasyScanFixture(recoveryEnabled)
+    try {
+      f.send(puppet.EventType.EVENT_TYPE_SCAN, await f.freshScan())
+      f.send(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' })
+      f.send(puppet.EventType.EVENT_TYPE_READY, {})
+      await f.flush()
+      assert.deepEqual(f.events, [ 'login:A', 'logout:A', 'scan', 'login:A' ])
+      assert.deepEqual(f.scanLoginStates, [ false ])
+      assert.equal(f.service.currentUserId, 'A')
+      if (recoveryEnabled) { assert.equal(f.service.recoveryState.status, 'ready') }
+      await f.verify()
+      t.pass('a following same-account LOGIN cannot supersede the required local cleanup')
+    } finally { await f.close() }
+  })
+
+  test(`WorkEasy old QR cannot log out a completed relogin, recovery=${recoveryEnabled}`, async t => {
+    const f = await workEasyScanFixture(recoveryEnabled)
+    try {
+      const scan = await f.freshScan()
+      f.send(puppet.EventType.EVENT_TYPE_SCAN, scan)
+      await f.flush()
+      f.send(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' })
+      f.send(puppet.EventType.EVENT_TYPE_READY, {})
+      await f.flush()
+      const before = f.events.slice()
+      f.send(puppet.EventType.EVENT_TYPE_SCAN, scan)
+      await f.flush()
+      assert.equal(f.service.currentUserId, 'A')
+      assert.deepEqual(f.events, [ ...before, 'scan' ], 'the stale QR is forwarded without another logout')
+      assert.deepEqual(f.scanLoginStates, [ false, true ])
+      await f.verify()
+      t.pass('a delayed QR cannot clear the newer local identity')
+    } finally { await f.close() }
+  })
+
+  test(`WorkEasy old QR cannot fence a LOGIN already received, recovery=${recoveryEnabled}`, async t => {
+    const f = await workEasyScanFixture(recoveryEnabled)
+    try {
+      const scan = await f.freshScan()
+      await until((): boolean => Date.now() > scan.createTimestamp!, 'LOGIN newer than QR')
+      f.send(puppet.EventType.EVENT_TYPE_LOGIN, { contactId: 'A' })
+      f.send(puppet.EventType.EVENT_TYPE_SCAN, scan)
+      await f.flush()
+      assert.equal(f.service.currentUserId, 'A')
+      assert.deepEqual(f.events, [ 'login:A', 'scan' ])
+      assert.deepEqual(f.scanLoginStates, [ true ])
+      await f.verify()
+      t.pass('a duplicate LOGIN confirms the live session before an older QR arrives')
+    } finally { await f.close() }
+  })
+
+  test(`WorkEasy expired new QR preserves the logged-in session, recovery=${recoveryEnabled}`, async t => {
+    const f = await workEasyScanFixture(recoveryEnabled)
+    try {
+      const scan = await f.freshScan()
+      scan.expireTimestamp = scan.createTimestamp! + 1
+      await until((): boolean => Date.now() > scan.expireTimestamp!, 'QR expiry')
+      f.send(puppet.EventType.EVENT_TYPE_SCAN, scan)
+      await f.flush()
+      assert.equal(f.service.currentUserId, 'A')
+      assert.deepEqual(f.events, [ 'login:A', 'scan' ])
+      assert.deepEqual(f.scanLoginStates, [ true ])
+      await f.verify()
+      t.pass('expiry is checked even when QR creation is newer than the login')
+    } finally { await f.close() }
+  })
+
+  test(`WorkEasy non-login or invalid QR preserves the local session, recovery=${recoveryEnabled}`, async t => {
+    const f = await workEasyScanFixture(recoveryEnabled)
+    try {
+      const scan = await f.freshScan()
+      const future = Date.now() + 600_000
+      const variants: [string, Record<string, unknown>][] = [
+        [ 'verification', { type: PUPPET.types.ScanType.Verify } ],
+        [ 'idle', { status: PUPPET.types.ScanStatus.Idle } ],
+        [ 'scanned', { status: PUPPET.types.ScanStatus.Scanned } ],
+        [ 'confirmed', { status: PUPPET.types.ScanStatus.Confirmed } ],
+        [ 'blank QR', { qrcode: ' ' } ],
+        [ 'missing creation', { createTimestamp: undefined } ],
+        [ 'missing expiry', { expireTimestamp: undefined } ],
+        [ 'invalid creation', { createTimestamp: 'not a timestamp' } ],
+        [ 'invalid expiry order', { expireTimestamp: scan.createTimestamp! - 1 } ],
+        [ 'future creation', { createTimestamp: future, expireTimestamp: future + 600_000 } ],
+      ]
+      for (const [ label, change ] of variants) {
+        f.send(puppet.EventType.EVENT_TYPE_SCAN, { ...scan, ...change })
+        await f.flush()
+        assert.equal(f.service.currentUserId, 'A', label)
+        assert.equal(f.events.filter(event => event === 'logout:A').length, 0, label)
+      }
+      await f.verify()
+      t.pass('verification, other scan states and invalid QR metadata do not end a session')
+    } finally { await f.close() }
+  })
+
+  test(`non-WorkEasy login QR preserves existing behavior, recovery=${recoveryEnabled}`, async t => {
+    const f = await workEasyScanFixture(recoveryEnabled, 'puppet_workhermit_')
+    try {
+      f.send(puppet.EventType.EVENT_TYPE_SCAN, await f.freshScan())
+      await f.flush()
+      assert.equal(f.service.currentUserId, 'A')
+      assert.deepEqual(f.events, [ 'login:A', 'scan' ])
+      assert.deepEqual(f.scanLoginStates, [ true ])
+      await f.verify()
+      t.pass('the new local logout is limited to WorkEasy')
+    } finally { await f.close() }
+  })
+}
