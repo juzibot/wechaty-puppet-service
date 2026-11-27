@@ -307,8 +307,10 @@ export class RecoveryGate {
         clearTimeout(timer)
         if (Number.isFinite(context.deadline)) { timer = setTimeout(check, Math.max(1, context.deadline! - Date.now())) }
       }
-      if (!bypass && this.listeners.size >= this.maxPendingRequests) { reject(new AdmissionError('Recovery request capacity exhausted')); return }
-      if (!bypass) { this.listeners.add(check) }
+      if (!bypass && this.value.status === 'recovering') {
+        if (this.listeners.size >= this.maxPendingRequests) { reject(new AdmissionError('Recovery request capacity exhausted')); return }
+        this.listeners.add(check)
+      }
       for (const signal of signals) { signal.addEventListener('abort', check, { once: true }) }
       check()
     })
@@ -387,6 +389,14 @@ export class RecoveryGate {
     let reserved = false
     let bytes = 0
     let messages: PendingMessage[] = []
+    const reserve = (): void => {
+      if (finished || bypass || reserved || this.value.status !== 'recovering') { return }
+      if (this.pendingRequests >= this.maxPendingRequests) { throw new AdmissionError('Recovery request capacity exhausted') }
+      if (this.pendingBytes + bytes > this.maxPendingBytes) { throw new AdmissionError('Recovery payload capacity exhausted') }
+      this.pendingRequests++
+      this.pendingBytes += bytes
+      reserved = true
+    }
     let rejectCall: (error: unknown) => void = (): void => {}
     const abort = (): void => {
       controller.abort()
@@ -399,8 +409,12 @@ export class RecoveryGate {
         if (started) { next(message); return }
         try {
           const size = options.method_definition.requestSerialize(message).byteLength
-          if (!bypass && this.pendingBytes + size > this.maxPendingBytes) { throw new AdmissionError('Recovery payload capacity exhausted') }
-          if (!bypass) { this.pendingBytes += size; bytes += size }
+          if (!bypass) {
+            if (reserved && this.pendingBytes + size > this.maxPendingBytes) { throw new AdmissionError('Recovery payload capacity exhausted') }
+            if (reserved) { this.pendingBytes += size }
+            bytes += size
+            reserve()
+          }
           messages.push({ message, next })
         } catch (error) { rejectCall(error) }
       },
@@ -409,8 +423,11 @@ export class RecoveryGate {
           if (!started) { rejectCall(new Error('Restart preparation prevents deferred submission')) }
         }
         const release = (): void => {
-          if (reserved) { this.pendingRequests--; reserved = false }
-          this.pendingBytes -= bytes
+          if (reserved) {
+            this.pendingRequests--
+            this.pendingBytes -= bytes
+            reserved = false
+          }
           bytes = 0
         }
         const cleanup = (): void => {
@@ -432,10 +449,7 @@ export class RecoveryGate {
             metadata: new grpc.Metadata(),
           })
         }
-        if (!bypass) {
-          if (this.pendingRequests >= this.maxPendingRequests) { rejectCall(new AdmissionError('Recovery request capacity exhausted')); return }
-          this.pendingRequests++; reserved = true
-        }
+        try { reserve() } catch (error) { rejectCall(error); return }
         for (const signal of signals) { signal.addEventListener('abort', abort, { once: true }) }
         admission?.retrySignal?.addEventListener('abort', cancelWaitingRetry, { once: true })
         if (admission?.retrySignal?.aborted) { cancelWaitingRetry() }
@@ -443,6 +457,8 @@ export class RecoveryGate {
         const send = async (): Promise<void> => {
           await this.waitForAttempt(notBefore, deadline, controller.signal)
           while (true) {
+            // ready calls may already have buffered messages when recovery starts.
+            reserve()
             await this.wait({ deadline, signal: controller.signal }, bypass)
             if (bypass || this.value.status !== 'recovering') { break }
           }
