@@ -26,5 +26,6 @@ export default PuppetService
 export { withRecoveryRequestContext } from './client/recovery.js'
 export type { RecoveryOptions, RecoveryRequestContext, RecoveryState } from './client/recovery.js'
 export type { PuppetServiceOptions } from './client/puppet-service.js'
+export type { LogoutRetryPolicy } from './client/logout-retry.js'
 export type { TransportStartOptions } from './client/transport-start.js'
 export type { TransportStopOptions, TransportStopReceipt } from './client/transport-stop.js'

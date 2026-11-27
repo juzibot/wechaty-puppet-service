@@ -61,6 +61,8 @@ import { settleTransportStop, transportStopTimeout } from './transport-stop.js'
 import type { TransportStopOptions, TransportStopReceipt } from './transport-stop.js'
 import { RecoveryGate, withRecoveryRequestContext } from './recovery.js'
 import type { RecoveryOptions, RecoveryRequestContext, RecoveryState } from './recovery.js'
+import { retryLogout } from './logout-retry.js'
+import type { LogoutRetryPolicy } from './logout-retry.js'
 import { PayloadStore } from './payload-store.js'
 import { RoomCacheCoordinator, RoomCacheOperationError } from './room-cache-coordinator.js'
 import { OptionalBooleanUnwrapper, OptionalBooleanWrapper, callRecordPbToPayload, channelPayloadToPb, channelPbToPayload, chatHistoryPbToPayload, contactPbToPayload, postPayloadToPb, roomMemberPbToPayload, urlLinkPbToPayload, channelCardPayloadToPb, channelCardPbToPayload, miniProgramPayloadToPb, urlLinkPayloadToPb, locationPayloadToPb, roomPbToPayload, isEventRoomMemberLoadPayload } from '../utils/pb-payload-helper.js'
@@ -137,6 +139,7 @@ interface LogoutFence {
   readonly epoch: number
   readonly session: number
   readonly loginArrival: LoginArrival | undefined
+  readonly retryIntent?: object
 }
 /** A local logout that still owes its remote Logout RPC. */
 interface PendingLogout extends LogoutFence { readonly manager: GrpcManager }
@@ -219,6 +222,8 @@ class PuppetService extends PUPPET.Puppet {
   private lastLoginTimestamp = 0
   // Set between a public logout's own session fence and the settlement of the Logout RPC it owes.
   private pendingLogout?: PendingLogout
+  private logoutRetryIntent?: object
+  private retryingLogout?: { current(): boolean, confirmed: boolean }
   private readonly retiredManagers = new Set<GrpcManager>()
 
   get recoveryState (): RecoveryState { return this.recovery.state }
@@ -1131,6 +1136,8 @@ class PuppetService extends PUPPET.Puppet {
         }
         if (type === grpcPuppet.EventType.EVENT_TYPE_REPLAY_COMPLETE) { this.barrierArrivedEpoch = this.eventEpoch }
         if (logout && !ignoredLogout) {
+          // Only a notification still owned by the original logout can confirm its retry.
+          if (type === grpcPuppet.EventType.EVENT_TYPE_LOGOUT && this.retryingLogout?.current()) { this.retryingLogout.confirmed = true }
           this.arrivedAccount = { epoch: this.eventEpoch, contactId: null }
           // Reject requests for the ended session now, but keep the stream so SCAN keeps flowing.
           if (this.recovery.enabled) { this.recovery.endSession('Account logged out') }
@@ -1577,22 +1584,37 @@ class PuppetService extends PUPPET.Puppet {
   }
 
   override async logout (reason?: string): Promise<void> {
+    return this.logoutOnce(reason)
+  }
+
+  /** Opt-in protective logout: local cleanup once, bounded retries of proven unsubmitted RPCs. */
+  async logoutWithRetry (reason?: string, policy: LogoutRetryPolicy = {}): Promise<void> {
+    return withRecoveryRequestContext({ deadline: Date.now() + (policy.timeoutMilliseconds ?? 15_000) },
+      async (): Promise<void> => this.logoutOnce(reason, policy))
+  }
+
+  private async logoutOnce (reason?: string, retryPolicy?: LogoutRetryPolicy): Promise<void> {
+    const eventCurrent = this.recovery.captureEventCurrent()
+    // A stale listener cannot revoke a newer protective logout's retry intent.
+    if (eventCurrent && !eventCurrent()) { throw new Error('Superseded logout request') }
+    const retryIntent = retryPolicy ? {} : undefined
+    this.logoutRetryIntent = retryIntent
     const fence: LogoutFence = {
       manager      : this._grpcManager,
       generation   : this.authenticationGeneration,
       epoch        : this.eventEpoch,
       session      : this.recovery.session,
       loginArrival : this.loginArrival,
+      retryIntent,
     }
-    const eventCurrent = this.recovery.captureEventCurrent()
     this.log.verbose('PuppetService', 'logout(%s)', reason ? `"${reason}"` : '')
     if (!this.isLogoutRequestCurrent(fence, eventCurrent)) { throw new Error('Superseded logout request') }
-    if (!this.recovery.enabled) { return this.logoutLegacy(reason, fence, eventCurrent) }
-    return this.logoutOwned(reason, fence, eventCurrent)
+    if (!this.recovery.enabled) { return this.logoutLegacy(reason, fence, eventCurrent, retryPolicy) }
+    return this.logoutOwned(reason, fence, eventCurrent, retryPolicy)
   }
 
   /** Without recovery no session is fenced, so the Logout RPC needs no event owner of its own. */
-  private async logoutLegacy (reason: string | undefined, fence: LogoutFence, eventCurrent?: () => boolean): Promise<void> {
+  private async logoutLegacy (reason: string | undefined, fence: LogoutFence, eventCurrent?: () => boolean, retryPolicy?: LogoutRetryPolicy): Promise<void> {
     const current = (): boolean => this.isLogoutRequestCurrent(fence, eventCurrent)
     await this.enqueueAuthentication(fence.epoch, async (): Promise<void> => {
       if (!current()) { throw new Error('Superseded logout request') }
@@ -1602,13 +1624,14 @@ class PuppetService extends PUPPET.Puppet {
     }, false)
     if (!current()) { throw new Error('Superseded logout request') }
     const manager = fence.manager
-    if (!manager) { return }
+    if (!manager && !retryPolicy) { return }
 
     try {
       // The caller receives this failure; restart preparation reports it too.
       await this.trackSdkLifecycle(async (): Promise<void> => {
         if (!current()) { throw new Error('Superseded logout request') }
-        await manager.logout()
+        if (!manager) { throw new Error('Logout transport unavailable') }
+        await this.logoutRemote(manager, current, retryPolicy)
       })
     } catch (e) {
       this.log.error('PuppetService', 'logout() RPC failed: %s', e)
@@ -1623,7 +1646,7 @@ class PuppetService extends PUPPET.Puppet {
    * this logout instead, and is dropped untouched when a newer LOGIN, switch, logout or transport
    * takes the account over first.
    */
-  private async logoutOwned (reason: string | undefined, fence: LogoutFence, eventCurrent?: () => boolean): Promise<void> {
+  private async logoutOwned (reason: string | undefined, fence: LogoutFence, eventCurrent?: () => boolean, retryPolicy?: LogoutRetryPolicy): Promise<void> {
     let loggedOut: boolean | undefined
     let intent: PendingLogout | undefined
     await this.enqueueAuthentication(fence.epoch, async (): Promise<void> => {
@@ -1648,22 +1671,37 @@ class PuppetService extends PUPPET.Puppet {
     // The queue skipped this request: no account was ended here, so there is no RPC to submit.
     if (!loggedOut) { throw new Error('Superseded logout request') }
     const owned = intent
-    if (!owned) { return }
+    if (!owned && !retryPolicy) { return }
 
     try {
       // Queued outside the authentication queue: the remote Logout must never wait for it.
       await this.trackSdkLifecycle(async (): Promise<void> => {
+        if (!owned) { throw new Error('Logout transport unavailable') }
         // A request whose local session ended but which no longer owns the account must not report
         // a submitted Logout to its caller: the RPC below is never sent, so this is a failure.
         if (!this.isLogoutOwned(owned)) { throw new Error('Superseded logout request') }
         // The caller's request context is retained: its deadline or signal still cancels the call.
-        await this.recovery.runEvent((): boolean => this.isLogoutOwned(owned), async (): Promise<void> => owned.manager.logout())
+        await this.recovery.runEvent((): boolean => this.isLogoutOwned(owned), async (): Promise<void> =>
+          this.logoutRemote(owned.manager, (): boolean => this.isLogoutOwned(owned), retryPolicy))
       })
     } catch (e) {
       this.log.error('PuppetService', 'logout() RPC failed: %s', e)
       throw e
     } finally {
       if (this.pendingLogout === owned) { this.pendingLogout = undefined }
+    }
+  }
+
+  private async logoutRemote (manager: GrpcManager, current: () => boolean, policy?: LogoutRetryPolicy): Promise<void> {
+    if (!policy) { return manager.logout() }
+    const pending = { current, confirmed: false }
+    this.retryingLogout = pending
+    try {
+      await retryLogout(async context => manager.logout(context), (): boolean => current() && !this.restartRequested, policy, (attempt, error): void => {
+        this.log.warn('PuppetService', 'logout() rejected before submission (attempt %s), retrying: %s', attempt, error)
+      }, (): boolean => pending.confirmed)
+    } finally {
+      if (this.retryingLogout === pending) { this.retryingLogout = undefined }
     }
   }
 
@@ -1675,6 +1713,7 @@ class PuppetService extends PUPPET.Puppet {
       && fence.epoch === this.eventEpoch
       && this.recovery.session === fence.session
       && fence.loginArrival === this.loginArrival
+      && (fence.retryIntent === undefined || fence.retryIntent === this.logoutRetryIntent)
   }
 
   /** True while this logout is still the one owed a remote Logout: no newer session or transport. */
